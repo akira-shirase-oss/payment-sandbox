@@ -311,3 +311,44 @@ pub fn operation_json(o: &Operation) -> Value {
         "attempts": o.attempts,
     })
 }
+
+/// `GET /v1/balances/{currency}/{account}/explain` query.
+#[derive(Debug, Deserialize)]
+pub struct ExplainQuery {
+    after_seq: Option<i64>,
+    limit: Option<i64>,
+}
+
+/// The postings that sum to one account's balance, page by page, with running totals:
+/// the ship gate's "every synthetic balance can be explained from journal entries".
+pub async fn explain(
+    State(state): State<AppState>,
+    auth: Auth,
+    Path((currency, account)): Path<(String, String)>,
+    Query(q): Query<ExplainQuery>,
+) -> Result<Response, ApiError> {
+    auth.require(Scope::Read)?;
+    let currency = Currency::from_code(&currency).map_err(|_| ApiError::NotFound("currency"))?;
+    let account = sandbox_domain::AccountKind::from_code(&account)
+        .map_err(|_| ApiError::NotFound("account"))?;
+    let explanation = sandbox_db::reconcile::explain(
+        &state.db,
+        auth.scope(),
+        currency.code(),
+        account.code(),
+        q.after_seq.unwrap_or(0),
+        q.limit.unwrap_or(100),
+    )
+    .await?;
+    let presented = account.presented(explanation.balance_minor);
+    Ok(Json(json!({
+        "currency": currency,
+        "account": account,
+        "normal_side": account.normal_side(),
+        "balance_minor": presented,
+        "balance": format_minor(presented, currency),
+        "explanation": explanation,
+        "simulated": true,
+    }))
+    .into_response())
+}

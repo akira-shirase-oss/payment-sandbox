@@ -24,4 +24,5 @@ database and (from M2) the simulated network all listen on loopback.
 | `m2-lifecycle` | M2 | two projects; authorize, capture 600, refund 200 at 100 purchases/s with 5× bursts; then reconciliation | owed; the busy-machine smoke (load 33–43) was correct (0 failed, reconciliation clean) but missed its latency thresholds |
 | `m3-uncertain` | M3 | 80% approvals, 10% lost replies, 10% network unavailable, the reconciler running; then nothing open, clean two-way reconciliation | owed; see ROADMAP M3 for the smoke |
 | `m4-webhooks` | M4 | purchases with webhooks on: the deliverer signs and delivers every event to `fixtures/dev-store`, which must fulfill every captured payment exactly once | owed; the busy-machine smoke passed its correctness gate and missed p95 by 20 ms |
+| `m5-explain` | M5 | seeded purchases, then balances and explain pages at a fixed rate; every account walked to its end must sum to its balance | owed; the busy-machine smoke passed |
 | `m2-refund-race` | M2 | the hot-account and hot-payment refund races (D-027): exact admitted count, then reconciliation | owed; the busy-machine smoke passed (630 admitted exactly, refund p99 39 ms) |
