@@ -1,0 +1,24 @@
+[package]
+name = "sandbox-domain"
+description = "Pure accounting and payment rules for the Payment Sandbox (SIMULATED MONEY ONLY). No I/O."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# No I/O crates, ever: scripts/check-architecture.sh fails the build if tokio, sqlx, axum,
+# hyper, tower, reqwest or similar appear anywhere in this crate's dependency tree.
+[dependencies]
+hex.workspace = true
+serde.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -124,9 +124,10 @@ review found. Each states the choice, the alternative and the cost.
   scenario picker (approve, decline, uncertain …) that maps to synthetic
   tokens `tok_sim_*`; the API accepts only those tokens. Any request field
   named like card data (`number`, `card`, `cvc`, `cvv`, `exp_*`, `pan`) and
-  any digit run of 12–19 digits that passes the Luhn check, anywhere in a
-  request body, is rejected with `422 raw_card_data_rejected` before
-  parsing continues; the rejected value is never logged or persisted, and
+  any run of 13–19 digits that passes the Luhn check — contiguous, or in a
+  printed card grouping (4-4-4-4, 4-6-5 …) — in any string or key of a
+  request body or in the `Idempotency-Key`, is rejected with
+  `422 raw_card_data_rejected` before typed parsing; the rejected value is never logged or persisted, and
   a test proves both. Rejecting at the API alone would be too late for a
   free-text field, because the number would already have reached us.
 - **D-020 — Webhook signatures.** HMAC-SHA256 over

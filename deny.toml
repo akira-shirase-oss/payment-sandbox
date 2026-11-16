@@ -1,0 +1,34 @@
+# Supply-chain policy, checked by cargo-deny in scripts/check.sh and CI.
+
+[graph]
+all-features = true
+
+[advisories]
+# Vulnerabilities and unmaintained crates fail by default. Ignore only with a reason and an expiry.
+ignore = []
+
+[licenses]
+allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "BSL-1.0", "CDLA-Permissive-2.0", "ISC", "Unicode-3.0", "Zlib"]
+confidence-threshold = 0.93
+unused-allowed-license = "allow"
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "all"
+deny = [
+    { crate = "openssl", reason = "no TLS stack is needed on loopback; rustls if one ever is" },
+    { crate = "openssl-sys", reason = "no TLS stack is needed on loopback; rustls if one ever is" },
+    { crate = "async-std", reason = "one async runtime: tokio" },
+]
+skip = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

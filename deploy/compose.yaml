@@ -1,0 +1,43 @@
+# Payment Sandbox local stack (SIMULATED MONEY ONLY). Development and CI only.
+#
+# Its own compose project, so it never touches another project's containers. Every port is
+# bound to 127.0.0.1 and lives in 56xxx. The credentials below are public development
+# values; nothing here is a secret. Start and check it with `scripts/stack.sh up`.
+#
+# The image is pinned by digest. To upgrade, change the tag, look up the new digest with
+# `docker buildx imagetools inspect postgres:<tag>`, and run `scripts/check.sh`.
+name: payment-sandbox
+
+services:
+  postgres:
+    image: postgres:18.6-trixie@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6
+    command:
+      - postgres
+      # Tests run in parallel, each on its own database and pool.
+      - -c
+      - max_connections=300
+      # Lock waits and slow statements are evidence for the load runs.
+      - -c
+      - log_lock_waits=on
+      - -c
+      - deadlock_timeout=50ms
+      - -c
+      - log_min_duration_statement=250ms
+    environment:
+      POSTGRES_USER: sandbox
+      POSTGRES_PASSWORD: sandbox-dev
+      POSTGRES_DB: sandbox
+    ports:
+      - "127.0.0.1:${PS_PG_PORT:-56432}:5432"
+    volumes:
+      - postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "--host=127.0.0.1", "--username=sandbox", "--dbname=sandbox"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 60s
+      start_interval: 1s
+
+volumes:
+  postgres:

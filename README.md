@@ -1,7 +1,24 @@
 # Payment Sandbox
 
-> **Status — planned.** Documentation set only; no code, no scaffold yet.
-> Milestones and proof gates live in `docs/ROADMAP.md`.
+> **SIMULATED MONEY ONLY.** No real cards, balances or banking connection,
+> ever. Every response carries `Sandbox-Simulated: true`.
+>
+> **Status — M0 (the spine) done; M1 next.** Milestones, proof gates and the
+> evidence behind each status live in `docs/ROADMAP.md`.
+
+## Run it
+
+```sh
+export PATH="$(brew --prefix rustup)/bin:$PATH"   # the pinned toolchain (rust-toolchain.toml)
+scripts/stack.sh up                                # PostgreSQL on 127.0.0.1:56432 (compose project payment-sandbox)
+eval "$(scripts/stack.sh env)"
+scripts/check.sh                                   # the gate CI runs: fmt, clippy, architecture, tests, cargo-deny
+cargo run -p sandbox-server                        # API on 127.0.0.1:56080
+```
+
+Ports (all loopback): 56432 PostgreSQL, 56080 API, 56081 simulator (M2),
+56090 load-test server. Load runs: `MODE=smoke|full scripts/load.sh <scenario>`
+(`perf/README.md`).
 
 An independently owned, **simulated-money** payment platform for development
 and CI. CMS test stores use our checkout, APIs and signed webhooks without a
