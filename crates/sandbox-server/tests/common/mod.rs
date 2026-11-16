@@ -43,8 +43,18 @@ impl TestSim {
         Self::start_at(path, Duration::from_secs(3)).await
     }
 
-    /// Starts (or restarts) a network on an existing store file.
+    /// Starts (or restarts) a network on an existing store file, on a fresh port.
     pub async fn start_at(path: PathBuf, lost_reply_hold: Duration) -> Self {
+        Self::start_on("127.0.0.1:0", path, lost_reply_hold).await
+    }
+
+    /// The address it listens on (for a restart on the same address).
+    pub fn addr(&self) -> String {
+        self.url.trim_start_matches("http://").to_owned()
+    }
+
+    /// Starts (or restarts) a network on `addr` with the store at `path`.
+    pub async fn start_on(addr: &str, path: PathBuf, lost_reply_hold: Duration) -> Self {
         let store = sandbox_sim::store::Store::open(&path).await.unwrap();
         let faults = Arc::new(sandbox_sim::faults::Faults::default());
         let state = sandbox_sim::SimState {
@@ -52,7 +62,7 @@ impl TestSim {
             faults: faults.clone(),
             lost_reply_hold,
         };
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = bind_retrying(addr).await;
         let url = format!("http://{}", listener.local_addr().unwrap());
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
         let task = tokio::spawn(async move {
@@ -96,6 +106,32 @@ impl TestSim {
     }
 }
 
+/// Binds `addr`, retrying briefly: a just-closed listener's port can take a moment to free.
+async fn bind_retrying(addr: &str) -> tokio::net::TcpListener {
+    for _ in 0..100 {
+        if let Ok(listener) = tokio::net::TcpListener::bind(addr).await {
+            return listener;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("could not bind {addr}");
+}
+
+/// The settings an app talking to `sim` uses, plus `extra`.
+pub fn sim_vars<'a>(sim: &'a TestSim, extra: &[(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
+    let mut vars = vec![
+        ("PS_SIM_URL", sim.url.as_str()),
+        ("PS_DB_ACQUIRE_TIMEOUT_MS", "15000"),
+        ("PS_DB_STATEMENT_TIMEOUT_MS", "10000"),
+        ("PS_DB_LOCK_TIMEOUT_MS", "10000"),
+        ("PS_REQUEST_TIMEOUT_MS", "60000"),
+        ("PS_PAYMENT_QUEUE_WAIT_MS", "30000"),
+        ("PS_RECONCILE_GRACE_MS", "1"),
+    ];
+    vars.extend_from_slice(extra);
+    vars
+}
+
 /// The operator token the test apps are configured with.
 pub const BOOTSTRAP: &str = "test-bootstrap-token-0123456789abcdef";
 
@@ -115,16 +151,7 @@ impl TestApp {
     /// the races below test correctness, and a lock timeout would turn a would-be success
     /// into a 503 (the load runs measure the production deadlines).
     pub async fn with_sim(sim: &TestSim, extra: &[(&str, &str)]) -> Self {
-        let mut vars = vec![
-            ("PS_SIM_URL", sim.url.as_str()),
-            ("PS_DB_ACQUIRE_TIMEOUT_MS", "15000"),
-            ("PS_DB_STATEMENT_TIMEOUT_MS", "10000"),
-            ("PS_DB_LOCK_TIMEOUT_MS", "10000"),
-            ("PS_REQUEST_TIMEOUT_MS", "60000"),
-            ("PS_PAYMENT_QUEUE_WAIT_MS", "30000"),
-        ];
-        vars.extend_from_slice(extra);
-        Self::on(TestDb::new().await, &vars)
+        Self::on(TestDb::new().await, &sim_vars(sim, extra))
     }
 
     pub fn on(db: TestDb, extra: &[(&str, &str)]) -> Self {

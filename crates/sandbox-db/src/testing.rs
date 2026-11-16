@@ -89,6 +89,57 @@ impl TestDb {
         }
     }
 
+    /// A backup: a new database copied from this one (`CREATE DATABASE … TEMPLATE`), a
+    /// consistent snapshot of every committed row. Every other pool on this database must
+    /// be closed first (PostgreSQL copies a template only while nobody is connected); this
+    /// one is closed and reopened around the copy.
+    pub async fn snapshot(&mut self) -> Self {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), self.pool.close()).await;
+        let name = format!("ps_test_{}", Uuid::now_v7().simple());
+        let mut admin = PgConnectOptions::from_str(&self.admin_url)
+            .expect("invariant: PS_TEST_DATABASE_URL parses")
+            .connect()
+            .await
+            .expect("connecting to PS_TEST_DATABASE_URL");
+        let mut copied = false;
+        for _ in 0..50 {
+            let result = admin
+                .execute(AssertSqlSafe(format!(
+                    "CREATE DATABASE {name} TEMPLATE {}",
+                    self.name
+                )))
+                .await;
+            if result.is_ok() {
+                copied = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(
+            copied,
+            "could not copy {} (is a pool still open on it?)",
+            self.name
+        );
+        admin.close().await.ok();
+        self.pool = Self::pool_for(&Self::url_for(&self.admin_url, &self.name)).await;
+        let pool = Self::pool_for(&Self::url_for(&self.admin_url, &name)).await;
+        Self {
+            pool,
+            admin_url: self.admin_url.clone(),
+            name,
+        }
+    }
+
+    async fn pool_for(url: &str) -> PgPool {
+        let options = crate::pool::connect_options(url, &crate::PoolSettings::default())
+            .expect("invariant: test url parses");
+        PgPoolOptions::new()
+            .max_connections(12)
+            .connect_with(options)
+            .await
+            .expect("connecting to the test database")
+    }
+
     /// Drops the database (forcing out any connection a test left behind).
     pub async fn cleanup(self) {
         // close() waits for every checked-out connection; a test that still holds one

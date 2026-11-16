@@ -1,7 +1,10 @@
 //! Crash points for the recovery drills. Compiled in only with the `fault-injection`
 //! feature; otherwise every point is an empty inline function. With the feature, setting
-//! `PS_FAULT=<point>` aborts the process at that point — no destructors, no flush, no
-//! graceful anything, which is what a power cut or OOM kill looks like.
+//! `PS_FAULT=<point>` (optionally `PS_FAULT_KIND=<operation kind>`) aborts the process at
+//! that point — no destructors, no flush, no graceful anything, which is what a power cut
+//! or OOM kill looks like.
+
+use sandbox_domain::OperationKind;
 
 /// Where the process may be killed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,11 +27,17 @@ impl Point {
 
 /// Aborts the process when `PS_FAULT` names `point` (fault-injection builds only).
 #[cfg(feature = "fault-injection")]
-pub fn point(point: Point) {
+pub fn point(point: Point, kind: OperationKind) {
     use std::sync::OnceLock;
-    static FAULT: OnceLock<Option<String>> = OnceLock::new();
-    let armed = FAULT.get_or_init(|| std::env::var("PS_FAULT").ok());
-    if armed.as_deref() == Some(point.name()) {
+    static FAULT: OnceLock<(Option<String>, Option<String>)> = OnceLock::new();
+    let (armed, armed_kind) = FAULT.get_or_init(|| {
+        (
+            std::env::var("PS_FAULT").ok(),
+            std::env::var("PS_FAULT_KIND").ok(),
+        )
+    });
+    let kind_matches = armed_kind.as_deref().is_none_or(|k| k == kind.code());
+    if armed.as_deref() == Some(point.name()) && kind_matches {
         eprintln!("fault injection: aborting at {}", point.name());
         std::process::abort();
     }
@@ -37,4 +46,4 @@ pub fn point(point: Point) {
 /// No-op outside fault-injection builds.
 #[cfg(not(feature = "fault-injection"))]
 #[inline(always)]
-pub const fn point(_point: Point) {}
+pub const fn point(_point: Point, _kind: OperationKind) {}

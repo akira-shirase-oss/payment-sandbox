@@ -8,6 +8,8 @@ cd "$(dirname "$0")/.."
 scripts/check-toolchain.sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
+# The crash points exist only in fault-injection builds; lint that build too.
+cargo clippy -p sandbox-server --features fault-injection --all-targets --locked -- -D warnings
 scripts/check-architecture.sh
 # The check must be able to fail: banning a crate the domain does use must trip it.
 if ARCH_BANNED="sha2" scripts/check-architecture.sh >/dev/null 2>&1; then
@@ -21,6 +23,8 @@ if [ -z "${PS_TEST_DATABASE_URL:-}" ]; then
 fi
 export PS_TEST_DATABASE_URL
 cargo test --workspace --locked
+# Drill (a) and the both-processes restart: the real server binary, killed at fault points.
+cargo test -p sandbox-server --features fault-injection --test drills --locked
 
 # cargo installs tools into ~/.cargo/bin, which may be missing from PATH (after rustup's).
 [ -d "$HOME/.cargo/bin" ] && PATH="$PATH:$HOME/.cargo/bin"

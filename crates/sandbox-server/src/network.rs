@@ -11,8 +11,10 @@ use sandbox_domain::network::{
 };
 use uuid::Uuid;
 
-/// Largest reply accepted from the network.
+/// Largest single answer (execute, readback) accepted from the network.
 const MAX_REPLY_BYTES: u64 = 64 * 1024;
+/// Largest listing page accepted: 1,000 operations of about 300 bytes each, with room.
+const MAX_PAGE_BYTES: u64 = 1024 * 1024;
 
 /// What one call learned.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,7 +75,7 @@ impl Network {
             Err(_) => return Answer::Unknown("transport"),
         };
         match response.status() {
-            StatusCode::OK => match read_json::<ExecuteReply>(response).await {
+            StatusCode::OK => match read_json::<ExecuteReply>(response, MAX_REPLY_BYTES).await {
                 Some(reply) if reply.id != request.id => {
                     tracing::error!(operation = %request.id, "network answered for another identity");
                     Answer::Unknown("wrong identity")
@@ -112,7 +114,7 @@ impl Network {
                 response.status()
             )));
         }
-        read_json(response)
+        read_json(response, MAX_REPLY_BYTES)
             .await
             .ok_or_else(|| NetworkError("malformed readback".to_owned()))
     }
@@ -132,21 +134,21 @@ impl Network {
         if response.status() != StatusCode::OK {
             return Err(NetworkError(format!("list status {}", response.status())));
         }
-        read_json(response)
+        read_json(response, MAX_PAGE_BYTES)
             .await
-            .ok_or_else(|| NetworkError("malformed list".to_owned()))
+            .ok_or_else(|| NetworkError("malformed or oversized list".to_owned()))
     }
 }
 
-async fn read_json<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> Option<T> {
-    if response
-        .content_length()
-        .is_some_and(|n| n > MAX_REPLY_BYTES)
-    {
+async fn read_json<T: serde::de::DeserializeOwned>(
+    response: reqwest::Response,
+    max: u64,
+) -> Option<T> {
+    if response.content_length().is_some_and(|n| n > max) {
         return None;
     }
     let bytes = response.bytes().await.ok()?;
-    if bytes.len() as u64 > MAX_REPLY_BYTES {
+    if bytes.len() as u64 > max {
         return None;
     }
     serde_json::from_slice(&bytes).ok()

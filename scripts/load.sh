@@ -44,7 +44,7 @@ PS_SIM_LISTEN="127.0.0.1:${sim_port}" PS_SIM_DB="$sim_db" PS_SIM_LOG=warn \
 sim=$!
 # A fresh operator token per run: scenarios create their own projects with it.
 bootstrap="load-$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
-PS_SIM_URL="http://127.0.0.1:${sim_port}" \
+PS_SIM_URL="http://127.0.0.1:${sim_port}" PS_RECONCILE_INTERVAL_MS=2000 \
 PS_BOOTSTRAP_TOKEN="$bootstrap" PS_LISTEN="127.0.0.1:${port}" PS_LOG=warn PS_LOG_FORMAT=json \
   ./target/release/sandbox-server >"$log" 2>&1 &
 server=$!

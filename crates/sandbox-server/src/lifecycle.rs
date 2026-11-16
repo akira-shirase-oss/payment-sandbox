@@ -159,9 +159,9 @@ pub async fn drive(
         currency: payment.currency,
         token: (operation.kind == OperationKind::Authorize).then(|| payment.token.clone()),
     };
-    crate::faults::point(crate::faults::Point::BeforeNetwork);
+    crate::faults::point(crate::faults::Point::BeforeNetwork, operation.kind);
     let answer = state.network.execute(&request).await;
-    crate::faults::point(crate::faults::Point::AfterNetwork);
+    crate::faults::point(crate::faults::Point::AfterNetwork, operation.kind);
     let result = network_result(&answer);
     if let Answer::Unknown(reason) = answer {
         tracing::warn!(operation = %operation.id, kind = %operation.kind, reason, "network answer unknown; operation stays uncertain");
@@ -184,7 +184,7 @@ const APPLY_ATTEMPTS: u32 = 6;
 /// deadline, a busy pool) with exponential backoff and full jitter. Applying is idempotent,
 /// so a retry can never double-post; giving up leaves the operation open (its reservation
 /// held) for a client retry or the reconciler, never half-applied.
-async fn apply_with_retry(
+pub(crate) async fn apply_with_retry(
     state: &AppState,
     scope: ProjectScope,
     payment_id: Uuid,

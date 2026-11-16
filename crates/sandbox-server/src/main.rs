@@ -26,7 +26,14 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("binding {}", config.listen))?;
     let local = listener.local_addr().context("reading the bound address")?;
     let grace = config.shutdown_grace;
-    let app = sandbox_server::app(&AppState::new(config, db.clone()));
+    let state = AppState::new(config, db.clone());
+    let app = sandbox_server::app(&state);
+    // The reconciler: a tracked task that stops on shutdown (startup sweep included).
+    let (stop_reconciler, reconciler_stop) = sandbox_server::reconciler::shutdown_channel();
+    let reconciler = tokio::spawn(sandbox_server::reconciler::run(
+        state.clone(),
+        reconciler_stop,
+    ));
     tracing::info!(%local, "listening");
 
     let outcome = shutdown::serve(listener, app, grace, async move {
@@ -40,6 +47,13 @@ async fn main() -> anyhow::Result<()> {
         shutdown::ShutdownOutcome::DeadlineExceeded => {
             tracing::warn!("shutdown deadline exceeded; exiting with requests in flight");
         }
+    }
+    let _ = stop_reconciler.send(true);
+    if tokio::time::timeout(Duration::from_secs(5), reconciler)
+        .await
+        .is_err()
+    {
+        tracing::warn!("the reconciler did not stop within 5 s");
     }
     db.close().await;
     Ok(())

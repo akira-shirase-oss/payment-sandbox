@@ -221,17 +221,31 @@ pub async fn balances(State(state): State<AppState>, auth: Auth) -> Result<Respo
     Ok(Json(json!({"balances": rows, "source": "journal", "simulated": true})).into_response())
 }
 
-/// The reconciliation report for the caller's project.
+/// `GET /v1/reconciliation?network=true` query.
+#[derive(Debug, Deserialize)]
+pub struct ReconcileQuery {
+    #[serde(default)]
+    network: bool,
+}
+
+/// The reconciliation report for the caller's project. With `network=true` it also lists
+/// the network's operations the server has no record of (reverse reconciliation, D-015).
 pub async fn reconciliation(
     State(state): State<AppState>,
     auth: Auth,
+    Query(q): Query<ReconcileQuery>,
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Read)?;
     let report = sandbox_db::reconcile::run(&state.db, auth.scope()).await?;
-    Ok(
-        Json(json!({"clean": report.is_clean(), "report": report, "simulated": true}))
-            .into_response(),
-    )
+    let mut clean = report.is_clean();
+    let mut body = json!({"report": report, "simulated": true});
+    if q.network {
+        let unknown = crate::reconciler::unknown_to_server(&state, auth.scope(), 100).await?;
+        clean = clean && unknown.is_empty();
+        body["network_operations_unknown_to_server"] = json!(unknown);
+    }
+    body["clean"] = json!(clean);
+    Ok(Json(body).into_response())
 }
 
 fn respond(outcome: &Outcome) -> Response {

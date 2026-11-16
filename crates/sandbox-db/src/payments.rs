@@ -690,3 +690,63 @@ fn operation_from(row: &PgRow) -> Result<Operation, DbError> {
         resolved_at: row.try_get("resolved_at")?,
     })
 }
+
+/// An open (pending or uncertain) operation, as the reconciler sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenOperation {
+    /// Its project and epoch.
+    pub scope: ProjectScope,
+    /// The operation.
+    pub id: Uuid,
+    /// Its payment.
+    pub payment_id: Uuid,
+}
+
+/// Open operations of every project older than `grace`, oldest first, at most `limit`.
+/// Younger ones may still have a request in flight; leaving them alone avoids fencing an
+/// identity a live request is about to deliver.
+pub async fn open_operations(
+    pool: &PgPool,
+    grace: std::time::Duration,
+    limit: i64,
+) -> Result<Vec<OpenOperation>, DbError> {
+    let grace_ms = i64::try_from(grace.as_millis()).unwrap_or(i64::MAX);
+    let rows = sqlx::query(
+        "SELECT project_id, dataset_epoch, id, payment_id FROM operations
+          WHERE state IN ('pending', 'uncertain')
+            AND created_at < now() - make_interval(secs => $1::float8 / 1000.0)
+          ORDER BY created_at LIMIT $2",
+    )
+    .bind(grace_ms)
+    .bind(limit.clamp(1, 10_000))
+    .fetch_all(pool)
+    .await?;
+    rows.iter()
+        .map(|row| {
+            Ok(OpenOperation {
+                scope: ProjectScope {
+                    project_id: row.try_get("project_id")?,
+                    epoch: row.try_get("dataset_epoch")?,
+                },
+                id: row.try_get("id")?,
+                payment_id: row.try_get("payment_id")?,
+            })
+        })
+        .collect()
+}
+
+/// Which of `ids` this project has no record of.
+pub async fn unknown_operations(
+    pool: &PgPool,
+    project_id: Uuid,
+    ids: &[Uuid],
+) -> Result<Vec<Uuid>, DbError> {
+    Ok(sqlx::query_scalar(
+        "SELECT x FROM unnest($2::uuid[]) AS x
+          WHERE NOT EXISTS (SELECT 1 FROM operations o WHERE o.project_id = $1 AND o.id = x)",
+    )
+    .bind(project_id)
+    .bind(ids)
+    .fetch_all(pool)
+    .await?)
+}

@@ -15,6 +15,11 @@ fault-injection = []
 name = "sandbox-server"
 path = "src/main.rs"
 
+# The process-kill drills need the crash points compiled into the binary they spawn.
+[[test]]
+name = "drills"
+required-features = ["fault-injection"]
+
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true

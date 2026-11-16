@@ -52,10 +52,14 @@ jobs:
       - run: scripts/check-toolchain.sh
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Clippy on the fault-injection build (crash points for the drills)
+        run: cargo clippy -p sandbox-server --features fault-injection --all-targets --locked -- -D warnings
       - run: scripts/check-architecture.sh
       - name: The architecture check can fail
         run: "! ARCH_BANNED=sha2 scripts/check-architecture.sh"
       - run: cargo test --workspace --locked
+      - name: Recovery drills (the real server binary killed at fault points)
+        run: cargo test -p sandbox-server --features fault-injection --test drills --locked
       - name: Load smoke (short runs; full runs are local, committed under perf/results/)
         env:
           PS_DATABASE_URL: postgres://sandbox:sandbox-dev@127.0.0.1:56432/sandbox

@@ -3,9 +3,10 @@
 > **SIMULATED MONEY ONLY.** No real cards, balances or banking connection,
 > ever. Every response carries `Sandbox-Simulated: true`.
 >
-> **Status — M0 (the spine), M1 (projects and sandbox keys) and M2 (payment
-> lifecycle on a separate simulated network) done; M3 (uncertain outcomes
-> and recovery) next.** Full million-request load runs are owed (the
+> **Status — M0 (the spine), M1 (projects and sandbox keys), M2 (payment
+> lifecycle on a separate simulated network) and M3 (uncertain outcomes and
+> recovery: fenced readback, the reconciler, the crash, clock-jump and
+> restore drills) done; M4 (signed webhooks) next.** Full million-request load runs are owed (the
 > development machine was busy); see `docs/ROADMAP.md`. Milestones, proof gates and the
 > evidence behind each status live in `docs/ROADMAP.md`.
 

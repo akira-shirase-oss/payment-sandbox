@@ -14,6 +14,7 @@ pub mod lifecycle;
 pub mod locks;
 pub mod middleware;
 pub mod network;
+pub mod reconciler;
 pub mod routes;
 pub mod shutdown;
 pub mod state;

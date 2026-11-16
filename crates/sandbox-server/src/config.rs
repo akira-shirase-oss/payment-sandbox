@@ -69,6 +69,12 @@ pub struct Config {
     pub sim_url: String,
     /// Longest a request waits for its payment's turn before it is shed (D-033).
     pub payment_queue_wait: Duration,
+    /// Time between reconciliation sweeps.
+    pub reconcile_interval: Duration,
+    /// Age an open operation must reach before the reconciler fences it.
+    pub reconcile_grace: Duration,
+    /// Most operations one sweep examines.
+    pub reconcile_batch: i64,
     /// Deadline of one call to the simulated network. A call that misses it is `unknown`,
     /// and the operation stays `uncertain` until readback.
     pub sim_timeout: Duration,
@@ -116,6 +122,11 @@ impl Config {
         let shutdown_grace = parse.millis("PS_SHUTDOWN_GRACE_MS", 10_000);
         let sim_timeout = parse.millis("PS_SIM_TIMEOUT_MS", 2_000);
         let payment_queue_wait = parse.millis("PS_PAYMENT_QUEUE_WAIT_MS", 1_000);
+        let reconcile_interval = parse.millis("PS_RECONCILE_INTERVAL_MS", 5_000);
+        let grace_default =
+            u64::try_from(sim_timeout.as_millis().saturating_add(1_000)).unwrap_or(u64::MAX);
+        let reconcile_grace = parse.millis("PS_RECONCILE_GRACE_MS", grace_default);
+        let reconcile_batch: i64 = parse.value("PS_RECONCILE_BATCH", Some(200));
         let migrate_on_start: bool = parse.value("PS_MIGRATE", Some(true));
         let log_format = match lookup("PS_LOG_FORMAT").as_deref() {
             None | Some("json") => LogFormat::Json,
@@ -140,6 +151,46 @@ impl Config {
             errors.push("PS_BOOTSTRAP_TOKEN must be at least 32 visible characters".to_owned());
         }
 
+        let config = Self {
+            listen,
+            database_url: Secret::new(database_url),
+            pool,
+            request_timeout,
+            max_body_bytes,
+            max_in_flight,
+            readiness_timeout,
+            shutdown_grace,
+            migrate_on_start,
+            log_format,
+            log_filter,
+            bootstrap_token: bootstrap_token.map(Secret::new),
+            sim_url: sim_url.trim_end_matches('/').to_owned(),
+            sim_timeout,
+            payment_queue_wait,
+            reconcile_interval,
+            reconcile_grace,
+            reconcile_batch: reconcile_batch.clamp(1, 10_000),
+        };
+        // Every problem at once: parse errors and cross-field rules together.
+        errors.extend(config.problems());
+        if errors.is_empty() {
+            Ok(config)
+        } else {
+            Err(ConfigError(errors))
+        }
+    }
+
+    /// Cross-field rules: every deadline must leave room for the work it bounds.
+    fn problems(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        let (listen, pool, max_body_bytes, max_in_flight, request_timeout, sim_timeout) = (
+            self.listen,
+            self.pool,
+            self.max_body_bytes,
+            self.max_in_flight,
+            self.request_timeout,
+            self.sim_timeout,
+        );
         if !listen.ip().is_loopback() {
             errors.push(
                 "PS_LISTEN must be a loopback address: this sandbox runs in the local/CI mode only (D-023)"
@@ -167,26 +218,7 @@ impl Config {
                     .to_owned(),
             );
         }
-        if !errors.is_empty() {
-            return Err(ConfigError(errors));
-        }
-        Ok(Self {
-            listen,
-            database_url: Secret::new(database_url),
-            pool,
-            request_timeout,
-            max_body_bytes,
-            max_in_flight,
-            readiness_timeout,
-            shutdown_grace,
-            migrate_on_start,
-            log_format,
-            log_filter,
-            bootstrap_token: bootstrap_token.map(Secret::new),
-            sim_url: sim_url.trim_end_matches('/').to_owned(),
-            sim_timeout,
-            payment_queue_wait,
-        })
+        errors
     }
 }
 

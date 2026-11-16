@@ -69,7 +69,10 @@ the guide wins.
 
 ## Frontend rules
 
-- SvelteKit + TypeScript (strict). Checkout and dashboard are static
+- SvelteKit + TypeScript (strict) + Tailwind CSS v4 + shadcn-svelte
+  (D-035), starting from this repository's own copy of the Colophon UI
+  package in `packages/ui` — never a dependency on the Colophon repository.
+  Checkout and dashboard are static
   client-side apps served by the Rust server on **separate origins**
   (separate listeners, strict CSP on checkout — D-029); they never query
   PostgreSQL or hold payment authority. Everything user-visible is

@@ -180,9 +180,12 @@ review found. Each states the choice, the alternative and the cost.
   virtual clock jumped forward and back must not change posted journal
   history (M3), and a server wall-clock jump against outbox leases may
   cause a duplicate delivery but never a lost or corrupt one (M4);
-  (c) *backup restore* — the server's PostgreSQL restored from a logical
-  dump taken before an operation, with a newer simulator store; a client
-  retry must reconcile without a second charge (M3).
+  (c) *backup restore* — the server's PostgreSQL restored from a backup
+  taken before an operation, with a newer simulator store; a client retry
+  must reconcile without a second charge (M3). The automated drill takes
+  the backup as a `CREATE DATABASE … TEMPLATE` copy (a consistent snapshot
+  of every committed row, taken with no connection open); a `pg_dump`
+  logical-restore rehearsal against the local stack remains to be scripted.
 - **D-027 — Two hot races.** "Hot-account refund race" means one
   merchant account receiving many concurrent partial refunds across many
   payments; "hot-payment race" means many concurrent partial refunds
@@ -260,6 +263,31 @@ review found. Each states the choice, the alternative and the cost.
   the drive cache there, which SQLite's default does not), so the median
   rose from under 1 ms to 12–21 ms. Full durability is kept: the drills
   kill processes, and the network's record must survive them.
+
+- **D-035 — One web stack: SvelteKit + Tailwind v4 + shadcn-svelte, from a
+  copied UI package.** Maintainer decision, 2026-11-16 (workspace rule "one
+  stack for every project"): Rust stays the backend; the test checkout and
+  the inspection dashboard are SvelteKit + TypeScript (strict) + Tailwind
+  CSS v4 + shadcn-svelte. They start from a copy of the Colophon UI package
+  (the warm paper-and-ink look, D-056 there), copied into this repository
+  as `packages/ui`, which this repository then owns; there is no dependency
+  on the Colophon repository, its packages or its builds. No UI existed
+  when this was decided, so nothing needs converting; the checkout still
+  has no card field (D-019) and the two apps keep separate origins (D-029).
+
+- **D-036 — Reconciler cadence and bounds.** The server runs one tracked
+  reconciler task: a sweep at startup, then every `PS_RECONCILE_INTERVAL_MS`
+  (5 s). A sweep examines at most `PS_RECONCILE_BATCH` (200) open operations,
+  oldest first, and only those older than `PS_RECONCILE_GRACE_MS` (the
+  network deadline plus 1 s), so a request still waiting for its answer is
+  never fenced from under it. Each operation gets a fenced readback; a
+  network error leaves it for the next sweep; recording uses the same
+  jittered retry as requests (D-033). Reverse reconciliation
+  (`GET /v1/reconciliation?network=true`) pages through the network's
+  listing (pages of up to 1,000 operations, at most 1 MiB each, at most 100
+  pages) and reports at most 1,000 unknown identities. It never applies
+  them: only a client retry under the same key can, and that retry
+  re-derives the same identity.
 
 ## Open questions (still open)
 
