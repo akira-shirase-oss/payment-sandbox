@@ -49,10 +49,6 @@ pub fn app(state: &AppState) -> Router {
         )
         .route("/v1/balances", get(handlers::payments::balances))
         .route(
-            "/v1/reconciliation",
-            get(handlers::payments::reconciliation),
-        )
-        .route(
             "/v1/webhook_endpoints",
             get(handlers::webhooks::list).post(handlers::webhooks::create),
         )
@@ -75,8 +71,26 @@ pub fn app(state: &AppState) -> Router {
         .merge(v1)
         .fallback(|| async { ApiError::RouteNotFound })
         .with_state(state.clone());
-    middleware::apply(router, &state.config)
+    // Reports scan the whole epoch: their own, longer (still bounded) deadline.
+    let reports = Router::new()
+        .route(
+            "/v1/reconciliation",
+            get(handlers::payments::reconciliation),
+        )
+        .route_layer(axum_mw::from_fn_with_state(
+            state.gate.clone(),
+            middleware::shed_load,
+        ))
+        .with_state(state.clone());
+    middleware::apply(router, &state.config).merge(middleware::apply_with_timeout(
+        reports,
+        &state.config,
+        REPORT_TIMEOUT,
+    ))
 }
+
+/// Deadline of report requests (`/v1/reconciliation`).
+pub const REPORT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Liveness: the process answers. Touches nothing.
 async fn healthz() -> Response {

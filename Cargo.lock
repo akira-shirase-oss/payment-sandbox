@@ -1332,6 +1332,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "sandbox-dev-store"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "redb",
+ "reqwest",
+ "sandbox-domain",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "sandbox-domain"
 version = "0.1.0"
 dependencies = [
@@ -1358,6 +1376,7 @@ dependencies = [
  "proptest",
  "reqwest",
  "sandbox-db",
+ "sandbox-dev-store",
  "sandbox-domain",
  "sandbox-sim",
  "serde",

@@ -289,6 +289,18 @@ review found. Each states the choice, the alternative and the cost.
   them: only a client retry under the same key can, and that retry
   re-derives the same identity.
 
+- **D-037 — Reports have their own deadline and a statistics-proof plan.**
+  The first M4 load smoke found `GET /v1/reconciliation` cut off at the hot
+  path's 5 s request deadline: on a project written moments earlier, stale
+  planner statistics chose a nested loop over sequential scans for the
+  per-payment check, which took 16 ms once statistics caught up. The check
+  is now index-driven per payment (`payments` → `journal_entries_by_payment`
+  → the lines' primary key) whatever the statistics say, and report routes
+  get their own bounded 60 s request deadline (statements inside stay at
+  30 s), so a whole-epoch scan never borrows the hot path's budget. No
+  deterministic regression test exists for a planner's choice; the evidence
+  is the rerun smoke, whose report answered within its deadline.
+
 ## Open questions (still open)
 
 - **Dashboard authentication** — per-project-owner session login is the

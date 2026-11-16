@@ -6,7 +6,8 @@
 > **Status — M0 (the spine), M1 (projects and sandbox keys), M2 (payment
 > lifecycle on a separate simulated network) and M3 (uncertain outcomes and
 > recovery: fenced readback, the reconciler, the crash, clock-jump and
-> restore drills) done; M4 (signed webhooks) next.** Full million-request load runs are owed (the
+> restore drills) and M4 (signed webhooks to `fixtures/dev-store`) done; M5
+> (reconciliation and explain-balance) next.** Full million-request load runs are owed (the
 > development machine was busy); see `docs/ROADMAP.md`. Milestones, proof gates and the
 > evidence behind each status live in `docs/ROADMAP.md`.
 
@@ -18,7 +19,8 @@ scripts/stack.sh up                                # PostgreSQL on 127.0.0.1:564
 eval "$(scripts/stack.sh env)"
 scripts/check.sh                                   # the gate CI runs: fmt, clippy, architecture, tests, cargo-deny
 cargo run -p sandbox-sim                           # simulated network on 127.0.0.1:56081
-cargo run -p sandbox-server                        # API on 127.0.0.1:56080
+cargo run -p sandbox-server                        # API on 127.0.0.1:56080 (webhooks need PS_SECRET_KEY)
+cargo run -p sandbox-dev-store                     # the development store on 127.0.0.1:56082
 ```
 
 Ports (all loopback): 56432 PostgreSQL, 56080 API, 56081 simulator (M2),

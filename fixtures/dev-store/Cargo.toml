@@ -1,0 +1,29 @@
+[package]
+name = "sandbox-dev-store"
+description = "The Payment Sandbox's development store (SIMULATED MONEY ONLY): a reference webhook consumer with an inbox and its own fulfillment key."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "sandbox-dev-store"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+redb.workspace = true
+reqwest.workspace = true
+sandbox-domain.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

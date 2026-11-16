@@ -12,8 +12,9 @@
 # on a busy machine is visibly a busy-machine observation. A threshold miss fails the run and
 # is kept as evidence; it is never rerun until green.
 #
-# The server's network is a release build of sandbox-sim on the next port, with a fresh
-# SQLite store per run. Lock waits over 50 ms (PostgreSQL's log, when the local stack runs
+# The server's network is a release build of sandbox-sim on the next port, and the
+# development store (fixtures/dev-store) on the one after, each with a fresh store per run;
+# webhooks are on with a fresh PS_SECRET_KEY. Lock waits over 50 ms (PostgreSQL's log, when the local stack runs
 # in Docker) are counted into the record.
 #
 # Needs: k6 (scripts/install-k6.sh), jq, and PS_DATABASE_URL (scripts/stack.sh env).
@@ -28,7 +29,7 @@ script="perf/scenarios/${scenario}.js"
 port="${PS_LOAD_PORT:-56090}"
 sim_port="$((port + 1))"
 
-cargo build --release --locked -p sandbox-server -p sandbox-sim >/dev/null
+cargo build --release --locked -p sandbox-server -p sandbox-sim -p sandbox-dev-store >/dev/null
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 if [ "$mode" = "full" ]; then outdir="perf/results"; else outdir="target/perf"; fi
 mkdir -p "$outdir"
@@ -42,13 +43,18 @@ sim_db="target/perf/sim-${scenario}-${stamp}.redb"
 PS_SIM_LISTEN="127.0.0.1:${sim_port}" PS_SIM_DB="$sim_db" PS_SIM_LOG=warn \
   ./target/release/sandbox-sim >"target/perf/sim-${scenario}-${stamp}.log" 2>&1 &
 sim=$!
+store_port="$((port + 2))"
+PS_STORE_LISTEN="127.0.0.1:${store_port}" PS_STORE_DB="target/perf/store-${scenario}-${stamp}.redb" \
+  ./target/release/sandbox-dev-store >"target/perf/store-${scenario}-${stamp}.log" 2>&1 &
+store=$!
 # A fresh operator token per run: scenarios create their own projects with it.
 bootstrap="load-$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
 PS_SIM_URL="http://127.0.0.1:${sim_port}" PS_RECONCILE_INTERVAL_MS=2000 \
+PS_SECRET_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
 PS_BOOTSTRAP_TOKEN="$bootstrap" PS_LISTEN="127.0.0.1:${port}" PS_LOG=warn PS_LOG_FORMAT=json \
   ./target/release/sandbox-server >"$log" 2>&1 &
 server=$!
-trap 'kill "$server" "$sim" 2>/dev/null || true; rm -f "$summary"' EXIT
+trap 'kill "$server" "$sim" "$store" 2>/dev/null || true; rm -f "$summary"' EXIT
 for _ in $(seq 1 100); do
   curl -fsS "http://127.0.0.1:${port}/readyz" >/dev/null 2>&1 && break
   sleep 0.1
@@ -56,6 +62,7 @@ done
 curl -fsS "http://127.0.0.1:${port}/readyz" >/dev/null
 
 set +e
+STORE_URL="http://127.0.0.1:${store_port}" \
 BOOTSTRAP="$bootstrap" BASE_URL="http://127.0.0.1:${port}" MODE="$mode" k6 run --quiet \
   --summary-export "$summary" "$script"
 k6_status=$?

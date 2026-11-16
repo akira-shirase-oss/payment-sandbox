@@ -143,8 +143,14 @@ pub async fn shed_load(
 /// `503` rather than `408` when the deadline elapses: the client was not slow, we were.
 pub const TIMEOUT_STATUS: StatusCode = StatusCode::SERVICE_UNAVAILABLE;
 
-/// Applies the global stack.
+/// Applies the global stack with the hot path's request deadline.
 pub fn apply(router: Router, config: &Config) -> Router {
+    apply_with_timeout(router, config, config.request_timeout)
+}
+
+/// Applies the global stack with a specific request deadline (reports scan a whole
+/// dataset and get a longer, still bounded, one).
+pub fn apply_with_timeout(router: Router, config: &Config, timeout: std::time::Duration) -> Router {
     let stack = ServiceBuilder::new()
         // 0. Authorization and the idempotency key are redacted from any Debug output.
         .layer(SetSensitiveRequestHeadersLayer::new([
@@ -177,10 +183,7 @@ pub fn apply(router: Router, config: &Config) -> Router {
         // 7. Panics become 500 envelopes.
         .layer(CatchPanicLayer::custom(panic_response))
         // 8. Deadline for response headers.
-        .layer(TimeoutLayer::with_status_code(
-            TIMEOUT_STATUS,
-            config.request_timeout,
-        ))
+        .layer(TimeoutLayer::with_status_code(TIMEOUT_STATUS, timeout))
         // 9–10. Body limits, by Content-Length up front and while streaming.
         .layer(RequestBodyLimitLayer::new(config.max_body_bytes))
         .layer(DefaultBodyLimit::max(config.max_body_bytes));

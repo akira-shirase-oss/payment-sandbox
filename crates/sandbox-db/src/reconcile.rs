@@ -65,28 +65,26 @@ pub async fn run(pool: &PgPool, scope: ProjectScope) -> Result<Report, DbError> 
     .bind(scope.epoch)
     .fetch_all(&mut *tx)
     .await?;
+    // Index-driven per payment (payments, then journal_entries_by_payment, then the lines'
+    // primary key), so the plan does not depend on fresh statistics: a just-written project
+    // otherwise invites a nested loop over sequential scans.
     let payment_mismatches: Vec<Uuid> = sqlx::query_scalar(
-        "WITH entry_totals AS (
-             SELECT e.payment_id, e.recipe,
-                    sum(l.amount_minor) FILTER (WHERE l.amount_minor > 0) AS total
-               FROM journal_entries e
-               JOIN journal_lines l ON l.project_id = e.project_id AND l.entry_id = e.id
-              WHERE e.project_id = $1 AND e.dataset_epoch = $2 AND e.payment_id IS NOT NULL
-              GROUP BY e.payment_id, e.id, e.recipe
-         ), sums AS (
-             SELECT payment_id,
-                    coalesce(sum(total) FILTER (WHERE recipe = 'authorize'), 0) AS authorized,
-                    coalesce(sum(total) FILTER (WHERE recipe = 'capture'), 0) AS captured,
-                    coalesce(sum(total) FILTER (WHERE recipe = 'void'), 0) AS voided,
-                    coalesce(sum(total) FILTER (WHERE recipe = 'refund'), 0) AS refunded
-               FROM entry_totals GROUP BY payment_id
-         )
-         SELECT p.id FROM payments p LEFT JOIN sums s ON s.payment_id = p.id
+        "SELECT p.id FROM payments p
+          CROSS JOIN LATERAL (
+              SELECT coalesce(sum(t.total) FILTER (WHERE t.recipe = 'authorize'), 0) AS authorized,
+                     coalesce(sum(t.total) FILTER (WHERE t.recipe = 'capture'), 0) AS captured,
+                     coalesce(sum(t.total) FILTER (WHERE t.recipe = 'void'), 0) AS voided,
+                     coalesce(sum(t.total) FILTER (WHERE t.recipe = 'refund'), 0) AS refunded
+                FROM (SELECT e.recipe,
+                             (SELECT sum(l.amount_minor) FROM journal_lines l
+                               WHERE l.project_id = e.project_id AND l.entry_id = e.id
+                                 AND l.amount_minor > 0) AS total
+                        FROM journal_entries e
+                       WHERE e.project_id = p.project_id AND e.payment_id = p.id) t
+          ) s
           WHERE p.project_id = $1 AND p.dataset_epoch = $2
-            AND (p.authorized_minor <> coalesce(s.authorized, 0)
-                 OR p.captured_minor <> coalesce(s.captured, 0)
-                 OR p.voided_minor <> coalesce(s.voided, 0)
-                 OR p.refunded_minor <> coalesce(s.refunded, 0))
+            AND (p.authorized_minor <> s.authorized OR p.captured_minor <> s.captured
+                 OR p.voided_minor <> s.voided OR p.refunded_minor <> s.refunded)
           ORDER BY p.id LIMIT 1000",
     )
     .bind(scope.project_id)

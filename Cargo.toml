@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*"]
+members = ["crates/*", "fixtures/dev-store"]
 resolver = "3"
 
 [workspace.package]
@@ -15,6 +15,7 @@ publish = false
 sandbox-domain = { path = "crates/sandbox-domain" }
 sandbox-db = { path = "crates/sandbox-db" }
 sandbox-sim = { path = "crates/sandbox-sim" }
+sandbox-dev-store = { path = "fixtures/dev-store" }
 
 # External crates: versions live here only. Minimal features; one async runtime (Tokio);
 # no TLS stack (everything this sandbox talks to is on loopback, D-023).
