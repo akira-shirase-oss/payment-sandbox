@@ -3,9 +3,9 @@
 A simulated-money payment platform for development and CI: Rust + Axum +
 Tokio + SQLx over PostgreSQL, a separate-process network simulator with its
 own store, SvelteKit test checkout and dashboard, a Rust CLI, a TypeScript
-SDK and signed webhooks. Contract: workspace
-`Project_Guides/05_Payment_Sandbox.docx` — extract with
-`textutil -convert txt -stdout`. When these documents and the guide disagree,
+SDK and signed webhooks. Contract: the workspace engineering guide
+`docs/Project_Guides/05_Payment_Sandbox.docx` (kept outside this
+repository) — extract with `textutil -convert txt -stdout`. When these documents and the guide disagree,
 the guide wins.
 
 ## Read first
@@ -15,7 +15,7 @@ the guide wins.
 2. `docs/ARCHITECTURE.md` — sources of truth, request paths, layout.
 3. `docs/DECISIONS.md` — seeded decisions plus the open questions; do not
    silently resolve an open question — record a new D-NNN when one is decided.
-4. `docs/ROADMAP.md` — M0–M5 order and each milestone's proof gate.
+4. `docs/ROADMAP.md` — M0–M8 order and each milestone's proof gate.
 
 ## Non-negotiables
 
@@ -39,8 +39,11 @@ the guide wins.
 6. **Sandbox-only by construction.** Synthetic tokens, sandbox-scoped keys,
    prominent labels in binaries/UI/README/artifacts; raw card fields are
    rejected; no production provider routes exist; outbound calls are
-   allowlisted; projects are isolated; secrets are hashed; dataset reset
-   requires explicit confirmation. No real payment credential ever enters
+   allowlisted (loopback only in the local/CI mode, D-023); projects are
+   isolated by composite keys (D-013); API keys are hashed and webhook
+   signing secrets are encrypted at rest (D-020); dataset reset requires
+   typed confirmation and opens a new epoch (D-022). No UI has a
+   card-number field (D-019). No real payment credential ever enters
    the repo, a fixture or a test.
 7. **Virtual time cannot rewrite history.** The simulator's test clocks drive
    scenarios; already-posted journal history never changes under a clock
@@ -67,8 +70,9 @@ the guide wins.
 ## Frontend rules
 
 - SvelteKit + TypeScript (strict). Checkout and dashboard are static
-  client-side apps served by the Rust server on the same origin; they never
-  query PostgreSQL or hold payment authority. Everything user-visible is
+  client-side apps served by the Rust server on **separate origins**
+  (separate listeners, strict CSP on checkout — D-029); they never query
+  PostgreSQL or hold payment authority. Everything user-visible is
   labeled as simulated.
 
 ## Testing rule (shared workspace standard)
@@ -94,6 +98,8 @@ are committed under `perf/results/` with machine + commit.
   failure case, the permission and the acceptance test.
 - Report exactly what ran and what passed; honest `unknown`/`uncertain`
   beats a reassuring lie.
-- Repository will be `github.com/akira-shirase-oss/payment-sandbox`; work
-  happens on a branch and merges to `main` when a piece is complete with
-  its evidence.
+- Repository: `github.com/akira-shirase-oss/payment-sandbox`. Work lands on
+  `main` in small green steps: `scripts/check.sh` passes, then commit and
+  push. No long-lived branches, no force-push, no history rewrites.
+- A roadmap status cell says Done only when it names its tests and
+  evidence path (D-031).

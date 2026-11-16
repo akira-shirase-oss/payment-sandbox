@@ -28,17 +28,26 @@
 
 ## Paths
 
-**Authorize:** `POST /payments {operation_key, token, amount, currency}` →
-commit the operation record (identity persisted **first**) → call the
-simulator → apply the result in a second transaction: hold row + balanced
-journal entries + outbox event. A lost reply leaves the operation
-`uncertain`; the reconciler resolves it by readback under the same identity.
+**Authorize:** `POST /v1/payments {token, amount, currency}` with an
+`Idempotency-Key` header → derive the operation id (UUIDv5 over project,
+kind and key — D-015) and the payment id from it → commit the operation
+and payment records (identity persisted **first**) → call the simulator
+with that id → apply the result in a second transaction: hold sums +
+balanced journal entry + outbox event. A lost reply leaves the operation
+`uncertain`; the reconciler resolves it by fenced readback (D-017) under
+the same identity. Because the identity is derived from the client's key,
+a retry after a restore of the server database reaches the simulator's
+stored result instead of a second charge.
 
-**Capture / refund:** `POST /captures|/refunds {operation_key, amount}` →
-one transaction inserts the operation **and** reserves capacity against the
-hold's sums (authorized − captured for captures; captured − refunded for
-refunds) → the simulator call happens outside any transaction → a third
-transaction applies the result: balanced postings + outbox event.
+**Capture / void / refund:** `POST /v1/payments/{id}/captures|void|refunds
+{amount}` with an `Idempotency-Key` → one transaction locks the payment
+row, inserts the operation **and** reserves capacity against the payment's
+sums (authorized − captured − voided − reservations for captures and
+voids; captured − refunded − reservations for refunds; D-014) → the
+simulator call happens outside any transaction → a further transaction
+applies the result: balanced postings + released reservation + outbox
+event. A decline or a fenced "never executed" releases the reservation;
+`uncertain` keeps it until readback.
 
 **Webhook:** each state change commits its outbox row in the same
 transaction → the deliverer claims it under a lease → signed POST →
@@ -52,8 +61,16 @@ apply it once → report, never blind replay. Materialized balances are
 recomputed from the journal and compared; a mismatch is a defect, not a
 rounding error.
 
-**Reset:** dataset reset requires explicit confirmation; projects stay
-isolated; simulator scenarios are seeded and preserved across runs.
+**Reset:** dataset reset requires the `admin` scope and a typed
+confirmation of the project slug, and opens a new dataset epoch — posted
+entries are archived, never deleted (D-022); projects stay isolated;
+simulator scenarios are seeded and preserved across runs.
+
+**Recovery after a restore:** the reverse reconciliation lists simulator
+operations whose identity the server does not know (its database was
+restored to an earlier point); they are reported, and a client retry
+under the same key re-derives the same identity and applies the
+simulator's stored result once.
 
 ## Consistency story
 
@@ -80,6 +97,7 @@ crates/        sandbox-domain, sandbox-db, sandbox-server, sandbox-sim,
 apps/          checkout, dashboard   (SvelteKit, static, same-origin served)
 packages/      sdk-ts, the CMS sandbox provider adapter
 docs/          END_GOAL, ARCHITECTURE, ROADMAP, DECISIONS
-fixtures/      reference fulfillment consumer, seeded simulator scenarios
+fixtures/      dev-store (the reference fulfillment consumer and the
+               ship gate's development store, D-024), seeded scenarios
 perf/          load scenarios + results (machine + commit on every run)
 ```

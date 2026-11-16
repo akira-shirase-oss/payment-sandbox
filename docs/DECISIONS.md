@@ -1,7 +1,7 @@
 # Decisions
 
 Deliberate choices seeded by the guide
-(`Project_Guides/05_Payment_Sandbox.docx`), newest last. D-NNN numbering
+(workspace `docs/Project_Guides/05_Payment_Sandbox.docx`), newest last. D-NNN numbering
 continues the workspace convention.
 
 - **D-001 — Simulated money only, by construction.** No real credentials,
@@ -47,33 +47,184 @@ continues the workspace convention.
   adapter — no production store may fulfill a real order from simulated
   evidence.
 
-## Open questions (the guide leaves these open)
+## Decisions made before code (2026-11-16)
 
-Recorded here so they are decided explicitly, not guessed at:
+These close the questions that blocked milestone 0 and fix the gaps a plan
+review found. Each states the choice, the alternative and the cost.
 
-- **Simulator state store technology** — the guide requires a separate
-  process *and* state store but not its kind (own Postgres database,
-  SQLite, files). Decide at M2.
-- **Entity taxonomy detail** — "payment, authorization hold, capture,
-  refund and fulfillment are distinct records": the parent/child shape
-  (does an authorize create both a payment and a hold record?) is a
-  modelling decision for M1's schema.
-- **Capacity mechanism** — aggregate checks on the hold row, a capacity
-  column, or constraint-backed counters: the invariant is fixed, the
-  mechanism is M1's choice.
-- **Sandbox key format, scopes, rotation** and dashboard authentication —
-  "sandbox-only keys" and "isolate projects" are requirements without a
-  specified shape; project isolation mechanism (row-level security vs
-  application scoping) is likewise open.
-- **Webhook signature scheme** and key rotation — "signed webhooks" is
-  the requirement; the scheme is ours (HMAC is the default assumption).
-- **Where the reference fulfillment consumer lives** — `fixtures/` in
-  this repo or the CMS repository; the contract needs its inbox dedup
-  and business key proven somewhere at M3.
-- **Billing scenario order and definitions** — fees, settlement, payouts,
-  disputes, invoices, recurring plans are the full direction but
-  "incremental"; each contracts when reached in M5.
-- **Supported currencies and scales** — balancing is per currency, but
-  the sandbox currency set and scale policy are unspecified.
-- **Dataset reset confirmation mechanism** — "explicit confirmation" is
-  required; the shape (typed token, CLI flag, UI step) is open.
+- **D-010 — Currency set and scale.** The sandbox supports exactly USD (2
+  decimal places), EUR (2), JPY (0) and KWD (3). Amounts are `i64` minor
+  units with the exponent taken from a fixed table in `sandbox-domain`;
+  there is no FX, and a posting that mixes currencies is a named refusal.
+  A single operation amount is at most 10^12 minor units, so no sum of a
+  dataset's postings can overflow `i64` before the per-entry check does.
+  JPY and KWD widen the test surface; they are what proves scale is handled
+  rather than assumed.
+- **D-011 — Holds are two-phase journal postings.** Following the
+  two-phase transfer model the guide points to (TigerBeetle): authorize
+  posts *payer funding → payer held*; capture posts *payer held → merchant
+  pending*; void posts the uncaptured remainder *payer held → payer
+  funding* (a reversing entry); refund posts *merchant pending → payer
+  funding*. A payment is the parent record; every authorize, capture, void
+  and refund is its own operation record with its own identity; the
+  payment row carries the committed sums (authorized, captured, voided,
+  refunded) and the in-flight reservations. Fulfillment belongs to the
+  consumer, never to this ledger. Costs more postings than holds kept
+  outside the journal; buys pending balances that the journal can explain,
+  which the ship gate needs.
+- **D-012 — Chart of accounts.** Per project and currency: `payer_funding`
+  (the synthetic source; may run negative), `payer_held`,
+  `merchant_pending`, `merchant_available`, `fees`, `refunds_clearing` and
+  `network_settlement`. The chart is data in `sandbox-domain`, every
+  posting recipe is checked against it by property tests, and accounts not
+  yet used by a recipe (available, fees, clearing, settlement) are reserved
+  for the billing milestone.
+- **D-013 — Project isolation by composite keys.** Every row carries
+  `project_id`; primary keys are `(project_id, id)` and every foreign key
+  includes `project_id`, so a cross-project reference is impossible in the
+  schema, not merely unlikely in code. Repositories take a typed
+  `ProjectScope`. Row-level security may be added later as defence in
+  depth; composite keys cost nothing now.
+- **D-014 — Capacity is reserved under a row lock with checked sums.** A
+  capture, void or refund locks the payment row (`SELECT … FOR UPDATE`),
+  checks the remaining capacity, records the operation and increments the
+  matching reservation in one transaction. `CHECK` constraints hold
+  `captured + capture_reserved + voided + void_reserved ≤ authorized` and
+  `refunded + refund_reserved ≤ captured`, so even a code bug cannot
+  overrun. Payments serialize per row; the hot-payment and hot-account
+  races (D-027) measure that cost. SERIALIZABLE with retries was the
+  alternative; it aborts more under the 5× burst.
+- **D-015 — Operation identity is derived, never generated.** The
+  operation id is UUIDv5 over (project id, operation kind, the client's
+  `Idempotency-Key`), and the payment id is UUIDv5 over its authorize
+  operation id. A retry after the server database was restored to an
+  older backup therefore produces the *same* identity, and the simulator
+  answers it from its store instead of charging again. A reverse
+  reconciliation lists simulator operations the server does not know.
+  Server-generated UUIDs would double-charge after a restore.
+- **D-016 — Idempotency scope and binding.** Money-moving requests require
+  an `Idempotency-Key` header (1–255 visible ASCII characters). Its scope
+  is project × operation kind. The key binds to a SHA-256 hash of the
+  operation's canonical fields (kind, payment, amount, currency, token);
+  the same key with a different hash is `409 idempotency_key_conflict`,
+  the same key with the same hash replays the stored operation. Keys for
+  money-moving operations never expire within a dataset epoch (D-022).
+- **D-017 — Fenced readback.** "Not found" on readback is not proof of
+  non-execution: a delayed request could still arrive. The simulator's
+  readback writes a tombstone for an unknown operation id and refuses any
+  later request under it. Only a decline or a fenced "never executed"
+  releases a capacity reservation; an `uncertain` operation keeps its
+  reservation until one of those, so reservations cannot leak.
+- **D-018 — The simulator's store is its own SQLite file.** `sandbox-sim`
+  owns a SQLite database (WAL, `synchronous=FULL`) that nothing else opens.
+  It is a separate failure domain from the server's PostgreSQL, trivial to
+  seed and wipe, and makes the process boundary of D-002 honest. A second
+  PostgreSQL database would share the server's failure mode.
+- **D-019 — No card-number field exists anywhere.** Checkout offers a
+  scenario picker (approve, decline, uncertain …) that maps to synthetic
+  tokens `tok_sim_*`; the API accepts only those tokens. Any request field
+  named like card data (`number`, `card`, `cvc`, `cvv`, `exp_*`, `pan`) and
+  any digit run of 12–19 digits that passes the Luhn check, anywhere in a
+  request body, is rejected with `422 raw_card_data_rejected` before
+  parsing continues; the rejected value is never logged or persisted, and
+  a test proves both. Rejecting at the API alone would be too late for a
+  free-text field, because the number would already have reached us.
+- **D-020 — Webhook signatures.** HMAC-SHA256 over
+  `"{event_id}.{unix_timestamp}.{body}"`, sent as
+  `Sandbox-Signature: t=<unix>,v1=<hex>` with the event id in
+  `Sandbox-Event-Id`. Verifiers reject timestamps more than 300 s from
+  their clock (replay window). During a secret rotation both secrets sign
+  and the header carries two `v1=` values, so consumers can roll without
+  downtime. Signing secrets (`whsec_sim_…`) are encrypted at rest with
+  ChaCha20-Poly1305 under a server key — they cannot be hashed because the
+  server must compute HMACs with them. This corrects the earlier blanket
+  rule "secrets are hashed": API keys are hashed, signing secrets are
+  encrypted. Header names deliberately differ from any real processor's.
+- **D-021 — Sandbox keys, scopes and rotation.** Keys are `sk_sim_`
+  followed by 32 random bytes in lowercase hex; only their SHA-256 hash is
+  stored (fine for high-entropy keys) and the plaintext is shown once.
+  Scopes: `read`, `payments:write`, `admin` (keys, webhooks, dataset
+  reset). Rotation means creating a second key and revoking the first;
+  several keys may be active. Projects are created by an operator with a
+  bootstrap token configured on the server (local/CI deployment, D-022).
+  Dashboard sign-in is decided with the dashboard milestone.
+- **D-022 — Dataset reset is a new epoch, not a delete.** A reset bumps the
+  project's `dataset_epoch`; earlier journal rows stay immutable and
+  archived, current reads and idempotency scopes use the new epoch. It
+  requires the `admin` scope, a typed confirmation of the project slug in
+  CLI and UI, and writes an audit row. Immutability holds within and
+  across epochs.
+- **D-023 — Deployment mode: local and CI only.** The first releases are
+  self-hosted for development machines and CI. In this mode outbound
+  webhook delivery may reach loopback addresses only; every other target,
+  including private ranges, link-local and anything a redirect points to,
+  is refused at connect time after DNS resolution. A hosted mode comes
+  later, with a private-range guard and no loopback exception.
+- **D-024 — The development store is `fixtures/dev-store`.** The reference
+  fulfillment consumer lives in this repository and *is* the "development
+  store" the ship gate needs: it receives signed webhooks, deduplicates in
+  its own inbox, re-reads payment state from the API, and fulfills under
+  its own unique business key. Colophon's commerce is parked, so a CMS
+  adapter is optional later and integrates only through public APIs.
+- **D-025 — Thin events with a per-payment sequence.** Each webhook event
+  carries `{id, type, payment_id, sequence, simulated: true}`; consumers
+  re-read the payment from the API on receipt, so duplicated or reordered
+  deliveries converge on current state. Every payload and response carries
+  `"simulated": true`, and the SDK refuses production-looking
+  configuration unless explicitly overridden.
+- **D-026 — Failure drills are assigned, and three of them are distinct.**
+  "Crash, clock jump or backup restore" is three drills: (a) *process
+  crash* — the server killed after the simulator accepted an operation but
+  before the result was stored (M3); (b) *clock jump* — the simulator's
+  virtual clock jumped forward and back must not change posted journal
+  history (M3), and a server wall-clock jump against outbox leases may
+  cause a duplicate delivery but never a lost or corrupt one (M4);
+  (c) *backup restore* — the server's PostgreSQL restored from a logical
+  dump taken before an operation, with a newer simulator store; a client
+  retry must reconcile without a second charge (M3).
+- **D-027 — Two hot races.** "Hot-account refund race" means one
+  merchant account receiving many concurrent partial refunds across many
+  payments; "hot-payment race" means many concurrent partial refunds
+  (or captures) against one payment. Both are tested and measured; the
+  named example is 64 concurrent refunds of 10 against 300 captured:
+  exactly 30 succeed and 34 fail with `insufficient_capacity`.
+- **D-028 — Account balances are summed from the journal.** No account
+  balance row is updated per posting: a single hot row would serialize
+  every capture in a project behind one lock held through commit. Account
+  balances are computed from `journal_lines` (indexed by project, account)
+  and checkpointed by reconciliation; per-payment sums live on the payment
+  row and are reconciled to the journal. A mismatch is a defect.
+- **D-029 — Checkout and dashboard get separate origins.** Checkout renders
+  merchant-supplied strings to payers; the dashboard holds the merchant's
+  session. They are served by the Rust server on separate listeners
+  (separate origins) with a strict CSP on checkout, so an XSS in checkout
+  cannot reach a dashboard session. This replaces the "same origin" line.
+- **D-030 — Versioned ledger semantics.** `sandbox-domain` exports
+  `LEDGER_SEMANTICS_VERSION`; it changes whenever a posting recipe or the
+  chart changes meaning, every journal entry records the version it was
+  posted under, and the API is versioned under `/v1`. Migrations get
+  restore tests from milestone 3 on.
+- **D-031 — Milestones are finer, and "Done" cites evidence.** The roadmap
+  splits the work into M0–M8 so that each milestone carries its own
+  failure drills and load scenario. A status cell says Done only when it
+  names the tests and the evidence path. Asynchronous simulator outcomes
+  (settlement, disputes, authorization expiry on virtual time) need a
+  server-side inbox; that is scheduled with the billing milestone, not
+  forgotten.
+- **D-032 — Webhook egress, retries and bounds.** One delivery attempt has
+  a 5 s deadline and a 64 KiB response-read cap; retries use exponential
+  backoff with full jitter from 1 s to 10 min, at most 12 attempts, after
+  which the delivery is `dead` and visible. The deliverer claims work
+  under a lease with a fencing token, so a stale worker cannot overwrite a
+  newer attempt's result. Redirects are never followed.
+
+## Open questions (still open)
+
+- **Dashboard authentication** — per-project-owner session login is the
+  default assumption; decided with the dashboard milestone.
+- **Billing scenario order and definitions** — the default order is
+  settlement → fees → payouts → disputes → invoices → recurring, because
+  each later scenario reads settled balances; each gets its own contract
+  when reached.
+- **Hosted mode** — quotas per project, the private-range egress guard and
+  sign-up abuse limits, if a hosted instance is ever offered.

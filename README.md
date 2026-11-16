@@ -17,13 +17,14 @@ banking connection.
   non-negotiable invariants, the four required failure cases, the ship gate
 - `docs/ARCHITECTURE.md` — sources of truth, authorize/capture/refund/webhook/
   recovery paths, repository layout, the consistency story
-- `docs/ROADMAP.md` — M0 accounting core → M5 billing direction, each with its
+- `docs/ROADMAP.md` — M0 the spine → M8 billing direction, each with its
   proof gate
 - `docs/DECISIONS.md` — seeded design trade-offs (D-001..) and the open
   questions the guide deliberately leaves us
 
-Contract: workspace `Project_Guides/05_Payment_Sandbox.docx` — extract with
-`textutil -convert txt -stdout "Project_Guides/05_Payment_Sandbox.docx"`.
+Contract: the workspace engineering guide
+`docs/Project_Guides/05_Payment_Sandbox.docx` (kept outside this
+repository) — extract with `textutil -convert txt -stdout <file>`.
 
 ## What counts as done
 
