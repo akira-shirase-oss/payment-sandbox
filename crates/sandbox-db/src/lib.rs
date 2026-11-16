@@ -16,6 +16,7 @@ pub mod projects;
 pub mod reconcile;
 #[cfg(feature = "test-support")]
 pub mod testing;
+pub mod webhooks;
 
 pub use error::DbError;
 pub use pool::{PoolSettings, connect_lazy};

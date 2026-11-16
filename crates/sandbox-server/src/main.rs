@@ -32,8 +32,17 @@ async fn main() -> anyhow::Result<()> {
     let (stop_reconciler, reconciler_stop) = sandbox_server::reconciler::shutdown_channel();
     let reconciler = tokio::spawn(sandbox_server::reconciler::run(
         state.clone(),
-        reconciler_stop,
+        reconciler_stop.clone(),
     ));
+    // The deliverer, when webhooks are on (PS_SECRET_KEY).
+    let deliverer = sandbox_server::deliverer::Deliverer::new(
+        &state,
+        std::sync::Arc::new(sandbox_server::deliverer::SystemClock),
+    )
+    .map(|d| tokio::spawn(d.run(reconciler_stop)));
+    if deliverer.is_none() {
+        tracing::warn!("webhooks are off: set PS_SECRET_KEY (64 hex characters) to deliver events");
+    }
     tracing::info!(%local, "listening");
 
     let outcome = shutdown::serve(listener, app, grace, async move {
@@ -54,6 +63,13 @@ async fn main() -> anyhow::Result<()> {
         .is_err()
     {
         tracing::warn!("the reconciler did not stop within 5 s");
+    }
+    if let Some(deliverer) = deliverer
+        && tokio::time::timeout(Duration::from_secs(5), deliverer)
+            .await
+            .is_err()
+    {
+        tracing::warn!("the deliverer did not stop within 5 s");
     }
     db.close().await;
     Ok(())

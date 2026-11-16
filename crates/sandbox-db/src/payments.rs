@@ -28,7 +28,7 @@ macro_rules! payment_columns {
     () => {
         "id, authorize_operation_id, currency, amount_minor, token, description, status,
          authorized_minor, captured_minor, capture_reserved_minor, voided_minor, void_reserved_minor,
-         refunded_minor, refund_reserved_minor, decline_code, created_at, updated_at"
+         refunded_minor, refund_reserved_minor, decline_code, created_at, updated_at, event_sequence"
     };
 }
 
@@ -66,6 +66,8 @@ pub struct Payment {
     /// Last changed (database clock).
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
+    /// Sequence of the payment's latest event.
+    pub event_sequence: i64,
 }
 
 /// An operation.
@@ -417,7 +419,8 @@ pub async fn apply(
          UPDATE payments
             SET authorized_minor = $4, captured_minor = $5, capture_reserved_minor = $6,
                 voided_minor = $7, void_reserved_minor = $8, refunded_minor = $9,
-                refund_reserved_minor = $10, status = $11, decline_code = $16, updated_at = now()
+                refund_reserved_minor = $10, status = $11, decline_code = $16, updated_at = now(),
+                event_sequence = event_sequence + CASE WHEN $15 THEN 1 ELSE 0 END
           WHERE project_id = $1 AND id = $2
           RETURNING ",
         payment_columns!(),
@@ -442,6 +445,9 @@ pub async fn apply(
     .fetch_one(&mut *tx)
     .await?;
     let payment = payment_from(&row)?;
+    if resolved {
+        emit_event(&mut tx, scope, &payment, &operation, next_state).await?;
+    }
     tx.commit().await?;
     let operation = Operation {
         state: next_state,
@@ -452,6 +458,43 @@ pub async fn apply(
         ..operation
     };
     Ok(Applied::Applied(operation, payment))
+}
+
+/// Commits the resolution's event and one delivery per active endpoint, in the caller's
+/// transaction (the outbox, D-006). The event id is derived from the operation, so a
+/// re-applied resolution (after a restore) re-creates the same event id and consumers
+/// deduplicate it.
+async fn emit_event(
+    tx: &mut PgConnection,
+    scope: ProjectScope,
+    payment: &Payment,
+    operation: &Operation,
+    state: OperationState,
+) -> Result<(), DbError> {
+    let event_id = Uuid::new_v5(
+        &sandbox_domain::identity::NAMESPACE,
+        format!("event/v1/{}", operation.id).as_bytes(),
+    );
+    sqlx::query(
+        "WITH e AS (
+             INSERT INTO events (project_id, id, dataset_epoch, payment_id, operation_id, kind, sequence)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             RETURNING project_id, id
+         )
+         INSERT INTO deliveries (project_id, event_id, endpoint_id)
+         SELECT e.project_id, e.id, w.id
+           FROM e JOIN webhook_endpoints w ON w.project_id = e.project_id AND w.disabled_at IS NULL",
+    )
+    .bind(scope.project_id)
+    .bind(event_id)
+    .bind(scope.epoch)
+    .bind(payment.id)
+    .bind(operation.id)
+    .bind(format!("{}.{}", operation.kind.code(), state.code()))
+    .bind(payment.event_sequence)
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
 }
 
 /// The payment's sums and decline code after `operation` moves to `next_state`.
@@ -667,6 +710,7 @@ fn payment_from(row: &PgRow) -> Result<Payment, DbError> {
         decline_code: row.try_get("decline_code")?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
+        event_sequence: row.try_get("event_sequence")?,
     })
 }
 

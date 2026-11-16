@@ -217,7 +217,7 @@ pub(crate) async fn apply_with_retry(
 }
 
 /// A uniformly random duration in `[0, ceiling]` (full jitter).
-fn full_jitter(ceiling: std::time::Duration) -> std::time::Duration {
+pub(crate) fn full_jitter(ceiling: std::time::Duration) -> std::time::Duration {
     let mut bytes = [0_u8; 8];
     if getrandom::fill(&mut bytes).is_err() {
         return ceiling;

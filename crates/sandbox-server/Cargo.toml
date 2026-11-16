@@ -23,7 +23,9 @@ required-features = ["fault-injection"]
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
+chacha20poly1305.workspace = true
 getrandom.workspace = true
+hex.workspace = true
 reqwest.workspace = true
 sandbox-db.workspace = true
 sandbox-domain.workspace = true

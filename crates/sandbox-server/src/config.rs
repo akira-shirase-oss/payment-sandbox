@@ -75,6 +75,10 @@ pub struct Config {
     pub reconcile_grace: Duration,
     /// Most operations one sweep examines.
     pub reconcile_batch: i64,
+    /// Key that encrypts webhook signing secrets (64 hex); webhooks are off without it.
+    pub secret_key: Option<Secret>,
+    /// How often the deliverer looks for due deliveries when idle.
+    pub delivery_poll: Duration,
     /// Deadline of one call to the simulated network. A call that misses it is `unknown`,
     /// and the operation stays `uncertain` until readback.
     pub sim_timeout: Duration,
@@ -127,7 +131,14 @@ impl Config {
             u64::try_from(sim_timeout.as_millis().saturating_add(1_000)).unwrap_or(u64::MAX);
         let reconcile_grace = parse.millis("PS_RECONCILE_GRACE_MS", grace_default);
         let reconcile_batch: i64 = parse.value("PS_RECONCILE_BATCH", Some(200));
+        let delivery_poll = parse.millis("PS_DELIVERY_POLL_MS", 250);
+        let secret_key = lookup("PS_SECRET_KEY");
         let migrate_on_start: bool = parse.value("PS_MIGRATE", Some(true));
+        if let Some(key) = &secret_key
+            && crate::secrets::SecretBox::from_hex(key).is_err()
+        {
+            errors.push("PS_SECRET_KEY must be 64 hex characters (32 bytes)".to_owned());
+        }
         let log_format = match lookup("PS_LOG_FORMAT").as_deref() {
             None | Some("json") => LogFormat::Json,
             Some("pretty") => LogFormat::Pretty,
@@ -170,6 +181,8 @@ impl Config {
             reconcile_interval,
             reconcile_grace,
             reconcile_batch: reconcile_batch.clamp(1, 10_000),
+            secret_key: secret_key.map(Secret::new),
+            delivery_poll,
         };
         // Every problem at once: parse errors and cross-field rules together.
         errors.extend(config.problems());

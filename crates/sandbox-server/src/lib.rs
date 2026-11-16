@@ -6,6 +6,7 @@
 
 pub mod auth;
 pub mod config;
+pub mod deliverer;
 pub mod error;
 pub mod extract;
 pub mod faults;
@@ -16,6 +17,7 @@ pub mod middleware;
 pub mod network;
 pub mod reconciler;
 pub mod routes;
+pub mod secrets;
 pub mod shutdown;
 pub mod state;
 pub mod telemetry;

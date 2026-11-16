@@ -52,6 +52,19 @@ pub fn app(state: &AppState) -> Router {
             "/v1/reconciliation",
             get(handlers::payments::reconciliation),
         )
+        .route(
+            "/v1/webhook_endpoints",
+            get(handlers::webhooks::list).post(handlers::webhooks::create),
+        )
+        .route(
+            "/v1/webhook_endpoints/{endpoint_id}/rotate",
+            post(handlers::webhooks::rotate),
+        )
+        .route(
+            "/v1/webhook_endpoints/{endpoint_id}/disable",
+            post(handlers::webhooks::disable),
+        )
+        .route("/v1/events", get(handlers::webhooks::events))
         .route_layer(axum_mw::from_fn_with_state(
             state.gate.clone(),
             middleware::shed_load,

@@ -23,6 +23,9 @@ anyhow = "1.0.104"
 getrandom = "0.3.4"
 axum = "0.8.9"
 hex = "0.4.3"
+hmac = "0.13"
+# Webhook signing secrets are encrypted at rest (D-020).
+chacha20poly1305 = "0.10.1"
 proptest = "1.12.0"
 # The simulated network's own store (D-034): pure-Rust, ACID, crash-safe, no C library.
 redb = "4.5.0"

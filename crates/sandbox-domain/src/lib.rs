@@ -17,6 +17,7 @@
 //! - [`keys`]: `sk_sim_` keys, scopes and hashing (D-021).
 //! - [`project`]: project slugs and names.
 //! - [`network`]: the `sim/v1` wire protocol to the simulated network.
+//! - [`webhook`]: event payloads, signatures (D-020), retry schedule (D-032), egress policy (D-023).
 // Money code may not use unchecked arithmetic; tests may (overflow panics there and fails the test).
 #![cfg_attr(not(test), warn(clippy::arithmetic_side_effects))]
 
@@ -33,6 +34,7 @@ pub mod payment;
 pub mod project;
 pub mod recipe;
 pub mod scenario;
+pub mod webhook;
 
 pub use account::{AccountKind, Side};
 pub use currency::Currency;

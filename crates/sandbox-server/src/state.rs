@@ -8,6 +8,7 @@ use tokio::sync::Semaphore;
 use crate::config::Config;
 use crate::locks::PaymentLocks;
 use crate::network::Network;
+use crate::secrets::SecretBox;
 
 /// Everything a handler may need.
 #[derive(Debug, Clone)]
@@ -22,6 +23,8 @@ pub struct AppState {
     pub network: Network,
     /// Per-payment queues ahead of the database (D-033).
     pub payment_locks: Arc<PaymentLocks>,
+    /// Webhook secret encryption; `None` disables webhooks.
+    pub secrets: Option<Arc<SecretBox>>,
 }
 
 impl AppState {
@@ -38,7 +41,13 @@ impl AppState {
         )]
         let network = Network::new(&config.sim_url, config.sim_timeout)
             .expect("invariant: HTTP client builds");
+        let secrets = config
+            .secret_key
+            .as_ref()
+            .and_then(|key| SecretBox::from_hex(key.expose()).ok())
+            .map(Arc::new);
         Self {
+            secrets,
             db,
             config: Arc::new(config),
             gate,
