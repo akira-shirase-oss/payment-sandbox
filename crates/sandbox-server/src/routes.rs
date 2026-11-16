@@ -26,6 +26,32 @@ pub fn app(state: &AppState) -> Router {
             get(handlers::keys::list).post(handlers::keys::create),
         )
         .route("/v1/keys/{key_id}/revoke", post(handlers::keys::revoke))
+        .route(
+            "/v1/payments",
+            get(handlers::payments::list).post(handlers::payments::create),
+        )
+        .route("/v1/payments/{payment_id}", get(handlers::payments::get))
+        .route(
+            "/v1/payments/{payment_id}/journal",
+            get(handlers::payments::journal),
+        )
+        .route(
+            "/v1/payments/{payment_id}/captures",
+            post(handlers::payments::capture),
+        )
+        .route(
+            "/v1/payments/{payment_id}/void",
+            post(handlers::payments::void),
+        )
+        .route(
+            "/v1/payments/{payment_id}/refunds",
+            post(handlers::payments::refund),
+        )
+        .route("/v1/balances", get(handlers::payments::balances))
+        .route(
+            "/v1/reconciliation",
+            get(handlers::payments::reconciliation),
+        )
         .route_layer(axum_mw::from_fn_with_state(
             state.gate.clone(),
             middleware::shed_load,

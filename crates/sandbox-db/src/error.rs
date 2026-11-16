@@ -29,6 +29,15 @@ pub enum DbError {
 }
 
 impl DbError {
+    /// True for failures a retry of the same transaction may clear: an unavailable pool or
+    /// connection, a statement or lock deadline, a serialization failure or deadlock.
+    pub const fn is_transient(&self) -> bool {
+        matches!(
+            self,
+            Self::Unavailable(_) | Self::Timeout(_) | Self::Retryable(_)
+        )
+    }
+
     /// The PostgreSQL SQLSTATE of the underlying error, if any.
     pub fn sqlstate(&self) -> Option<String> {
         match self {
@@ -58,6 +67,7 @@ impl From<sqlx::Error> for DbError {
                     "PSJ01" => Self::JournalRefused("append-only"),
                     "PSJ02" => Self::JournalRefused("unbalanced or foreign lines"),
                     "PSJ03" => Self::JournalRefused("entry without lines"),
+                    "PSO01" => Self::JournalRefused("operation already resolved"),
                     // unique, foreign key, check, not null
                     "23505" | "23503" | "23514" | "23502" => {
                         let constraint = db.constraint().unwrap_or("unnamed").to_owned();

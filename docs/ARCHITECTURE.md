@@ -20,7 +20,7 @@
 | `sandbox-domain` | Pure: `Money` (checked integers + explicit currency scale), account kinds, posting recipes, operation state machines, capacity rules, named refusals. No I/O — enforced. |
 | `sandbox-db` | SQLx: migrations, journal append, hold/capacity transactions, idempotency + inbox/outbox, reconciliation queries. |
 | `sandbox-server` | Axum API: payments, holds, captures, refunds, dashboard serving, project isolation, sandbox keys; the bounded outbox deliverer (lease, deadline, jitter retries). |
-| `sandbox-sim` | **Separate process with its own state store**: approvals, declines and uncertain outcomes; seeded failure scenarios; virtual billing time; readback endpoint keyed by operation identity. |
+| `sandbox-sim` | **Separate process with its own state store** (a redb file, D-034): approvals, declines and uncertain outcomes by `tok_sim_*` scenario token; its own capacity checks against its own record; fenced readback (D-017); listing for reverse reconciliation; virtual test clock; test-only fault rules (delay, lost reply, unavailable). One writer thread, bounded queue, group commit. |
 | `sandbox-cli` | Rust CLI: create payment, capture, refund, inspect operations and the ledger, confirmed dataset reset. |
 | `packages/sdk-ts` | TypeScript SDK for test stores. |
 | `apps/checkout` | SvelteKit test checkout — the payer-facing sandbox page a test store redirects to. |
@@ -71,6 +71,22 @@ operations whose identity the server does not know (its database was
 restored to an earlier point); they are reported, and a client retry
 under the same key re-derives the same identity and applies the
 simulator's stored result once.
+
+**Hot payments:** requests for one payment take a turn on an in-process
+queue (1,024 fair async mutexes keyed by payment id) *before* they take a
+database connection, so waiters for a hot row never hold pooled
+connections; the wait is bounded and an expired wait is
+`503 payment_busy` (D-033). Recording the network's answer is retried on
+transient database failures with exponential backoff and full jitter.
+
+## Ports (all loopback, D-023)
+
+| Port | Process |
+|---|---|
+| 56432 | PostgreSQL (`deploy/compose.yaml`, compose project `payment-sandbox`) |
+| 56080 | `sandbox-server` API |
+| 56081 | `sandbox-sim` |
+| 56090 / 56091 | server / simulator during load runs (`scripts/load.sh`) |
 
 ## Consistency story
 

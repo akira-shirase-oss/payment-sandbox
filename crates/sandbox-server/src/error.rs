@@ -59,6 +59,8 @@ pub enum ErrorCode {
     Conflict,
     /// Too many requests in flight.
     Overloaded,
+    /// Too many requests queued for one payment; retry with the same key.
+    PaymentBusy,
     /// The request deadline elapsed.
     DeadlineExceeded,
     /// A dependency (the database) is unavailable.
@@ -167,6 +169,11 @@ pub enum ApiError {
     /// Shed.
     #[error("too many requests in flight; retry shortly")]
     Overloaded,
+    /// One payment's queue is too long.
+    #[error(
+        "this payment is busy with other requests; retry shortly with the same Idempotency-Key"
+    )]
+    PaymentBusy,
     /// Dependency down.
     #[error("the database is unavailable; retry shortly")]
     Unavailable(#[source] anyhow::Error),
@@ -210,9 +217,10 @@ impl ApiError {
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::RouteNotFound | Self::NotFound(_) => StatusCode::NOT_FOUND,
-            Self::Overloaded | Self::Unavailable(_) | Self::DatabaseTimeout(_) => {
-                StatusCode::SERVICE_UNAVAILABLE
-            }
+            Self::Overloaded
+            | Self::PaymentBusy
+            | Self::Unavailable(_)
+            | Self::DatabaseTimeout(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -238,6 +246,7 @@ impl ApiError {
             Self::InvalidState(_) => ErrorCode::InvalidState,
             Self::Conflict(_) => ErrorCode::Conflict,
             Self::Overloaded => ErrorCode::Overloaded,
+            Self::PaymentBusy => ErrorCode::PaymentBusy,
             Self::Unavailable(_) => ErrorCode::Unavailable,
             Self::DatabaseTimeout(_) => ErrorCode::DeadlineExceeded,
             Self::Internal(_) => ErrorCode::Internal,
@@ -264,7 +273,7 @@ impl ApiError {
                 let cause = format!("{cause:#}");
                 tracing::warn!(?code, %cause, "dependency failure");
             }
-            Self::Overloaded => tracing::warn!(?code, "request shed"),
+            Self::Overloaded | Self::PaymentBusy => tracing::warn!(?code, "request shed"),
             // The message of these is fixed text; the rejected value is never logged.
             Self::RawCardData => tracing::warn!(?code, "request with card data rejected"),
             _ => tracing::debug!(?code, "request rejected"),
@@ -289,7 +298,7 @@ impl IntoResponse for ApiError {
         let mut response = render(self.status(), &self.public(), None);
         if matches!(
             self,
-            Self::Overloaded | Self::Unavailable(_) | Self::DatabaseTimeout(_)
+            Self::Overloaded | Self::PaymentBusy | Self::Unavailable(_) | Self::DatabaseTimeout(_)
         ) {
             response
                 .headers_mut()

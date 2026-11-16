@@ -14,6 +14,7 @@ publish = false
 [workspace.dependencies]
 sandbox-domain = { path = "crates/sandbox-domain" }
 sandbox-db = { path = "crates/sandbox-db" }
+sandbox-sim = { path = "crates/sandbox-sim" }
 
 # External crates: versions live here only. Minimal features; one async runtime (Tokio);
 # no TLS stack (everything this sandbox talks to is on loopback, D-023).
@@ -23,6 +24,10 @@ getrandom = "0.3.4"
 axum = "0.8.9"
 hex = "0.4.3"
 proptest = "1.12.0"
+# The simulated network's own store (D-034): pure-Rust, ACID, crash-safe, no C library.
+redb = "4.5.0"
+# HTTP client to the simulated network: plain HTTP on loopback, no TLS, no proxies.
+reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11"

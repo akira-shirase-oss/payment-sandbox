@@ -255,6 +255,7 @@ async fn slow_handlers_hit_the_deadline_and_panics_become_opaque_500s() {
         &[
             ("PS_REQUEST_TIMEOUT_MS", "300"),
             ("PS_DB_STATEMENT_TIMEOUT_MS", "100"),
+            ("PS_SIM_TIMEOUT_MS", "50"),
         ],
     );
     let st = state(cfg.clone());

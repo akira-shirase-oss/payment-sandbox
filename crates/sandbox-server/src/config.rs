@@ -65,6 +65,13 @@ pub struct Config {
     pub log_filter: String,
     /// Operator token that may create projects (`POST /v1/projects`); unset disables it.
     pub bootstrap_token: Option<Secret>,
+    /// Base URL of the simulated network; loopback only (D-023).
+    pub sim_url: String,
+    /// Longest a request waits for its payment's turn before it is shed (D-033).
+    pub payment_queue_wait: Duration,
+    /// Deadline of one call to the simulated network. A call that misses it is `unknown`,
+    /// and the operation stays `uncertain` until readback.
+    pub sim_timeout: Duration,
 }
 
 /// Every configuration problem found, reported together.
@@ -99,14 +106,16 @@ impl Config {
         let pool = PoolSettings {
             max_connections: parse.value("PS_DB_MAX_CONNECTIONS", Some(32)),
             acquire_timeout: parse.millis("PS_DB_ACQUIRE_TIMEOUT_MS", 1_000),
-            statement_timeout: parse.millis("PS_DB_STATEMENT_TIMEOUT_MS", 2_000),
-            lock_timeout: parse.millis("PS_DB_LOCK_TIMEOUT_MS", 1_000),
+            statement_timeout: parse.millis("PS_DB_STATEMENT_TIMEOUT_MS", 1_000),
+            lock_timeout: parse.millis("PS_DB_LOCK_TIMEOUT_MS", 500),
         };
         let request_timeout = parse.millis("PS_REQUEST_TIMEOUT_MS", 5_000);
         let max_body_bytes: usize = parse.value("PS_MAX_BODY_BYTES", Some(16 * 1024));
         let max_in_flight: usize = parse.value("PS_MAX_IN_FLIGHT", Some(512));
         let readiness_timeout = parse.millis("PS_READINESS_TIMEOUT_MS", 500);
         let shutdown_grace = parse.millis("PS_SHUTDOWN_GRACE_MS", 10_000);
+        let sim_timeout = parse.millis("PS_SIM_TIMEOUT_MS", 2_000);
+        let payment_queue_wait = parse.millis("PS_PAYMENT_QUEUE_WAIT_MS", 1_000);
         let migrate_on_start: bool = parse.value("PS_MIGRATE", Some(true));
         let log_format = match lookup("PS_LOG_FORMAT").as_deref() {
             None | Some("json") => LogFormat::Json,
@@ -117,6 +126,13 @@ impl Config {
             }
         };
         let log_filter = lookup("PS_LOG").unwrap_or_else(|| "info".to_owned());
+        let sim_url = lookup("PS_SIM_URL").unwrap_or_else(|| "http://127.0.0.1:56081".to_owned());
+        if !is_loopback_http(&sim_url) {
+            errors.push(
+                "PS_SIM_URL must be http://127.0.0.1:<port> or http://localhost:<port>: the network is a local process (D-023)"
+                    .to_owned(),
+            );
+        }
         let bootstrap_token = lookup("PS_BOOTSTRAP_TOKEN");
         if let Some(token) = &bootstrap_token
             && (token.len() < 32 || token.chars().any(|c| c.is_whitespace() || c.is_control()))
@@ -145,6 +161,12 @@ impl Config {
                     .to_owned(),
             );
         }
+        if sim_timeout.saturating_add(pool.statement_timeout.saturating_mul(2)) >= request_timeout {
+            errors.push(
+                "PS_REQUEST_TIMEOUT_MS must exceed PS_SIM_TIMEOUT_MS plus two statement timeouts, so a request can record what the network said"
+                    .to_owned(),
+            );
+        }
         if !errors.is_empty() {
             return Err(ConfigError(errors));
         }
@@ -161,8 +183,23 @@ impl Config {
             log_format,
             log_filter,
             bootstrap_token: bootstrap_token.map(Secret::new),
+            sim_url: sim_url.trim_end_matches('/').to_owned(),
+            sim_timeout,
+            payment_queue_wait,
         })
     }
+}
+
+/// True for `http://127.0.0.1:<port>`, `http://[::1]:<port>` or `http://localhost:<port>`.
+fn is_loopback_http(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+    let host_port = rest.split('/').next().unwrap_or("");
+    let Some((host, port)) = host_port.rsplit_once(':') else {
+        return false;
+    };
+    port.parse::<u16>().is_ok() && matches!(host, "127.0.0.1" | "[::1]" | "localhost")
 }
 
 struct Parser<'a, F: Fn(&str) -> Option<String>> {
@@ -218,6 +255,31 @@ mod tests {
         assert_eq!(c.max_body_bytes, 16 * 1024);
         assert!(c.request_timeout > c.pool.statement_timeout);
         assert_eq!(format!("{:?}", c.database_url), "Secret(<redacted>)");
+    }
+
+    #[test]
+    fn the_network_must_be_a_loopback_process() {
+        for url in [
+            "http://127.0.0.1:56081",
+            "http://localhost:9",
+            "http://[::1]:56081/",
+        ] {
+            assert!(is_loopback_http(url), "{url}");
+        }
+        for url in [
+            "https://127.0.0.1:56081",
+            "http://10.0.0.1:56081",
+            "http://example.com:80",
+            "http://127.0.0.1",
+        ] {
+            assert!(!is_loopback_http(url), "{url}");
+        }
+        let err = config(&[
+            ("PS_DATABASE_URL", "x"),
+            ("PS_SIM_URL", "http://api.example.com:443"),
+        ])
+        .unwrap_err();
+        assert!(err.to_string().contains("PS_SIM_URL"), "{err}");
     }
 
     #[test]

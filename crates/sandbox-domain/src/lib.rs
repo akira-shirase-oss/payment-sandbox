@@ -16,6 +16,7 @@
 //! - [`scenario`]: synthetic `tok_sim_*` tokens and the scenarios they select.
 //! - [`keys`]: `sk_sim_` keys, scopes and hashing (D-021).
 //! - [`project`]: project slugs and names.
+//! - [`network`]: the `sim/v1` wire protocol to the simulated network.
 // Money code may not use unchecked arithmetic; tests may (overflow panics there and fails the test).
 #![cfg_attr(not(test), warn(clippy::arithmetic_side_effects))]
 
@@ -26,6 +27,7 @@ pub mod identity;
 pub mod journal;
 pub mod keys;
 pub mod money;
+pub mod network;
 pub mod operation;
 pub mod payment;
 pub mod project;

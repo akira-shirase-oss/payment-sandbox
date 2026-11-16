@@ -21,3 +21,5 @@ database and (from M2) the simulated network all listen on loopback.
 |---|---|---|---|
 | `m0-probes` | M0 | liveness (no I/O) and readiness (one PostgreSQL round trip), 4:1 | owed: machine busy at M0 (load average 462 during the smoke) |
 | `m1-auth` | M1 | authenticated project reads: key hash + lookup per request, two projects | owed: machine busy at M1 (load average 130–256 during the smoke) |
+| `m2-lifecycle` | M2 | two projects; authorize, capture 600, refund 200 at 100 purchases/s with 5× bursts; then reconciliation | owed; the busy-machine smoke (load 33–43) was correct (0 failed, reconciliation clean) but missed its latency thresholds |
+| `m2-refund-race` | M2 | the hot-account and hot-payment refund races (D-027): exact admitted count, then reconciliation | owed; the busy-machine smoke passed (630 admitted exactly, refund p99 39 ms) |

@@ -9,6 +9,9 @@
 )]
 
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
     Router,
@@ -20,6 +23,78 @@ use sandbox_db::testing::TestDb;
 use sandbox_server::{AppState, Config, app};
 use serde_json::{Value, json};
 use tower::ServiceExt;
+
+/// A simulated network on a random loopback port with its own SQLite file: the same HTTP
+/// boundary and store the separate process uses (the process-kill drills run the server as
+/// a real child process; see `tests/drills.rs`).
+pub struct TestSim {
+    pub url: String,
+    pub store: sandbox_sim::store::Store,
+    pub faults: Arc<sandbox_sim::faults::Faults>,
+    pub path: PathBuf,
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl TestSim {
+    pub async fn start() -> Self {
+        let path =
+            std::env::temp_dir().join(format!("ps-sim-{}.redb", uuid::Uuid::now_v7().simple()));
+        Self::start_at(path, Duration::from_secs(3)).await
+    }
+
+    /// Starts (or restarts) a network on an existing store file.
+    pub async fn start_at(path: PathBuf, lost_reply_hold: Duration) -> Self {
+        let store = sandbox_sim::store::Store::open(&path).await.unwrap();
+        let faults = Arc::new(sandbox_sim::faults::Faults::default());
+        let state = sandbox_sim::SimState {
+            store: store.clone(),
+            faults: faults.clone(),
+            lost_reply_hold,
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            let _ = sandbox_sim::serve(listener, state, Duration::from_millis(200), async move {
+                let _ = rx.await;
+            })
+            .await;
+        });
+        Self {
+            url,
+            store,
+            faults,
+            path,
+            stop: Some(tx),
+            task: Some(task),
+        }
+    }
+
+    pub fn fault(&self, rule: serde_json::Value) {
+        let rule: sandbox_sim::faults::FaultRule = serde_json::from_value(rule).unwrap();
+        self.faults.add(rule).unwrap();
+    }
+
+    /// Stops serving but keeps the store file (a process restart reopens it).
+    pub async fn stop(mut self) -> PathBuf {
+        if let Some(tx) = self.stop.take() {
+            let _ = tx.send(());
+        }
+        if let Some(task) = self.task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+        self.store.close().await;
+        self.path.clone()
+    }
+
+    /// Stops and deletes the store.
+    pub async fn remove(self) {
+        let path = self.stop().await;
+        let _ = std::fs::remove_file(path);
+    }
+}
 
 /// The operator token the test apps are configured with.
 pub const BOOTSTRAP: &str = "test-bootstrap-token-0123456789abcdef";
@@ -33,7 +108,26 @@ pub struct TestApp {
 
 impl TestApp {
     pub async fn new(extra: &[(&str, &str)]) -> Self {
-        let db = TestDb::new().await;
+        Self::on(TestDb::new().await, extra)
+    }
+
+    /// An app talking to `sim`, with deadlines generous enough for a busy test machine:
+    /// the races below test correctness, and a lock timeout would turn a would-be success
+    /// into a 503 (the load runs measure the production deadlines).
+    pub async fn with_sim(sim: &TestSim, extra: &[(&str, &str)]) -> Self {
+        let mut vars = vec![
+            ("PS_SIM_URL", sim.url.as_str()),
+            ("PS_DB_ACQUIRE_TIMEOUT_MS", "15000"),
+            ("PS_DB_STATEMENT_TIMEOUT_MS", "10000"),
+            ("PS_DB_LOCK_TIMEOUT_MS", "10000"),
+            ("PS_REQUEST_TIMEOUT_MS", "60000"),
+            ("PS_PAYMENT_QUEUE_WAIT_MS", "30000"),
+        ];
+        vars.extend_from_slice(extra);
+        Self::on(TestDb::new().await, &vars)
+    }
+
+    pub fn on(db: TestDb, extra: &[(&str, &str)]) -> Self {
         let mut vars: HashMap<String, String> = HashMap::from([
             ("PS_DATABASE_URL".to_owned(), db.url()),
             ("PS_BOOTSTRAP_TOKEN".to_owned(), BOOTSTRAP.to_owned()),
@@ -128,6 +222,35 @@ impl TestApp {
             body["api_key"]["id"].as_str().unwrap().to_owned(),
             body["secret"].as_str().unwrap().to_owned(),
         )
+    }
+
+    /// Authorizes `amount` and returns the payment id.
+    pub async fn authorize(
+        &self,
+        key: &str,
+        idem: &str,
+        amount: i64,
+        currency: &str,
+        token: &str,
+    ) -> (StatusCode, Value) {
+        self.post(
+            "/v1/payments",
+            key,
+            Some(idem),
+            json!({"amount": amount, "currency": currency, "token": token}),
+        )
+        .await
+    }
+
+    /// Runs the reconciliation report and asserts it is clean.
+    pub async fn assert_reconciled(&self, key: &str) -> Value {
+        let (status, report) = self.get("/v1/reconciliation", key).await;
+        assert_eq!(status, StatusCode::OK, "{report}");
+        assert_eq!(
+            report["clean"], true,
+            "reconciliation found a mismatch: {report}"
+        );
+        report
     }
 
     pub async fn cleanup(self) {

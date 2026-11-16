@@ -10,8 +10,10 @@
 pub mod error;
 pub mod journal;
 pub mod keys;
+pub mod payments;
 pub mod pool;
 pub mod projects;
+pub mod reconcile;
 #[cfg(feature = "test-support")]
 pub mod testing;
 

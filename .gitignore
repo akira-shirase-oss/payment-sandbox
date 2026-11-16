@@ -1,6 +1,4 @@
 /target
-*.sqlite3
-*.sqlite3-wal
-*.sqlite3-shm
+*.redb
 /perf/results/raw-*.json
 node_modules/

@@ -1,0 +1,73 @@
+// M2 load scenario: the guide's workload — two projects, the lifecycle (authorize, capture
+// 600 of 1,000, refund 200) at a sustained rate with 5× short bursts — then the correctness
+// gate: zero imbalance and every payment equal to its journal entries.
+//
+// MODE=full: 100 purchases/s (300 operations/s) with a 5× burst for 10 s in every 100 s,
+// 3,000 s: about 1,170,000 requests. MODE=smoke: 25/s with one 5× burst, 24 s.
+import { check } from 'k6';
+import exec from 'k6/execution';
+import { call, projects, reconcile } from './lib.js';
+
+const full = (__ENV.MODE || 'smoke') === 'full';
+const base = full ? 100 : 25;
+
+function stages() {
+  if (!full) {
+    return [
+      { target: base, duration: '1s' }, { target: base, duration: '10s' },
+      { target: base * 5, duration: '1s' }, { target: base * 5, duration: '4s' },
+      { target: base, duration: '1s' }, { target: base, duration: '7s' },
+    ];
+  }
+  const out = [{ target: base, duration: '5s' }];
+  for (let i = 0; i < 30; i++) {
+    out.push({ target: base, duration: '88s' }, { target: base * 5, duration: '1s' },
+      { target: base * 5, duration: '10s' }, { target: base, duration: '1s' });
+  }
+  return out;
+}
+
+export const options = {
+  setupTimeout: '120s',
+  teardownTimeout: '120s',
+  scenarios: {
+    purchases: {
+      executor: 'ramping-arrival-rate',
+      startRate: base,
+      timeUnit: '1s',
+      stages: stages(),
+      preAllocatedVUs: 100,
+      maxVUs: 2000,
+    },
+  },
+  thresholds: {
+    'http_req_failed{phase:load}': ['rate<0.0001'],
+    'http_req_duration{op:authorize}': ['p(95)<100', 'p(99)<250'],
+    'http_req_duration{op:capture}': ['p(95)<100', 'p(99)<250'],
+    'http_req_duration{op:refund}': ['p(95)<100', 'p(99)<250'],
+    'checks{phase:load}': ['rate>0.9999'],
+    'checks{phase:reconcile}': ['rate==1'],
+  },
+  summaryTrendStats: ['min', 'med', 'avg', 'p(90)', 'p(95)', 'p(99)', 'max'],
+};
+
+export function setup() {
+  return { keys: projects(2, 'lifecycle') };
+}
+
+export default function (data) {
+  const key = data.keys[exec.scenario.iterationInTest % 2];
+  const id = `${__VU}-${__ITER}-${Date.now()}`;
+  const tags = (op) => ({ op, phase: 'load' });
+  const auth = call('POST', '/v1/payments', key, { amount: 1000, currency: 'USD', token: 'tok_sim_approve' }, `a-${id}`, tags('authorize'));
+  if (!check(auth, { 'authorized': (r) => r.status === 201 }, { phase: 'load' })) return;
+  const pid = auth.json().payment.id;
+  const cap = call('POST', `/v1/payments/${pid}/captures`, key, { amount: 600 }, `c-${id}`, tags('capture'));
+  check(cap, { 'captured': (r) => r.status === 201 }, { phase: 'load' });
+  const ref = call('POST', `/v1/payments/${pid}/refunds`, key, { amount: 200 }, `r-${id}`, tags('refund'));
+  check(ref, { 'refunded': (r) => r.status === 201 }, { phase: 'load' });
+}
+
+export function teardown(data) {
+  reconcile(data.keys);
+}

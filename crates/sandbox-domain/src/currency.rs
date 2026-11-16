@@ -79,8 +79,10 @@ impl Serialize for Currency {
 
 impl<'de> Deserialize<'de> for Currency {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let code = <&str>::deserialize(deserializer)?;
-        Self::from_code(code).map_err(serde::de::Error::custom)
+        // Owned, not borrowed: a borrowed `&str` fails for `serde_json::from_value` and
+        // for escaped strings.
+        let code = String::deserialize(deserializer)?;
+        Self::from_code(&code).map_err(serde::de::Error::custom)
     }
 }
 
@@ -119,5 +121,7 @@ mod tests {
         let back: Currency = serde_json::from_str("\"JPY\"").unwrap();
         assert_eq!(back, Currency::Jpy);
         assert!(serde_json::from_str::<Currency>("\"XAU\"").is_err());
+        let owned: Currency = serde_json::from_value(serde_json::json!("EUR")).unwrap();
+        assert_eq!(owned, Currency::Eur);
     }
 }

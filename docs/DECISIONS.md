@@ -219,6 +219,48 @@ review found. Each states the choice, the alternative and the cost.
   under a lease with a fencing token, so a stale worker cannot overwrite a
   newer attempt's result. Redirects are never followed.
 
+- **D-033 — One payment's requests queue in the server, not in the
+  database; recording an answer is retried.** The first refund-race smoke
+  (M2) found two defects. (1) Requests for one hot payment waited for its
+  row lock *inside PostgreSQL*, each holding a pooled connection, and
+  exhausted the pool for every other payment (1,030 pool timeouts). Now
+  captures, voids, refunds and answer-recording for one payment first take
+  a turn on one of 1,024 fair in-process async mutexes chosen by payment
+  id, then a connection; the wait is bounded (`PS_PAYMENT_QUEUE_WAIT_MS`,
+  1 s) and an expired wait is `503 payment_busy`, retryable under the same
+  key. (2) When recording the network's answer hit a transient failure
+  (lock or statement deadline, busy pool), the operation stayed open with
+  its reservation held, so 41 limbo reservations refused legitimate
+  refunds. Now recording is retried up to six times with exponential
+  backoff and full jitter (about 600 ms in total); it is idempotent, so a
+  retry can never double-post, and giving up leaves the operation open for
+  a client retry or the reconciler. After both fixes the same smoke
+  admitted exactly 630 of 2,001 refunds with zero lock waits over 50 ms.
+  Regression tests: `a_hot_payment_cannot_starve_the_pool_for_other_payments`
+  and `recording_an_approval_survives_a_transient_lock_timeout`, each shown
+  to fail without its fix. Cost: per-payment throughput is bounded by one
+  transaction at a time per server process, which is what the row lock
+  allowed anyway; several server processes would still contend in the
+  database, with far fewer waiters each.
+
+- **D-034 — The simulator's store is a redb file, not SQLite.** D-018's
+  intent stands (a separate failure domain the simulator alone opens); its
+  technology changes. With sqlx 0.9 in the server, the only SQLite
+  reachable is the bundled 3.53 of `libsqlite3-sys` 0.37, which carries
+  RUSTSEC-2026-0459, and Cargo refuses a second `links = "sqlite3"` crate
+  (rusqlite with the patched 3.54) in the same lockfile even though sqlx's
+  SQLite driver is not enabled. redb is pure Rust, ACID and crash-safe,
+  removes the C library, and fits the single-writer design: one thread owns
+  the file, a bounded queue (4,096) feeds it, up to 128 commands share one
+  durable commit (group commit), and replies go out only after the commit.
+  Measured on the development Mac at load average about 30 (busy, a
+  development observation): the simulator alone sustained about 3,000
+  operations/s with p99 57 ms, against about 1,000/s for the SQLite version;
+  each commit costs one `F_FULLFSYNC` on macOS (Rust's `sync_data` flushes
+  the drive cache there, which SQLite's default does not), so the median
+  rose from under 1 ms to 12–21 ms. Full durability is kept: the drills
+  kill processes, and the network's record must survive them.
+
 ## Open questions (still open)
 
 - **Dashboard authentication** — per-project-owner session login is the
