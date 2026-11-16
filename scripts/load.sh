@@ -32,7 +32,9 @@ log="target/perf/server-${scenario}-${stamp}.log"
 mkdir -p target/perf
 
 load_before="$(uptime | sed 's/.*load averages*: *//')"
-PS_LISTEN="127.0.0.1:${port}" PS_LOG=warn PS_LOG_FORMAT=json \
+# A fresh operator token per run: scenarios create their own projects with it.
+bootstrap="load-$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
+PS_BOOTSTRAP_TOKEN="$bootstrap" PS_LISTEN="127.0.0.1:${port}" PS_LOG=warn PS_LOG_FORMAT=json \
   ./target/release/sandbox-server >"$log" 2>&1 &
 server=$!
 trap 'kill "$server" 2>/dev/null || true; rm -f "$summary"' EXIT
@@ -43,7 +45,7 @@ done
 curl -fsS "http://127.0.0.1:${port}/readyz" >/dev/null
 
 set +e
-BASE_URL="http://127.0.0.1:${port}" MODE="$mode" k6 run --quiet \
+BOOTSTRAP="$bootstrap" BASE_URL="http://127.0.0.1:${port}" MODE="$mode" k6 run --quiet \
   --summary-export "$summary" "$script"
 k6_status=$?
 set -e

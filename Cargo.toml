@@ -18,6 +18,8 @@ sandbox-db = { path = "crates/sandbox-db" }
 # External crates: versions live here only. Minimal features; one async runtime (Tokio);
 # no TLS stack (everything this sandbox talks to is on loopback, D-023).
 anyhow = "1.0.104"
+# Key and secret generation (OS randomness).
+getrandom = "0.3.4"
 axum = "0.8.9"
 hex = "0.4.3"
 proptest = "1.12.0"
@@ -29,7 +31,7 @@ thiserror = "2.0.21"
 time = { version = "0.3.55", default-features = false, features = ["std", "formatting", "serde"] }
 tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 tower = { version = "0.5.3", features = ["util"] }
-tower-http = { version = "0.7.1", features = ["request-id", "trace", "timeout", "limit", "catch-panic", "set-header"] }
+tower-http = { version = "0.7.1", features = ["request-id", "trace", "timeout", "limit", "catch-panic", "set-header", "sensitive-headers"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 uuid = { version = "1.29", features = ["v5", "v7", "serde"] }

@@ -19,6 +19,7 @@ use tower_http::{
     catch_panic::CatchPanicLayer,
     limit::RequestBodyLimitLayer,
     request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
+    sensitive_headers::SetSensitiveRequestHeadersLayer,
     set_header::SetResponseHeaderLayer,
     timeout::TimeoutLayer,
     trace::{DefaultOnResponse, TraceLayer},
@@ -145,6 +146,11 @@ pub const TIMEOUT_STATUS: StatusCode = StatusCode::SERVICE_UNAVAILABLE;
 /// Applies the global stack.
 pub fn apply(router: Router, config: &Config) -> Router {
     let stack = ServiceBuilder::new()
+        // 0. Authorization and the idempotency key are redacted from any Debug output.
+        .layer(SetSensitiveRequestHeadersLayer::new([
+            header::AUTHORIZATION,
+            HeaderName::from_static("idempotency-key"),
+        ]))
         // 1. Drop unsafe client ids before anything logs them.
         .layer(axum_mw::map_request(sanitize_request_id))
         // 2. Assign an id when absent.

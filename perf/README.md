@@ -20,3 +20,4 @@ database and (from M2) the simulated network all listen on loopback.
 | Scenario | Milestone | What it loads | Full-run status |
 |---|---|---|---|
 | `m0-probes` | M0 | liveness (no I/O) and readiness (one PostgreSQL round trip), 4:1 | owed: machine busy at M0 (load average 462 during the smoke) |
+| `m1-auth` | M1 | authenticated project reads: key hash + lookup per request, two projects | owed: machine busy at M1 (load average 130–256 during the smoke) |

@@ -14,6 +14,8 @@
 //! - [`identity`]: idempotency keys, derived operation identity (D-015) and fingerprints (D-016).
 //! - [`card_guard`]: raw-card detection (D-019).
 //! - [`scenario`]: synthetic `tok_sim_*` tokens and the scenarios they select.
+//! - [`keys`]: `sk_sim_` keys, scopes and hashing (D-021).
+//! - [`project`]: project slugs and names.
 // Money code may not use unchecked arithmetic; tests may (overflow panics there and fails the test).
 #![cfg_attr(not(test), warn(clippy::arithmetic_side_effects))]
 
@@ -22,9 +24,11 @@ pub mod card_guard;
 pub mod currency;
 pub mod identity;
 pub mod journal;
+pub mod keys;
 pub mod money;
 pub mod operation;
 pub mod payment;
+pub mod project;
 pub mod recipe;
 pub mod scenario;
 

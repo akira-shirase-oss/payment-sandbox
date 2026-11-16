@@ -37,6 +37,18 @@ impl Project {
 /// transaction.
 pub async fn create(pool: &PgPool, id: Uuid, slug: &str, name: &str) -> Result<Project, DbError> {
     let mut tx = pool.begin().await?;
+    let project = create_in(&mut tx, id, slug, name).await?;
+    tx.commit().await?;
+    Ok(project)
+}
+
+/// [`create`] inside the caller's transaction (with the project's first key, for example).
+pub async fn create_in(
+    tx: &mut sqlx::PgConnection,
+    id: Uuid,
+    slug: &str,
+    name: &str,
+) -> Result<Project, DbError> {
     let row = sqlx::query(
         "INSERT INTO projects (id, slug, name) VALUES ($1, $2, $3)
          RETURNING id, slug, name, dataset_epoch, created_at",
@@ -46,6 +58,7 @@ pub async fn create(pool: &PgPool, id: Uuid, slug: &str, name: &str) -> Result<P
     .bind(name)
     .fetch_one(&mut *tx)
     .await?;
+    crate::keys::audit(tx, id, "bootstrap", "project.created", Some(id)).await?;
     let (currencies, kinds): (Vec<&str>, Vec<&str>) = Currency::ALL
         .iter()
         .flat_map(|c| CHART.iter().map(move |k| (c.code(), k.code())))
@@ -59,7 +72,6 @@ pub async fn create(pool: &PgPool, id: Uuid, slug: &str, name: &str) -> Result<P
     .bind(&kinds)
     .execute(&mut *tx)
     .await?;
-    tx.commit().await?;
     project_from_row(&row)
 }
 

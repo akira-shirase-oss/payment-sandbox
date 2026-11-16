@@ -55,6 +55,8 @@ pub enum ErrorCode {
     InsufficientCapacity,
     /// The request conflicts with the resource's current state.
     InvalidState,
+    /// A unique name is already taken.
+    Conflict,
     /// Too many requests in flight.
     Overloaded,
     /// The request deadline elapsed.
@@ -159,6 +161,9 @@ pub enum ApiError {
     /// State refusal.
     #[error("{0}")]
     InvalidState(String),
+    /// Uniqueness refusal.
+    #[error("{0}")]
+    Conflict(String),
     /// Shed.
     #[error("too many requests in flight; retry shortly")]
     Overloaded,
@@ -200,7 +205,8 @@ impl ApiError {
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::IdempotencyKeyConflict
             | Self::InsufficientCapacity(_)
-            | Self::InvalidState(_) => StatusCode::CONFLICT,
+            | Self::InvalidState(_)
+            | Self::Conflict(_) => StatusCode::CONFLICT,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::RouteNotFound | Self::NotFound(_) => StatusCode::NOT_FOUND,
@@ -230,6 +236,7 @@ impl ApiError {
             Self::NotFound(_) => ErrorCode::NotFound,
             Self::InsufficientCapacity(_) => ErrorCode::InsufficientCapacity,
             Self::InvalidState(_) => ErrorCode::InvalidState,
+            Self::Conflict(_) => ErrorCode::Conflict,
             Self::Overloaded => ErrorCode::Overloaded,
             Self::Unavailable(_) => ErrorCode::Unavailable,
             Self::DatabaseTimeout(_) => ErrorCode::DeadlineExceeded,

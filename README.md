@@ -3,7 +3,8 @@
 > **SIMULATED MONEY ONLY.** No real cards, balances or banking connection,
 > ever. Every response carries `Sandbox-Simulated: true`.
 >
-> **Status — M0 (the spine) done; M1 next.** Milestones, proof gates and the
+> **Status — M0 (the spine) and M1 (projects and sandbox keys) done; M2
+> (payment lifecycle) next.** Milestones, proof gates and the
 > evidence behind each status live in `docs/ROADMAP.md`.
 
 ## Run it

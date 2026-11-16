@@ -63,6 +63,8 @@ pub struct Config {
     pub log_format: LogFormat,
     /// `tracing` filter directives.
     pub log_filter: String,
+    /// Operator token that may create projects (`POST /v1/projects`); unset disables it.
+    pub bootstrap_token: Option<Secret>,
 }
 
 /// Every configuration problem found, reported together.
@@ -115,6 +117,12 @@ impl Config {
             }
         };
         let log_filter = lookup("PS_LOG").unwrap_or_else(|| "info".to_owned());
+        let bootstrap_token = lookup("PS_BOOTSTRAP_TOKEN");
+        if let Some(token) = &bootstrap_token
+            && (token.len() < 32 || token.chars().any(|c| c.is_whitespace() || c.is_control()))
+        {
+            errors.push("PS_BOOTSTRAP_TOKEN must be at least 32 visible characters".to_owned());
+        }
 
         if !listen.ip().is_loopback() {
             errors.push(
@@ -152,6 +160,7 @@ impl Config {
             migrate_on_start,
             log_format,
             log_filter,
+            bootstrap_token: bootstrap_token.map(Secret::new),
         })
     }
 }

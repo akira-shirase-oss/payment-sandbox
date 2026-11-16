@@ -6,11 +6,12 @@ use axum::{
     http::StatusCode,
     middleware as axum_mw,
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use serde_json::json;
 
 use crate::error::ApiError;
+use crate::handlers;
 use crate::middleware;
 use crate::state::AppState;
 
@@ -18,6 +19,13 @@ use crate::state::AppState;
 pub fn app(state: &AppState) -> Router {
     let v1 = Router::new()
         .route("/v1/sandbox", get(sandbox_notice))
+        .route("/v1/projects", post(handlers::projects::create))
+        .route("/v1/project", get(handlers::projects::current))
+        .route(
+            "/v1/keys",
+            get(handlers::keys::list).post(handlers::keys::create),
+        )
+        .route("/v1/keys/{key_id}/revoke", post(handlers::keys::revoke))
         .route_layer(axum_mw::from_fn_with_state(
             state.gate.clone(),
             middleware::shed_load,

@@ -4,9 +4,11 @@
 //! The binary (`main.rs`) is thin; everything is here so tests can drive the router
 //! in-process and the drills can run the real binary.
 
+pub mod auth;
 pub mod config;
 pub mod error;
 pub mod extract;
+pub mod handlers;
 pub mod middleware;
 pub mod routes;
 pub mod shutdown;

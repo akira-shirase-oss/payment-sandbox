@@ -9,6 +9,7 @@
 
 pub mod error;
 pub mod journal;
+pub mod keys;
 pub mod pool;
 pub mod projects;
 #[cfg(feature = "test-support")]
