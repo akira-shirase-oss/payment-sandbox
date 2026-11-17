@@ -54,12 +54,15 @@ async fn stale_test_databases_and_roles_are_swept() {
         count(db_sql, fresh_db.clone()).await,
         count(role_sql, stale_role.clone()).await,
     );
-    admin
-        .execute(AssertSqlSafe(format!(
-            "DROP DATABASE IF EXISTS {fresh_db}; DROP DATABASE IF EXISTS {stale_db}; DROP ROLE IF EXISTS {stale_role}"
-        )))
-        .await
-        .ok();
+    // One statement each: several in one query run as a transaction block, which DROP
+    // DATABASE refuses.
+    for statement in [
+        format!("DROP DATABASE IF EXISTS {fresh_db} WITH (FORCE)"),
+        format!("DROP DATABASE IF EXISTS {stale_db} WITH (FORCE)"),
+        format!("DROP ROLE IF EXISTS {stale_role}"),
+    ] {
+        admin.execute(AssertSqlSafe(statement)).await.unwrap();
+    }
     db.cleanup().await;
     assert_eq!(
         (stale, fresh, role),
