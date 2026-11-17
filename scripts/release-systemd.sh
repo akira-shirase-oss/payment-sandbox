@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
 # The install of docs/OPERATING.md under systemd, for real (D-071): as root on a Linux host
-# with systemd, after scripts/release-smoke.sh built the release. CI runs it on every push
-# ("release" job); it changes /opt, /etc and the system's units, so it is not for a
-# developer's machine. SIMULATED MONEY ONLY.
+# with systemd, after scripts/release-smoke.sh built the release, against the host's own
+# PostgreSQL 18 as Ubuntu's packages install it (scripts/ci-postgresql.sh, D-082): setup as
+# `postgres` over the Unix socket, the services over 127.0.0.1 with passwords. CI runs it on
+# every push ("release" job); it changes /opt, /etc and the system's units, so it is not for
+# a developer's machine. SIMULATED MONEY ONLY.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 [ "$(id -u)" = 0 ] || { echo "release-systemd: run as root on a disposable Linux host (CI)" >&2; exit 1; }
 command -v systemctl >/dev/null || { echo "release-systemd: needs systemd" >&2; exit 1; }
-admin_url="${PS_ADMIN_DATABASE_URL:?PS_ADMIN_DATABASE_URL}"
-host_port="$(sed -E 's#^postgres://[^@]+@([^/]+)/.*#\1#' <<<"$admin_url")"
+pg_port="${PS_HOST_PG_PORT:?PS_HOST_PG_PORT, the port of the host PostgreSQL (scripts/ci-postgresql.sh)}"
+host_port="127.0.0.1:$pg_port"
+# docs/OPERATING.md's admin URL for a stock install: the Unix socket, as the OS user
+# postgres (peer authentication, no password). The port only because CI's runner may
+# already have another cluster on 5432.
+admin_url="postgres:///postgres?host=/var/run/postgresql&port=$pg_port"
 # Built by scripts/release-smoke.sh (no cargo here: under sudo, root has no toolchain).
 release="${RELEASE_DIR:-target/release}"
 [ -x "$release/sandbox-server" ] || { echo "release-systemd: no release build in $release (run scripts/release-smoke.sh first)" >&2; exit 1; }
@@ -49,7 +55,15 @@ set_var /etc/payment-sandbox/migrate.env PS_MIGRATE_DATABASE_URL "postgres://ps_
 install -m 0644 deploy/systemd/*.service /etc/systemd/system/
 systemd-analyze verify /etc/systemd/system/payment-sandbox-*.service
 
-PS_ADMIN_DATABASE_URL="$admin_url" PS_OWNER_PASSWORD="$owner_password" PS_APP_PASSWORD="$app_password" \
+# The guide's earlier form, a TCP URL without a password, cannot work on a stock install
+# (v1 review M8): scram-sha-256 on 127.0.0.1, and postgres has no password.
+if PS_ADMIN_DATABASE_URL="postgres://postgres@$host_port/postgres" \
+  /opt/payment-sandbox/bin/sandbox-server setup >/dev/null 2>&1; then
+  echo "release-systemd: the passwordless TCP admin URL worked; update docs/OPERATING.md" >&2
+  exit 1
+fi
+sudo -u postgres env PS_ADMIN_DATABASE_URL="$admin_url" \
+  PS_OWNER_PASSWORD="$owner_password" PS_APP_PASSWORD="$app_password" \
   /opt/payment-sandbox/bin/sandbox-server setup
 systemctl daemon-reload
 systemctl start payment-sandbox-migrate

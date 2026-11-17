@@ -52,16 +52,26 @@ A missing or weak value stops the process with a message naming it. `setup` neve
 an existing role's password: running it again (for a restore) is safe.
 
 Create the roles and the database (once, as PostgreSQL's administrator) with passwords of
-your own, the same ones `migrate.env` and `server.env` use, then migrate as the owner:
+your own, the same ones `migrate.env` and `server.env` use, then migrate as the owner. On
+Debian or Ubuntu's PostgreSQL packages the administrator `postgres` has no password and
+signs in over the Unix socket as the OS user `postgres` (peer authentication), so run
+`setup` as that user with a socket URL (`setup` itself needs no file access):
 
 ```sh
-PS_ADMIN_DATABASE_URL=postgres://postgres@127.0.0.1:5432/postgres \
-PS_OWNER_PASSWORD=your-owner-password PS_APP_PASSWORD=your-app-password \
+sudo -u postgres env PS_ADMIN_DATABASE_URL='postgres:///postgres?host=/var/run/postgresql' \
+  PS_OWNER_PASSWORD=your-owner-password PS_APP_PASSWORD=your-app-password \
   /opt/payment-sandbox/bin/sandbox-server setup
 systemctl daemon-reload
 systemctl start payment-sandbox-migrate
 systemctl enable --now payment-sandbox-sim payment-sandbox-server
 ```
+
+With a password for the administrator instead (another distribution, a managed server),
+use `PS_ADMIN_DATABASE_URL=postgres://postgres:...@127.0.0.1:5432/postgres`. Add
+`&port=5433` to the socket URL if your cluster is not on 5432. The services always connect
+over `127.0.0.1` with their passwords (`scram-sha-256` in the stock `pg_hba.conf`). CI's
+release job installs PostgreSQL 18 from the PostgreSQL project's Ubuntu packages and runs
+exactly this (D-082).
 
 Point the proxy at the three loopback ports: `deploy/Caddyfile` is a complete example
 (replace the names). `PS_CHECKOUT_ORIGIN` and `PS_DASHBOARD_ORIGIN` must be exactly the

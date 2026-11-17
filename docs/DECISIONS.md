@@ -1259,6 +1259,21 @@ closes one of its findings, with the test that failed before the fix.
   the migrate unit's dynamic user (`scripts/release-systemd.sh`); the same check against the
   old install line reports `640`.
 
+- **D-082 — The install is tested against PostgreSQL as Ubuntu's packages ship it.** The
+  operator guide's `setup` used `postgres://postgres@127.0.0.1:5432/postgres`, but the
+  PostgreSQL project's Debian/Ubuntu packages give `postgres` no password and require
+  `scram-sha-256` on 127.0.0.1, so step 1 could not work on a stock host; CI never saw it,
+  because its PostgreSQL is a container with a password. The guide now runs `setup` as the
+  OS user `postgres` over the Unix socket (`sudo -u postgres env
+  PS_ADMIN_DATABASE_URL='postgres:///postgres?host=/var/run/postgresql' ...`, peer
+  authentication; `setup` needs no file access), and keeps the password form for other
+  hosts. The release job now installs `postgresql-18` from the project's apt repository
+  (`scripts/ci-postgresql.sh`, which also checks the stock `pg_hba.conf` rules) and runs the
+  whole systemd install, its first run, the restart and the backup and restore against it:
+  `setup` over the socket, the services over 127.0.0.1 with the operator's passwords. The
+  job also asserts that the old passwordless TCP form fails there (the finding's
+  evidence, run).
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

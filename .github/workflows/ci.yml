@@ -145,8 +145,9 @@ jobs:
           retention-days: 7
 
   # The production path (D-071; docs/OPERATING.md): release builds installed from the env
-  # templates and run in the shared profile behind public origins (scripts/release-smoke.sh),
-  # then the same install under systemd, from the units in deploy/systemd.
+  # templates and run in the shared profile behind public origins and Caddy over https
+  # (scripts/release-smoke.sh), then the same install under systemd, from the units in
+  # deploy/systemd, against the runner's own PostgreSQL 18 from Ubuntu packages (D-082).
   release:
     name: release (release build, env files, systemd units)
     runs-on: ubuntu-latest
@@ -186,10 +187,10 @@ jobs:
         env:
           PS_PG_CONTAINER: ${{ job.services.postgres.id }}
         run: scripts/release-smoke.sh
-      - name: The systemd units, installed and started
-        env:
-          PS_PG_CONTAINER: ${{ job.services.postgres.id }}
-        run: sudo --preserve-env=PS_PG_CONTAINER,PS_ADMIN_DATABASE_URL scripts/release-systemd.sh
+      - name: PostgreSQL 18 as Ubuntu's packages install it (peer on the socket, scram on TCP)
+        run: echo "PS_HOST_PG_PORT=$(sudo scripts/ci-postgresql.sh)" >> "$GITHUB_ENV"
+      - name: The systemd units, installed and started against it, backed up and restored
+        run: sudo --preserve-env=PS_HOST_PG_PORT scripts/release-systemd.sh
 
   supply-chain:
     name: supply chain (cargo-deny)
