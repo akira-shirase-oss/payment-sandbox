@@ -607,6 +607,33 @@ review found. Each states the choice, the alternative and the cost.
   (a stalled webhook body and a half-sent head), each against the real
   binary; `sandbox-http`'s write-stall test over a 1 KiB pipe.
 
+- **D-055 — The journal does not trust a transaction id across a restore.**
+  Review N2: `created_xact` is a cluster-local transaction id. A `pg_dump`
+  restored into another cluster kept the old ids, so explain's snapshot
+  filter treated every restored entry as not yet committed (0 lines and a
+  0 balance while `/v1/balances` showed 600 and reconciliation was clean),
+  and once the new cluster's counter reached a restored entry's
+  `created_xact`, the runtime role added lines to that posted entry. Now an
+  entry is *native* when its row's `xmin`, which always belongs to the
+  current cluster because a restore inserts every row anew, equals the
+  posting transaction's id (`xmin = created_xact::xid`); the stamp trigger
+  guarantees this for every entry posted here outside savepoints (a
+  posting inside a savepoint is refused, fail closed). A line may join an
+  entry only if the entry is native and posted by this very transaction
+  (migration 0010); explanations count a non-native entry as committed
+  before every snapshot. Freezing keeps the raw `xmin`, so old native
+  entries stay native, and a 32-bit wrap cannot reopen one: the 64-bit
+  `created_xact` must still equal the current transaction's id. No
+  per-posting cost beyond reading a system column. The local stack and CI
+  run a second, empty cluster (`postgres-restore`, 127.0.0.1:56450, its own
+  named volume); `scripts/restore-rehearsal.sh` restores into it when
+  `PS_PG_TARGET_CONTAINER` names it. Test:
+  `a_restore_into_another_cluster_explains_the_same_and_keeps_posted_entries_closed`
+  — every balance explains to the source's lines on the copy, then the
+  copy's counter is walked to each of three restored entries' ids and, at
+  each, `ps_app` tries to add a balanced pair of lines to that entry:
+  refused.
+
 ## Open questions (still open)
 
 - **Dashboard authentication** — per-project-owner session login is the

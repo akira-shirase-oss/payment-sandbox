@@ -204,7 +204,10 @@ pub struct ExplainCursor {
     pub running: i64,
 }
 
-/// A page of the postings that sum to an account's balance as of one snapshot (review
+/// A page of the postings that sum to an account's balance as of one snapshot. An entry
+/// restored from another cluster (its row's `xmin` is not its `created_xact`, D-055) counts
+/// as committed before every snapshot: its stored transaction id means nothing here (review
+/// N2). (Review
 /// finding 5; D-042): the first page's snapshot. The entries its transactions committed
 /// are a fixed set — a transaction in progress at that moment stays invisible to it even
 /// after it commits — so paging by sequence over it is stable and every page reports the
@@ -252,7 +255,7 @@ pub async fn explain(
         "SELECT coalesce(sum(l.amount_minor), 0)::bigint, count(*) FROM journal_lines l
            JOIN journal_entries e ON e.project_id = l.project_id AND e.id = l.entry_id
           WHERE l.project_id = $1 AND l.dataset_epoch = $2 AND l.currency = $3 AND l.account_kind = $4
-            AND pg_visible_in_snapshot(e.created_xact, $5::pg_snapshot)",
+            AND (e.xmin <> e.created_xact::xid OR pg_visible_in_snapshot(e.created_xact, $5::pg_snapshot))",
     )
     .bind(scope.project_id)
     .bind(scope.epoch)
@@ -266,7 +269,7 @@ pub async fn explain(
            FROM journal_lines l
            JOIN journal_entries e ON e.project_id = l.project_id AND e.id = l.entry_id
           WHERE l.project_id = $1 AND l.dataset_epoch = $2 AND l.currency = $3 AND l.account_kind = $4
-            AND pg_visible_in_snapshot(e.created_xact, $5::pg_snapshot) AND e.seq > $6
+            AND (e.xmin <> e.created_xact::xid OR pg_visible_in_snapshot(e.created_xact, $5::pg_snapshot)) AND e.seq > $6
           ORDER BY e.seq, l.line_no
           LIMIT $7",
     )

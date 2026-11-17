@@ -8,11 +8,12 @@ cd "$(dirname "$0")/.."
 
 compose=(docker compose -f deploy/compose.yaml)
 port="${PS_PG_PORT:-56432}"
+restore_port="${PS_PG_RESTORE_PORT:-56450}"
 
 case "${1:-}" in
   up)
-    "${compose[@]}" up -d --wait postgres
-    echo "stack ok: postgres on 127.0.0.1:${port}"
+    "${compose[@]}" up -d --wait postgres postgres-restore
+    echo "stack ok: postgres on 127.0.0.1:${port}, the restore cluster on 127.0.0.1:${restore_port}"
     ;;
   down)
     "${compose[@]}" down
@@ -27,6 +28,9 @@ case "${1:-}" in
     echo "export PS_MIGRATE_DATABASE_URL=postgres://ps_owner:ps-owner-dev@127.0.0.1:${port}/payment_sandbox"
     echo "export PS_DATABASE_URL=postgres://ps_app:ps-app-dev@127.0.0.1:${port}/payment_sandbox"
     echo "export PS_TEST_DATABASE_URL=postgres://sandbox:sandbox-dev@127.0.0.1:${port}/sandbox"
+    # The second cluster for the cross-cluster restore rehearsal (D-055).
+    echo "export PS_TEST_RESTORE_DATABASE_URL=postgres://sandbox:sandbox-dev@127.0.0.1:${restore_port}/sandbox"
+    echo "export PS_PG_RESTORE_CONTAINER=payment-sandbox-postgres-restore-1"
     # The local processes' credentials (D-046), public development values like the ones
     # above: the network's (the server presents it), and the operator's for the test
     # controls, which the dev profile switches on.

@@ -182,6 +182,22 @@ impl TestDb {
         }
     }
 
+    /// Adopts `name` on the server `admin_url` administers (another cluster, D-055), owned
+    /// by `ps_owner`; [`TestDb::cleanup`] drops it there.
+    pub async fn existing(admin_url: &str, name: &str) -> Self {
+        let owner = Self::url_as(
+            admin_url,
+            name,
+            crate::roles::OWNER,
+            crate::roles::OWNER_PASSWORD,
+        );
+        Self {
+            pool: Self::pool_for(&owner).await,
+            admin_url: admin_url.to_owned(),
+            name: name.to_owned(),
+        }
+    }
+
     /// Adopts a database created next to this one by something else (a restore, D-053),
     /// owned by `ps_owner`; [`TestDb::cleanup`] drops it like any other.
     pub async fn attach(&self, name: &str) -> Self {

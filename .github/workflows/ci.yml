@@ -37,8 +37,24 @@ jobs:
           --health-interval 2s
           --health-timeout 3s
           --health-retries 30
+      # The second, empty cluster for the cross-cluster restore rehearsal (D-055).
+      postgres_restore:
+        # Same image and digest as deploy/compose.yaml.
+        image: postgres:18.6-trixie@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6
+        env:
+          POSTGRES_USER: sandbox
+          POSTGRES_PASSWORD: sandbox-dev
+          POSTGRES_DB: sandbox
+        ports:
+          - 56450:5432
+        options: >-
+          --health-cmd "pg_isready --host=127.0.0.1 --username=sandbox --dbname=sandbox"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
     env:
       PS_TEST_DATABASE_URL: postgres://sandbox:sandbox-dev@127.0.0.1:56432/sandbox
+      PS_TEST_RESTORE_DATABASE_URL: postgres://sandbox:sandbox-dev@127.0.0.1:56450/sandbox
     steps:
       # Third-party actions are pinned to commit SHAs.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -62,6 +78,7 @@ jobs:
           # The restore rehearsal (scripts/restore-rehearsal.sh) runs pg_dump and pg_restore
           # inside the PostgreSQL container, so their version matches the server's.
           PS_PG_CONTAINER: ${{ job.services.postgres.id }}
+          PS_PG_RESTORE_CONTAINER: ${{ job.services.postgres_restore.id }}
       - name: Recovery drills (the real server binary killed at fault points)
         run: cargo test -p sandbox-server --features fault-injection --test drills --locked
       - name: Load smoke (short runs; full runs are local, committed under perf/results/)

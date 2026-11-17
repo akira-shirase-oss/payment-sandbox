@@ -17,10 +17,12 @@
 #    trigger is disabled, the journal has its triggers, and the runtime role can neither
 #    TRUNCATE nor create temporary tables.
 #
-# pg_dump, pg_restore and psql run inside the PostgreSQL container, as its superuser, so
-# their version always matches the server's: PS_PG_CONTAINER (default the local stack's
-# payment-sandbox-postgres-1; CI passes its service container) and PS_PG_SUPERUSER
-# (default sandbox). The new database must not exist. Payment sums against the journal and
+# pg_dump, pg_restore and psql run inside the PostgreSQL containers, as their superuser, so
+# their version always matches the server's: PS_PG_CONTAINER holds the source (default the
+# local stack's payment-sandbox-postgres-1; CI passes its service container) and
+# PS_PG_TARGET_CONTAINER the copy (default the same cluster; another container restores
+# into another cluster, D-055, whose roles `sandbox-server setup` must have created first);
+# PS_PG_SUPERUSER (default sandbox). The new database must not exist. Payment sums against the journal and
 # the network are then checked by the reconciliation report (tests/restore.rs runs it).
 set -euo pipefail
 
@@ -32,22 +34,34 @@ for name in "$src" "$dst"; do
 done
 [ "$src" != "$dst" ] || { echo "error: the copy needs a new name" >&2; exit 2; }
 container="${PS_PG_CONTAINER:-payment-sandbox-postgres-1}"
+target="${PS_PG_TARGET_CONTAINER:-$container}"
 su="${PS_PG_SUPERUSER:-sandbox}"
 
 in_pg() { docker exec -i "$container" "$@"; }
+in_target() { docker exec -i "$target" "$@"; }
 sql() {
   local db="$1"
   shift
   in_pg psql -X -q -v ON_ERROR_STOP=1 -At -U "$su" -d "$db" "$@"
 }
+sql_target() {
+  local db="$1"
+  shift
+  in_target psql -X -q -v ON_ERROR_STOP=1 -At -U "$su" -d "$db" "$@"
+}
 
 dump="/tmp/ps-rehearsal-$$-${src}.dump"
-trap 'in_pg rm -f "$dump" >/dev/null 2>&1 || true' EXIT
+trap 'in_pg rm -f "$dump" >/dev/null 2>&1 || true; in_target rm -f "$dump" >/dev/null 2>&1 || true' EXIT
 
+[ "$(sql_target postgres -c "SELECT count(*) FROM pg_roles WHERE rolname IN ('ps_owner', 'ps_runtime', 'ps_app')")" = 3 ] \
+  || { echo "error: the target cluster lacks the roles; run sandbox-server setup against it first" >&2; exit 2; }
 in_pg pg_dump -U "$su" --format=custom --file="$dump" "$src"
-sql postgres -c "CREATE DATABASE $dst OWNER ps_owner"
-sql postgres -c "REVOKE ALL ON DATABASE $dst FROM PUBLIC" -c "GRANT CONNECT ON DATABASE $dst TO ps_runtime"
-in_pg pg_restore -U "$su" --exit-on-error --single-transaction --dbname="$dst" "$dump"
+if [ "$target" != "$container" ]; then
+  in_pg cat "$dump" | in_target sh -c "cat > '$dump'"
+fi
+sql_target postgres -c "CREATE DATABASE $dst OWNER ps_owner"
+sql_target postgres -c "REVOKE ALL ON DATABASE $dst FROM PUBLIC" -c "GRANT CONNECT ON DATABASE $dst TO ps_runtime"
+in_target pg_restore -U "$su" --exit-on-error --single-transaction --dbname="$dst" "$dump"
 
 fingerprint=$(cat <<'SQL'
 SELECT k || ' = ' || v FROM (
@@ -100,7 +114,7 @@ SQL
 )
 
 before="$(sql "$src" -c "$fingerprint")"
-after="$(sql "$dst" -c "$fingerprint")"
+after="$(sql_target "$dst" -c "$fingerprint")"
 if [ "$before" != "$after" ]; then
   echo "error: the restored copy differs from its source:" >&2
   diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") >&2 || true
@@ -122,7 +136,7 @@ SELECT concat_ws(' ',
                      AND tgrelid IN ('public.journal_entries'::regclass, 'public.journal_lines'::regclass)));
 SQL
 )
-checked="$(sql "$dst" -c "$invariants")"
+checked="$(sql_target "$dst" -c "$invariants")"
 for zero in unbalanced entries_without_lines disabled_triggers runtime_truncate runtime_temp; do
   if ! grep -qw "${zero}=0" <<<"$checked"; then
     echo "error: invariant broken on the copy: $checked" >&2
