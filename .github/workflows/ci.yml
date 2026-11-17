@@ -90,9 +90,9 @@ jobs:
           scripts/install-k6.sh "$RUNNER_TEMP/bin"
           PATH="$RUNNER_TEMP/bin:$PATH" MODE=smoke scripts/load.sh m0-probes
 
-  # The checkout and the dashboard (M6): type checks, component tests, the browser journeys
-  # in Chromium against the real server, network and store (scripts/e2e.sh), the size
-  # budgets (D-064).
+  # The checkout, the dashboard and the SDK (M6, M7): type checks, component and unit tests,
+  # the browser journeys in Chromium against the real server, network and store, the
+  # developer examples and the SDK's live tests (scripts/e2e.sh), the size budgets (D-064).
   web:
     name: web (checks, components, Chromium journeys, size budgets)
     runs-on: ubuntu-latest
@@ -136,6 +136,7 @@ jobs:
           PS_PG_CONTAINER: ${{ job.services.postgres.id }}
         run: scripts/e2e.sh
       - run: node scripts/web-budget.mjs
+      - run: node scripts/check-doc-examples.mjs
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

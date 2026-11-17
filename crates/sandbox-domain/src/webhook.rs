@@ -245,6 +245,42 @@ mod tests {
     const OTHER: &str =
         "whsec_sim_1111111111111111111111111111111111111111111111111111111111111111";
 
+    /// The vectors the TypeScript SDK's verifier is tested against
+    /// (`packages/sdk-ts/test/unit/webhooks.test.ts`): this signer must produce exactly them,
+    /// so a consumer using the SDK verifies what the server sends (M7, D-070).
+    #[test]
+    fn the_shared_webhook_vectors_are_what_the_server_signs() {
+        let vectors: serde_json::Value =
+            serde_json::from_str(include_str!("../../../fixtures/webhook-vectors.json"))
+                .expect("the vectors are JSON");
+        let text = |name: &str| vectors[name].as_str().expect("a string field").to_owned();
+        let secrets: Vec<String> = vectors["secrets"]
+            .as_array()
+            .expect("secrets")
+            .iter()
+            .map(|s| s.as_str().expect("a secret").to_owned())
+            .collect();
+        let (event, body) = (text("event_id"), text("body"));
+        let timestamp = vectors["timestamp"].as_i64().expect("a timestamp");
+        assert!(secrets.iter().all(|s| is_secret(s)));
+        assert_eq!(
+            signature_header(&[&secrets[0]], &event, timestamp, body.as_bytes()),
+            text("signature_header_one_secret")
+        );
+        assert_eq!(
+            signature_header(
+                &[&secrets[0], &secrets[1]],
+                &event,
+                timestamp,
+                body.as_bytes()
+            ),
+            text("signature_header_rotation")
+        );
+        let parsed: EventPayload = serde_json::from_str(&body).expect("the body is an event");
+        assert_eq!(parsed.id.to_string(), event);
+        assert!(parsed.simulated);
+    }
+
     #[test]
     fn a_signed_delivery_verifies_and_any_change_breaks_it() {
         let header = signature_header(&[SECRET], "evt_1", 1_000, b"{\"a\":1}");

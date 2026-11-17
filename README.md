@@ -63,6 +63,9 @@ banking connection.
 
 ## Documents
 
+- `docs/DEVELOPERS.md` — the developer guide: the CLI, the TypeScript SDK
+  (`packages/sdk-ts`), webhooks, the failure-scenario library, reset; its examples run in CI
+  as written
 - `docs/END_GOAL.md` — what the system is when shipped, scope in/out, the
   non-negotiable invariants, the four required failure cases, the ship gate
 - `docs/ARCHITECTURE.md` — sources of truth, authorize/capture/refund/webhook/

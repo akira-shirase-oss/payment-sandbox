@@ -6,3 +6,4 @@ node_modules/
 /apps/*/.svelte-kit/
 /e2e/test-results/
 /e2e/report/
+/packages/sdk-ts/dist/

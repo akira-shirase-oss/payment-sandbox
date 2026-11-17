@@ -28,9 +28,9 @@ cargo test --workspace --locked
 # Drill (a) and the both-processes restart: the real server binary, killed at fault points.
 cargo test -p sandbox-server --features fault-injection --test drills --locked
 
-# The checkout and the dashboard (M6): strict type checks, component tests, then the
-# journeys in Chromium against the real processes (which build both apps), then the apps'
-# size budgets (D-064).
+# The checkout, the dashboard and the SDK (M6, M7): strict type checks, component and unit
+# tests, then the journeys in Chromium against the real processes (which build both apps),
+# the examples and the SDK's live tests, then the apps' size budgets (D-064).
 # Always a clean install from the lockfile, as CI does: a lockfile out of step with a
 # package.json fails here, not first in CI.
 npm ci --no-audit --no-fund --prefer-offline
@@ -38,6 +38,8 @@ npm run check --workspaces --if-present
 npm test --workspaces --if-present
 scripts/e2e.sh
 node scripts/web-budget.mjs
+# Every example a document shows is the file the journeys run (M7).
+node scripts/check-doc-examples.mjs
 
 # cargo installs tools into ~/.cargo/bin, which may be missing from PATH (after rustup's).
 [ -d "$HOME/.cargo/bin" ] && PATH="$PATH:$HOME/.cargo/bin"

@@ -1038,6 +1038,35 @@ refused. These fix the smallest version that meets it.
   lost reply while its own request still waited, and that request answered `201` instead
   of `202 uncertain`; the default makes the uncertain answer the same on every run.
 
+- **D-070 — The TypeScript SDK: server-side, minor units, honest results, webhook
+  verification, tested against the real server.** `packages/sdk-ts` (`@sandbox/sdk`) is for
+  a test store's **server** (Node 22.17+, `fetch` and `node:crypto`; no browser build: a
+  sandbox key never belongs in a page). It follows D-068 to the letter (the same
+  configuration rules, plus `NODE_ENV=production` refused unless
+  `allowProductionEnvironment: true` says this is a test of a production build; the same
+  retry rule and bounds; `sdk_` + 32 letters `a`–`p` keys) and returns a `MoneyResult` whose
+  `settled` is false while the operation is `pending` or `uncertain`, so an uncertain answer
+  cannot be mistaken for a paid one; `waitForSettlement` polls until nothing is open or its
+  deadline passes and then says `settled: false`, not "failed". Amounts are minor units, as
+  in the API (the CLI takes the currency's units, for people). Errors are classes with a
+  stable `code`: `ConfigError`, `RefusedError` (status, code, request id),
+  `UnknownOutcomeError` (the key to retry with), `UnreachableError`, `NotASandboxError`,
+  `WebhookVerificationError`. `verifyWebhook` checks D-020's signature (HMAC-SHA256 over
+  `{event id}.{t}.{raw body}`, any of up to four `v1` values, constant-time) and the 300 s
+  window before parsing, then that the body names the header's event and says
+  `simulated: true`; `fixtures/webhook-vectors.json` holds vectors the Rust signer must
+  produce exactly (`the_shared_webhook_vectors_are_what_the_server_signs`) and the SDK must
+  verify, so the two cannot drift apart. The package builds to `dist/` with declarations
+  (`npm run build`); it is not published (private, like the rest). Tests: `test/unit` (16:
+  configuration, retries against a fake fetch, honest outcomes, the vectors) in
+  `npm test`; `test/live` (5) run by `scripts/e2e.sh` against the real server, network and
+  store: a purchase, a decline, a lost reply settled by the reconciler, a lost **response**
+  retried through a proxy that drops it (one payment, `replayed: true`), a conflict, real
+  signed deliveries verified (and a tampered one refused), a typed reset and an archived
+  payment. The developer guide (`docs/DEVELOPERS.md`) shows `examples/cli-quickstart.sh` and
+  `examples/sdk-purchase.mjs` verbatim (`scripts/check-doc-examples.mjs` fails on any
+  difference), and `scripts/e2e.sh` runs both, as written, on every check and in CI.
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

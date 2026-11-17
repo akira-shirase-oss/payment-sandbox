@@ -150,15 +150,18 @@ review's fixes).
 ### M7 status — In progress
 
 Decisions: D-066 (dataset reset), D-067 (the interface standard's tests), D-068 (clients:
-configuration, retries, honest answers; the CLI), D-069 (the scenario library).
+configuration, retries, honest answers; the CLI), D-069 (the scenario library), D-070 (the
+TypeScript SDK).
 
 | Gate | Evidence |
 |---|---|
 | Reset needs `admin` + the typed slug and never deletes journal rows | `tests/reset.rs`: `a_reset_needs_admin_and_the_typed_slug_and_deletes_nothing` (every journal row of every epoch byte-identical before and after; the archived epoch still reconciles), `the_database_lets_a_project_change_only_by_one_epoch_forward` (`PSP01` for the runtime role and the owner), `concurrent_resets_of_one_epoch_open_exactly_one_new_epoch`, `an_operation_open_across_a_reset_resolves_in_its_own_epoch`, `cursors_and_checkouts_of_an_archived_epoch_are_refused`; the dashboard's reset (`the_dashboards_reset_needs_admin_the_typed_slug_origin_and_csrf`; journeys in `e2e/tests/dataset.spec.ts`) |
 | Each library scenario run twice yields the same states and events (ids aside) | `crates/sandbox-cli/tests/scenarios.rs`: `every_library_scenario_runs_twice_and_after_a_reset_with_the_same_trace` — 11 scenarios (`fixtures/scenarios/`), each run twice in one project and once more after a reset under the first run's keys, every trace equal to the committed one (`fixtures/scenarios/expected/`); the development store fulfills exactly the payments that captured money, once each; reconciliation with the network clean |
 | Rust CLI, retrying safely | `crates/sandbox-cli`; `tests/cli.rs`: a developer's session through the binary (every exit status), production-looking configuration refused before anything is sent, a lost response retried under the same key charging once (a proxy drops the first answer), busy answers retried under one key and bounded; `sandbox-cli scenarios run --all --check` |
+| TypeScript SDK; production-looking SDK config refused | `packages/sdk-ts`; `test/unit/config.test.ts` (a real processor's key or host, a remote host without `allowNonLocal`, `NODE_ENV=production` without `allowProductionEnvironment`: refused before anything is sent, the key never echoed); `test/unit/client.test.ts` (retries under one key, bounded, honest unknown); `test/live/sdk.test.ts` against the real server (5, in `scripts/e2e.sh`); webhook vectors shared with the Rust signer |
+| Developer docs whose examples run | `docs/DEVELOPERS.md`; `examples/cli-quickstart.sh` and `examples/sdk-purchase.mjs` run as written by `scripts/e2e.sh`; `scripts/check-doc-examples.mjs` |
 | The interface standard | `e2e/tests/a11y.spec.ts` (axe, every screen, light and dark: zero serious or critical); screenshots in `docs/screens/` (`scripts/screens.sh`) |
-| **Owed** | The TypeScript SDK (production-looking configuration refused, tested against the real server), sandbox labels end to end, migration/restore tests per release, the M7 load scenario |
+| **Owed** | Sandbox labels end to end, migration/restore tests per release, the production path, the M7 load scenario |
 
 ## Load plan and ship gate
 

@@ -23,7 +23,7 @@
 | `sandbox-server` | Axum API: payments, holds, captures, refunds, checkout sessions, project isolation, sandbox keys; the bounded outbox deliverer (lease, deadline, jitter retries); and the two browser-facing sites on their own listeners (`web/`, D-061): the checkout origin and the dashboard origin. |
 | `sandbox-sim` | **Separate process with its own state store** (a redb file, D-034): approvals, declines and uncertain outcomes by `tok_sim_*` scenario token; its own capacity checks against its own record; fenced readback (D-017); listing for reverse reconciliation; virtual test clock; test-only fault rules (delay, lost reply, unavailable). One writer thread, bounded queue, group commit; listings and clock reads run in their own read transactions outside the writer (D-047). Executions, readbacks and listings need the server's network credential; faults and the clock are a control plane mounted only when switched on (by default only in the `dev` profile), behind an operator credential (D-046). |
 | `sandbox-cli` | Rust CLI (D-068): payments, the ledger and its explanations, reconciliation, events, the seeded scenario library and its runner (D-069), and the typed dataset reset; a checked configuration that refuses production-looking settings and a client that retries only under the same idempotency key. |
-| `packages/sdk-ts` *(planned, M7)* | TypeScript SDK for test stores. |
+| `packages/sdk-ts` | TypeScript SDK for a test store's server (D-070): payments with safe retries and honest uncertain results, webhook verification against vectors shared with the Rust signer, dataset reset; refuses production-looking configuration (D-068). |
 | `apps/checkout` | SvelteKit test checkout (D-060): the payer-facing page a test store links to; a scenario picker, no card field; a static app the server serves from memory on the checkout origin. |
 | `apps/dashboard` | SvelteKit inspection UI (D-062): payments, holds, operations, journal entries, balances explained page by page, reconciliation, background tasks, webhook endpoints and deliveries, and (dev profile only) the simulator's controls. |
 | `packages/ui` | This repository's copy of Colophon's UI kit (D-035): Tailwind v4 tokens, the shadcn-svelte components the apps use, and the sandbox's outcome states, badge, banner and theme toggle. |
@@ -142,8 +142,9 @@ crates/        sandbox-domain, sandbox-db, sandbox-http, sandbox-server, sandbox
                sandbox-cli
 apps/          checkout, dashboard (SvelteKit + Tailwind v4 + shadcn-svelte,
                static, served from memory on separate origins — D-029, D-035, D-061)
-packages/      ui (this repository's copy of the Colophon UI package); sdk-ts and the
-               CMS sandbox adapter (planned, M7)
+packages/      ui (this repository's copy of the Colophon UI package); sdk-ts (the
+               TypeScript SDK, D-070)
+examples/      the developer guide's examples, run as written by scripts/e2e.sh
 e2e/           Playwright journeys in Chromium (scripts/e2e.sh)
 docs/          END_GOAL, ARCHITECTURE, ROADMAP, DECISIONS
 fixtures/      dev-store (the reference fulfillment consumer and the

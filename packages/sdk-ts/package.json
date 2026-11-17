@@ -1,0 +1,32 @@
+{
+  "name": "@sandbox/sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Payment Sandbox's TypeScript SDK for test stores (SIMULATED MONEY ONLY): payments with safe retries and honest uncertain outcomes, webhook verification, dataset reset. Refuses production-looking configuration.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.17"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "tsc -p tsconfig.json",
+    "test": "vitest run test/unit",
+    "test:live": "vitest run test/live"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "6.0.3",
+    "vitest": "5.0.5"
+  }
+}

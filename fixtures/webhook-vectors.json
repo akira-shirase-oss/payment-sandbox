@@ -1,0 +1,12 @@
+{
+  "_note": "Shared by the Rust signer (sandbox-domain webhook tests) and the TypeScript verifier (packages/sdk-ts): both must agree on every value. Synthetic secrets; SIMULATED MONEY ONLY.",
+  "secrets": [
+    "whsec_sim_0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+    "whsec_sim_a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
+  ],
+  "event_id": "0196f1e2-7a00-7c3d-9e44-2b8f5a1c6d70",
+  "timestamp": 1794000000,
+  "body": "{\"id\":\"0196f1e2-7a00-7c3d-9e44-2b8f5a1c6d70\",\"type\":\"capture.succeeded\",\"project_id\":\"0196f1e2-7000-7aaa-8bbb-ccccdddd0001\",\"payment_id\":\"6f1b2c3d-4e5f-5a6b-8c7d-9e0f1a2b3c4d\",\"operation_id\":\"7a8b9c0d-1e2f-5a3b-9c4d-5e6f7a8b9c0d\",\"sequence\":2,\"created_at\":1794000000,\"simulated\":true}",
+  "signature_header_one_secret": "t=1794000000,v1=be867d47ac7eb918849dfbcec7e03529345ab2ada16388125dbdb1c9e54fdbb4",
+  "signature_header_rotation": "t=1794000000,v1=be867d47ac7eb918849dfbcec7e03529345ab2ada16388125dbdb1c9e54fdbb4,v1=3fe2ce006c46f1eea39c26fcb35e238069d71c30c43d6bbd36c9fcf68a239355"
+}
