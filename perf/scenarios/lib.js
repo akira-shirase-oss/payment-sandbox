@@ -18,7 +18,9 @@ export function call(method, path, key, body, idem, tags) {
 
 // Creates `n` projects with the operator token; returns their admin keys.
 export function projects(n, prefix) {
-  const run = `${Date.now()}`;
+  // Base 36, not decimal: a 13-digit millisecond stamp next to the index digit can pass
+  // Luhn, and the server then refuses the slug as card data (card_guard, D-059).
+  const run = Date.now().toString(36);
   const keys = [];
   for (let i = 0; i < n; i++) {
     const res = call('POST', '/v1/projects', __ENV.BOOTSTRAP, { slug: `${prefix}-${i}-${run}`, name: `${prefix} ${i}` });

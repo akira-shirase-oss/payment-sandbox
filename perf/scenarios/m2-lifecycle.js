@@ -57,7 +57,9 @@ export function setup() {
 
 export default function (data) {
   const key = data.keys[exec.scenario.iterationInTest % 2];
-  const id = `${__VU}-${__ITER}-${Date.now()}`;
+  // Letters between the parts: the server refuses an idempotency key whose digits, joined
+  // across separators, could be a card number (IdempotencyKey::parse, card_guard).
+  const id = `vu${__VU}-it${__ITER}-${Date.now().toString(36)}`;
   const tags = (op) => ({ op, phase: 'load' });
   const auth = call('POST', '/v1/payments', key, { amount: 1000, currency: 'USD', token: 'tok_sim_approve' }, `a-${id}`, tags('authorize'));
   if (!check(auth, { 'authorized': (r) => r.status === 201 }, { phase: 'load' })) return;

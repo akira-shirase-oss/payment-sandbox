@@ -43,7 +43,9 @@ function post(path, token, body) {
 
 export function setup() {
   if (!BOOTSTRAP) fail('BOOTSTRAP is required');
-  const run = `${Date.now()}`;
+  // Base 36, not decimal: a 13-digit millisecond stamp next to the index digit can pass
+  // Luhn, and the server then refuses the slug as card data (card_guard, D-059).
+  const run = Date.now().toString(36);
   const keys = [];
   for (const name of ['a', 'b']) {
     const res = post('/v1/projects', BOOTSTRAP, { slug: `load-${name}-${run}`, name: `Load ${name}` });

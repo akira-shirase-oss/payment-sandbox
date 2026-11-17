@@ -70,7 +70,9 @@ export default function (data) {
   check(page, { 'page served under its policy': (r) => r.status === 200 && (r.headers['Content-Security-Policy'] || '').includes("frame-ancestors 'none'") }, { phase: 'load' });
   const view = payer('GET', `/api/sessions/${session.id}`, secret, undefined, null, 'view');
   check(view, { 'session open': (r) => r.status === 200 && r.json().session.state === 'open' }, { phase: 'load' });
-  const idem = `${exec.vu.idInTest}-${exec.vu.iterationInScenario}-${Date.now()}-a`;
+  // Letters between the parts, so the key's digits never join into a card-number-like run
+  // (IdempotencyKey::parse refuses those, card_guard).
+  const idem = `vu${exec.vu.idInTest}-it${exec.vu.iterationInScenario}-${Date.now().toString(36)}-a`;
   const paid = payer('POST', `/api/sessions/${session.id}/attempts`, secret, { token: 'tok_sim_approve' }, idem, 'pay');
   check(paid, { 'paid': (r) => r.status === 200 && r.json().session.state === 'paid' }, { phase: 'load' });
   const again = payer('POST', `/api/sessions/${session.id}/attempts`, secret, { token: 'tok_sim_approve' }, idem, 'repeat');
