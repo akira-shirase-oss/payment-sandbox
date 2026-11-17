@@ -24,7 +24,7 @@ use sandbox_server::{AppState, Config, app};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-/// A simulated network on a random loopback port with its own SQLite file: the same HTTP
+/// A simulated network on a random loopback port with its own redb file: the same HTTP
 /// boundary and store the separate process uses (the process-kill drills run the server as
 /// a real child process; see `tests/drills.rs`).
 pub struct TestSim {

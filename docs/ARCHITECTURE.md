@@ -21,10 +21,10 @@
 | `sandbox-db` | SQLx: migrations, journal append, hold/capacity transactions, idempotency + inbox/outbox, reconciliation queries. |
 | `sandbox-server` | Axum API: payments, holds, captures, refunds, dashboard serving, project isolation, sandbox keys; the bounded outbox deliverer (lease, deadline, jitter retries). |
 | `sandbox-sim` | **Separate process with its own state store** (a redb file, D-034): approvals, declines and uncertain outcomes by `tok_sim_*` scenario token; its own capacity checks against its own record; fenced readback (D-017); listing for reverse reconciliation; virtual test clock; test-only fault rules (delay, lost reply, unavailable). One writer thread, bounded queue, group commit. |
-| `sandbox-cli` | Rust CLI: create payment, capture, refund, inspect operations and the ledger, confirmed dataset reset. |
-| `packages/sdk-ts` | TypeScript SDK for test stores. |
-| `apps/checkout` | SvelteKit test checkout — the payer-facing sandbox page a test store redirects to. |
-| `apps/dashboard` | SvelteKit inspection UI — operations, postings, balances, events, reconciler state. |
+| `sandbox-cli` *(planned, M7)* | Rust CLI: create payment, capture, refund, inspect operations and the ledger, confirmed dataset reset. |
+| `packages/sdk-ts` *(planned, M7)* | TypeScript SDK for test stores. |
+| `apps/checkout` *(planned, M6)* | SvelteKit test checkout — the payer-facing sandbox page a test store redirects to. |
+| `apps/dashboard` *(planned, M6)* | SvelteKit inspection UI — operations, postings, balances, events, reconciler state. |
 
 ## Paths
 
@@ -108,10 +108,12 @@ contract, not options.
 ## Layout
 
 ```
-crates/        sandbox-domain, sandbox-db, sandbox-server, sandbox-sim,
-               sandbox-cli
-apps/          checkout, dashboard   (SvelteKit, static, same-origin served)
-packages/      sdk-ts, the CMS sandbox provider adapter
+crates/        sandbox-domain, sandbox-db, sandbox-server, sandbox-sim
+               (sandbox-cli: planned, M7)
+apps/          checkout, dashboard (planned, M6: SvelteKit + Tailwind v4 +
+               shadcn-svelte, separate origins — D-029, D-035)
+packages/      ui (planned, M6: this repository's copy of the Colophon UI
+               package); sdk-ts and the CMS sandbox adapter (planned, M7)
 docs/          END_GOAL, ARCHITECTURE, ROADMAP, DECISIONS
 fixtures/      dev-store (the reference fulfillment consumer and the
                ship gate's development store, D-024), seeded scenarios

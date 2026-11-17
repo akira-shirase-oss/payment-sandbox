@@ -56,8 +56,11 @@ review found. Each states the choice, the alternative and the cost.
   decimal places), EUR (2), JPY (0) and KWD (3). Amounts are `i64` minor
   units with the exponent taken from a fixed table in `sandbox-domain`;
   there is no FX, and a posting that mixes currencies is a named refusal.
-  A single operation amount is at most 10^12 minor units, so no sum of a
-  dataset's postings can overflow `i64` before the per-entry check does.
+  A single operation amount is at most 10^12 minor units, so no single
+  entry can overflow `i64`. Account sums can: about 9.2 million postings
+  of the maximum amount would exceed it. That fails closed: the sum is
+  cast to `bigint` and the query errors, with no wrapping (review 17
+  corrected the earlier claim that no dataset could reach it).
   JPY and KWD widen the test surface; they are what proves scale is handled
   rather than assumed.
 - **D-011 — Holds are two-phase journal postings.** Following the

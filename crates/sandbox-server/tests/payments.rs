@@ -1,5 +1,5 @@
 //! M2: the payment lifecycle against a real simulated network (its own HTTP server and
-//! SQLite store). Every test ends with a clean reconciliation: zero journal imbalance,
+//! redb store). Every test ends with a clean reconciliation: zero journal imbalance,
 //! every payment's sums equal to its journal entries, one entry per succeeded operation.
 #![allow(
     clippy::unwrap_used,

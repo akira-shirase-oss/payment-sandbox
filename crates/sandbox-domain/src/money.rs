@@ -7,9 +7,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::currency::Currency;
 
-/// Largest amount of one operation, in minor units (D-010). At this cap no realistic
-/// dataset's sum of postings can overflow `i64` (≈ 9.2 × 10^18) before a checked add
-/// reports it.
+/// Largest amount of one operation, in minor units (D-010). At this cap no single entry
+/// can overflow `i64` (≈ 9.2 × 10^18); an account sum of about 9.2 million maximum-size
+/// postings could, and fails closed (the database's cast errors) rather than wrapping.
 pub const MAX_AMOUNT_MINOR: i64 = 1_000_000_000_000;
 
 /// A positive amount in minor units, `1..=MAX_AMOUNT_MINOR`. Its currency travels beside it

@@ -1,6 +1,6 @@
 [package]
 name = "sandbox-sim"
-description = "The Payment Sandbox's simulated card network (SIMULATED MONEY ONLY): a separate process with its own SQLite store."
+description = "The Payment Sandbox's simulated card network (SIMULATED MONEY ONLY): a separate process with its own redb store."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
