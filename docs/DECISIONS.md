@@ -516,6 +516,26 @@ review found. Each states the choice, the alternative and the cost.
   network's newer record (D-015) and re-posted under new sequence numbers.
   Test: `an_explanation_cursor_from_before_a_restore_is_refused`.
 
+- **D-051 — Background tasks run supervised and readiness reports them.**
+  Review finding: the reconciler and the deliverer were plain
+  `tokio::spawn`, so a panic ended them silently: the `JoinError` was
+  ignored until shutdown, nothing restarted them, and `/readyz` stayed
+  green while uncertain operations and webhooks waited forever. Now each
+  runs under `supervisor::supervise`: a panic, or a return while the server
+  is not stopping, is logged at ERROR with the task's name and restarted
+  after 1 s, doubling to 30 s (reset after a minute of healthy running);
+  nothing is restarted on shutdown. Each task beats after every pass (a
+  sweep; a delivery-loop turn), and `/readyz` is `503` with
+  `reason: background_task` while a task is down between a failure and its
+  restart, or when its last beat is older than its bound (the reconciler:
+  ten intervals plus two minutes; the deliverer: two minutes), so a stuck
+  task is reported as well as a dead one. `/readyz` lists every task's
+  `running`, `restarts`, `last_failure` and time since its last beat.
+  Tests: `supervisor::tests` (paused time) and the drill
+  `a_panicking_reconciler_is_restarted_and_still_resolves_uncertain_operations`,
+  whose real binary panics in its first sweep (`PS_FAULT=reconciler_panic`,
+  fault-injection builds only).
+
 ## Open questions (still open)
 
 - **Dashboard authentication** — per-project-owner session login is the

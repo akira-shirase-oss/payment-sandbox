@@ -2,7 +2,8 @@
 //! feature; otherwise every point is an empty inline function. With the feature, setting
 //! `PS_FAULT=<point>` (optionally `PS_FAULT_KIND=<operation kind>`) aborts the process at
 //! that point — no destructors, no flush, no graceful anything, which is what a power cut
-//! or OOM kill looks like.
+//! or OOM kill looks like. `PS_FAULT=reconciler_panic` instead makes the reconciler's first
+//! sweep panic (a defect in a background task, not a crash of the process).
 
 use sandbox_domain::OperationKind;
 
@@ -24,6 +25,24 @@ impl Point {
         }
     }
 }
+
+/// Panics once, the first time it is reached, when `PS_FAULT=reconciler_panic`
+/// (fault-injection builds only): a background task's defect.
+#[cfg(feature = "fault-injection")]
+pub fn reconciler_panic() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static FIRED: AtomicBool = AtomicBool::new(false);
+    if std::env::var("PS_FAULT").ok().as_deref() == Some("reconciler_panic")
+        && !FIRED.swap(true, Ordering::SeqCst)
+    {
+        panic!("fault injection: the reconciler panics");
+    }
+}
+
+/// No-op outside fault-injection builds.
+#[cfg(not(feature = "fault-injection"))]
+#[inline(always)]
+pub const fn reconciler_panic() {}
 
 /// Aborts the process when `PS_FAULT` names `point` (fault-injection builds only).
 #[cfg(feature = "fault-injection")]

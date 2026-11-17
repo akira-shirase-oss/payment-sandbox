@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use anyhow::Context as _;
+use sandbox_server::supervisor::supervise;
 use sandbox_server::{AppState, Config, shutdown, telemetry};
 use tokio::net::TcpListener;
 
@@ -84,18 +85,39 @@ async fn serve() -> anyhow::Result<()> {
     let grace = config.shutdown_grace;
     let state = AppState::new(config, db.clone());
     let app = sandbox_server::app(&state);
-    // The reconciler: a tracked task that stops on shutdown (startup sweep included).
+    // The background tasks run supervised (D-051): a panic is logged and restarted with
+    // backoff, never silently gone, and readiness reports a task that is down or stuck.
     let (stop_reconciler, reconciler_stop) = sandbox_server::reconciler::shutdown_channel();
-    let reconciler = tokio::spawn(sandbox_server::reconciler::run(
-        state.clone(),
-        reconciler_stop.clone(),
-    ));
+    let tasks = state.tasks.clone();
+    let interval = state.config.reconcile_interval;
+    tasks.register(
+        sandbox_server::reconciler::TASK,
+        interval.saturating_mul(10) + Duration::from_secs(120),
+    );
+    let reconciler = {
+        let (state, stop) = (state.clone(), reconciler_stop.clone());
+        tokio::spawn(supervise(
+            tasks.clone(),
+            sandbox_server::reconciler::TASK,
+            reconciler_stop.clone(),
+            move || sandbox_server::reconciler::run(state.clone(), stop.clone()),
+        ))
+    };
     // The deliverer, when webhooks are on (PS_SECRET_KEY).
     let deliverer = sandbox_server::deliverer::Deliverer::new(
         &state,
         std::sync::Arc::new(sandbox_server::deliverer::SystemClock),
     )
-    .map(|d| tokio::spawn(d.run(reconciler_stop)));
+    .map(|d| {
+        tasks.register(sandbox_server::deliverer::TASK, Duration::from_secs(120));
+        let stop = reconciler_stop.clone();
+        tokio::spawn(supervise(
+            tasks.clone(),
+            sandbox_server::deliverer::TASK,
+            reconciler_stop,
+            move || d.clone().run(stop.clone()),
+        ))
+    });
     if deliverer.is_none() {
         tracing::warn!("webhooks are off: set PS_SECRET_KEY (64 hex characters) to deliver events");
     }

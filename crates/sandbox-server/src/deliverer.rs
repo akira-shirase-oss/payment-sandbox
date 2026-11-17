@@ -35,6 +35,10 @@ use uuid::Uuid;
 
 use crate::secrets::SecretBox;
 use crate::state::AppState;
+use crate::supervisor::Tasks;
+
+/// The deliverer's name under supervision (D-051).
+pub const TASK: &str = "deliverer";
 
 /// Time as the deliverer sees it.
 pub trait Clock: Send + Sync + 'static {
@@ -114,6 +118,7 @@ pub struct Deliverer {
     clock: Arc<dyn Clock>,
     http: reqwest::Client,
     poll: Duration,
+    tasks: Arc<Tasks>,
 }
 
 impl std::fmt::Debug for Deliverer {
@@ -140,6 +145,7 @@ impl Deliverer {
             clock,
             http,
             poll: state.config.delivery_poll,
+            tasks: state.tasks.clone(),
         })
     }
 
@@ -246,6 +252,7 @@ impl Deliverer {
             }
         };
         while !*shutdown.borrow() {
+            self.tasks.beat(TASK);
             while let Some(joined) = tasks.try_join_next_with_id() {
                 finish(joined, &mut endpoints, &mut in_flight, &mut report);
             }

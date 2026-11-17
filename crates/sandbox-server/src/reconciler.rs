@@ -50,6 +50,7 @@ pub struct SweepReport {
 
 /// One bounded, fair pass over the open operations.
 pub async fn sweep(state: &AppState) -> Result<SweepReport, ApiError> {
+    crate::faults::reconciler_panic();
     let tuning = state.config.reconcile;
     let open = payments::open_operations(
         &state.db,
@@ -195,12 +196,18 @@ async fn expected_fingerprint(
         .map(|(o, p)| lifecycle::network_request(scope, &o, &p).fingerprint()))
 }
 
-/// Runs a sweep at once and then every `interval`, until `shutdown` turns true.
+/// The reconciler's name under supervision (D-051).
+pub const TASK: &str = "reconciler";
+
+/// Runs a sweep at once and then every `interval`, until `shutdown` turns true. Each sweep
+/// is a heartbeat for readiness.
 pub async fn run(state: AppState, mut shutdown: watch::Receiver<bool>) {
     let interval = state.config.reconcile_interval;
     let full = usize::try_from(state.config.reconcile_batch).unwrap_or(usize::MAX);
     loop {
-        match sweep(&state).await {
+        let swept = sweep(&state).await;
+        state.tasks.beat(TASK);
+        match swept {
             // A full batch: more may be due; the next bounded sweep starts at once.
             Ok(report) if report.examined >= full && !*shutdown.borrow() => {
                 tokio::task::yield_now().await;

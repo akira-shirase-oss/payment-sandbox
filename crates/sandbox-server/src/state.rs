@@ -10,6 +10,7 @@ use crate::locks::PaymentLocks;
 use crate::network::Network;
 use crate::reports::ReportGate;
 use crate::secrets::SecretBox;
+use crate::supervisor::Tasks;
 
 /// Everything a handler may need.
 #[derive(Debug, Clone)]
@@ -28,6 +29,8 @@ pub struct AppState {
     pub secrets: Option<Arc<SecretBox>>,
     /// Report budgets and concurrency (D-047).
     pub reports: Arc<ReportGate>,
+    /// Supervised background tasks, for readiness (D-051).
+    pub tasks: Arc<Tasks>,
 }
 
 impl AppState {
@@ -61,6 +64,7 @@ impl AppState {
             config.reports.concurrency,
         ));
         Self {
+            tasks: Arc::new(Tasks::default()),
             reports,
             secrets,
             db,

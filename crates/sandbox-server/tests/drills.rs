@@ -460,3 +460,54 @@ async fn restarting_both_processes_mid_operation_applies_the_networks_record_onc
     db.cleanup().await;
     sim.remove().await;
 }
+
+/// Review finding 19: the reconciler and the deliverer were plain `tokio::spawn`, so a
+/// panic ended them silently: no restart, `/readyz` green, and uncertain operations never
+/// resolved. Here the real binary's reconciler panics on its first sweep; it is restarted
+/// and resolves an uncertain operation, and readiness reports the restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_panicking_reconciler_is_restarted_and_still_resolves_uncertain_operations() {
+    let sim = TestSim::start().await;
+    let db = TestDb::new().await;
+    let port = free_port();
+    let server = Server::start(&db, &sim.url, port, &[("PS_FAULT", "reconciler_panic")]).await;
+    let key = project(&server.base).await;
+    sim.fault(json!({"kind": "authorize", "target": null, "action": "unavailable", "count": 1}));
+    let (status, body) = call(
+        &server.base,
+        reqwest::Method::POST,
+        "/v1/payments",
+        &key,
+        Some("order-1"),
+        Some(json!({"amount": 500, "currency": "USD", "token": "tok_sim_approve"})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(status, 202, "{body}");
+    let pid = body["payment"]["id"].as_str().unwrap().to_owned();
+    // Only a running reconciler can fence and resolve it.
+    payment_until(&server.base, &key, &pid, "status", &json!("failed")).await;
+    let (status, ready) = call(
+        &server.base,
+        reqwest::Method::GET,
+        "/readyz",
+        &key,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(status, 200, "{ready}");
+    let reconciler = ready["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "reconciler")
+        .unwrap()
+        .clone();
+    assert_eq!(reconciler["restarts"], 1, "{ready}");
+    assert_eq!(reconciler["last_failure"], "panicked", "{ready}");
+    server.kill();
+    db.cleanup().await;
+    sim.remove().await;
+}

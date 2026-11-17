@@ -21,6 +21,7 @@ pub mod routes;
 pub mod secrets;
 pub mod shutdown;
 pub mod state;
+pub mod supervisor;
 pub mod telemetry;
 
 pub use config::Config;

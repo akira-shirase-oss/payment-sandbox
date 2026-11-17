@@ -101,11 +101,28 @@ async fn healthz() -> Response {
     Json(json!({"status": "ok", "simulated": true})).into_response()
 }
 
-/// Readiness: the database answers within the readiness deadline.
+/// Readiness: the database answers within the readiness deadline, and every supervised
+/// background task is running and beating (D-051).
 async fn readyz(State(state): State<AppState>) -> Response {
     let ping = sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(&state.db);
     match tokio::time::timeout(state.config.readiness_timeout, ping).await {
-        Ok(Ok(_)) => Json(json!({"status": "ready", "simulated": true})).into_response(),
+        Ok(Ok(_)) => {
+            let tasks = state.tasks.statuses();
+            if let Some(down) = state.tasks.unhealthy() {
+                tracing::warn!(
+                    task = down.name,
+                    running = down.running,
+                    stale = down.stale,
+                    "readiness: a background task is down or stuck"
+                );
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({"status": "not_ready", "reason": "background_task", "task": down.name, "tasks": tasks, "simulated": true})),
+                )
+                    .into_response();
+            }
+            Json(json!({"status": "ready", "tasks": tasks, "simulated": true})).into_response()
+        }
         Ok(Err(error)) => {
             tracing::warn!(%error, "readiness: database ping failed");
             not_ready()
