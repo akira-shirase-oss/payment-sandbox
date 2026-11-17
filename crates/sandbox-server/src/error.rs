@@ -43,6 +43,9 @@ pub enum ErrorCode {
     InvalidPaymentToken,
     /// Missing or wrong credentials.
     Unauthorized,
+    /// Project creation without the operator's bootstrap token, or on a server started
+    /// without one (D-021, D-077).
+    BootstrapTokenRequired,
     /// The key lacks the scope.
     Forbidden,
     /// No route.
@@ -175,6 +178,17 @@ pub enum ApiError {
     /// No or bad credentials.
     #[error("missing or invalid sandbox key")]
     Unauthorized,
+    /// `POST /v1/projects` without the operator's bootstrap token (D-077). `configured`
+    /// says whether this server has one at all.
+    #[error("{}", if *configured {
+        "creating a project needs the operator's bootstrap token: send the server's PS_BOOTSTRAP_TOKEN as Authorization: Bearer <token> (this request had none, or a different one)"
+    } else {
+        "this server was started without PS_BOOTSTRAP_TOKEN, so it creates no projects: restart sandbox-server with PS_BOOTSTRAP_TOKEN set (for example openssl rand -hex 24) and send that value as Authorization: Bearer <token>"
+    })]
+    BootstrapTokenRequired {
+        /// Whether the server has a bootstrap token.
+        configured: bool,
+    },
     /// Missing scope.
     #[error("this sandbox key lacks the {0} scope")]
     Forbidden(&'static str),
@@ -306,7 +320,9 @@ impl ApiError {
             | Self::CheckoutClosed
             | Self::EpochChanged { .. } => StatusCode::CONFLICT,
             Self::DatasetArchived { .. } => StatusCode::GONE,
-            Self::Unauthorized | Self::OperatorCredentialRequired => StatusCode::UNAUTHORIZED,
+            Self::Unauthorized
+            | Self::BootstrapTokenRequired { .. }
+            | Self::OperatorCredentialRequired => StatusCode::UNAUTHORIZED,
             Self::Forbidden(_) | Self::CrossOrigin => StatusCode::FORBIDDEN,
             Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             Self::RouteNotFound | Self::NotFound(_) => StatusCode::NOT_FOUND,
@@ -333,6 +349,7 @@ impl ApiError {
             Self::RawCardData => ErrorCode::RawCardDataRejected,
             Self::InvalidPaymentToken(_) => ErrorCode::InvalidPaymentToken,
             Self::Unauthorized => ErrorCode::Unauthorized,
+            Self::BootstrapTokenRequired { .. } => ErrorCode::BootstrapTokenRequired,
             Self::Forbidden(_) => ErrorCode::Forbidden,
             Self::RouteNotFound => ErrorCode::RouteNotFound,
             Self::NotFound(_) => ErrorCode::NotFound,

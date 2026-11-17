@@ -29,6 +29,15 @@ async fn creating_a_project_needs_the_operator_bootstrap_token() {
             )
             .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{reply}");
+        // Its own refusal, naming the credential it needs and where it comes from (v1
+        // review M5), not "missing or invalid sandbox key".
+        assert_eq!(
+            reply["error"]["code"], "bootstrap_token_required",
+            "{reply}"
+        );
+        let message = reply["error"]["message"].as_str().unwrap();
+        assert!(message.contains("PS_BOOTSTRAP_TOKEN"), "{message}");
+        assert!(!message.contains("sandbox key"), "{message}");
     }
     let (status, reply) = app
         .send(
@@ -76,6 +85,20 @@ async fn without_a_configured_bootstrap_token_nobody_can_create_projects() {
         .unwrap();
     let response = tower::ServiceExt::oneshot(router, request).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = http_body_util::BodyExt::collect(response.into_body())
+        .await
+        .unwrap()
+        .to_bytes();
+    let reply: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        reply["error"]["code"], "bootstrap_token_required",
+        "{reply}"
+    );
+    let message = reply["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("started without PS_BOOTSTRAP_TOKEN"),
+        "{message}"
+    );
     app.cleanup().await;
 }
 

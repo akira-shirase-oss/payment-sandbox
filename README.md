@@ -12,29 +12,45 @@
 
 ## Run it
 
+From a clone, on macOS or Linux with Docker, rustup and Node 22.17+:
+
 ```sh
-export PATH="$(brew --prefix rustup)/bin:$PATH"   # the pinned toolchain (rust-toolchain.toml)
-scripts/stack.sh up                                # PostgreSQL on 127.0.0.1:56432, a second (empty) cluster on 56450 for the cross-cluster restore test
-eval "$(scripts/stack.sh env)"                     # database URLs, PS_PROFILE=dev and dev credentials (D-046)
-cargo run -p sandbox-server -- setup               # roles ps_owner / ps_runtime / ps_app + database (D-038)
+export PATH="$(brew --prefix rustup)/bin:$PATH"   # macOS with rustup: the pinned toolchain (rust-toolchain.toml)
+scripts/stack.sh up && eval "$(scripts/stack.sh env)"  # PostgreSQL on 127.0.0.1:56432; dev URLs and credentials (D-046)
+cargo run -p sandbox-server -- setup               # roles ps_owner / ps_runtime / ps_app + the database (D-038)
 cargo run -p sandbox-server -- migrate             # migrations, as the owner
-scripts/check.sh                                   # the gate CI runs: fmt, clippy, architecture, tests, web apps and journeys, cargo-deny
-scripts/restore-rehearsal.sh payment_sandbox ps_rehearsal   # pg_dump → fresh database → identical fingerprint (D-053)
-cargo run -p sandbox-sim                           # simulated network on 127.0.0.1:56081
-cargo run -p sandbox-server                        # API on 127.0.0.1:56080, as ps_app (webhooks need PS_SECRET_KEY)
-cargo run -p sandbox-dev-store                     # the development store on 127.0.0.1:56082
-npm ci && npm run build                            # the checkout and the dashboard (Node 22.17+)
+npm ci && npm run build                            # the checkout and the dashboard
+export PS_BOOTSTRAP_TOKEN=$(openssl rand -hex 24)  # the operator's token: it creates projects
+export PS_SECRET_KEY=$(openssl rand -hex 32)       # seals webhook signing secrets at rest
+cargo run -p sandbox-sim &                         # the simulated network on 127.0.0.1:56081
 PS_CHECKOUT_DIR=apps/checkout/build PS_DASHBOARD_DIR=apps/dashboard/build \
-  cargo run -p sandbox-server                      # ... checkout on 127.0.0.1:56083, dashboard on http://dashboard.localhost:56084
-scripts/e2e.sh                                     # the browser journeys (Chromium, ports 56460-56465)
-cargo run -p sandbox-cli -- --help                 # the CLI: payments, the ledger, scenarios, reset
+  cargo run -p sandbox-server &                    # API 127.0.0.1:56080, checkout 56083, dashboard 56084
 ```
 
-With the server running and `PS_API_KEY` set to a project's key, `sandbox-cli scenarios run
---all --check` replays the seeded scenario library (`fixtures/scenarios/`: declines, lost
-replies, an unavailable network, capacity refusals, idempotent repeats ...) and checks each
-run against the trace committed with it; `sandbox-cli reset` opens a new, empty dataset epoch
-after you type the project's slug (nothing is deleted).
+Then create a project with the bootstrap token. The answer holds the project's first
+admin key, shown once; keep it in your environment, never on a command line:
+
+```sh
+curl -s -X POST http://127.0.0.1:56080/v1/projects \
+  -H "Authorization: Bearer $PS_BOOTSTRAP_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"slug": "my-store", "name": "My store"}'
+export PS_API_KEY=sk_sim_...                       # the api_key.secret it printed
+cargo run -q -p sandbox-cli -- status
+cargo run -q -p sandbox-cli -- payments create --amount 42.00 --currency USD
+```
+
+Sign in to the dashboard at `http://dashboard.localhost:56084` with the same key. From
+here, `docs/DEVELOPERS.md` takes a store through the CLI, the TypeScript SDK, the hosted
+checkout, webhooks and the failure-scenario library.
+
+Working on the sandbox itself:
+
+```sh
+scripts/check.sh                                   # the gate CI runs: fmt, clippy, architecture, tests, web apps and journeys, cargo-deny
+scripts/e2e.sh                                     # the browser journeys only (Chromium, ports 56460-56466)
+scripts/restore-rehearsal.sh payment_sandbox ps_rehearsal   # pg_dump → fresh database → identical fingerprint (D-053)
+cargo run -p sandbox-dev-store                     # the development store (a webhook consumer) on 127.0.0.1:56082
+```
 
 A store creates a checkout session (`POST /v1/checkout_sessions`) and sends the payer to
 the URL it returns; the payer picks what the simulated network does (there is no card
@@ -46,13 +62,13 @@ simulator's controls. Each is its own origin under a strict Content-Security-Pol
 session cookie never reaches another port, and its API is for its own page only (scripts
 and `curl` use `/v1` with a key).
 
-Ports (all loopback): 56432 PostgreSQL, 56080 API, 56081 simulator (M2),
-56090 load-test server. Loopback is not a credential: the simulator answers
-only the server's `PS_SIM_TOKEN`, and the test controls (the simulator's
-faults and clock, the development store's `PUT /config`) exist only when
-switched on, by default only with `PS_PROFILE=dev`, behind their own
-operator credentials (D-046). Load runs: `MODE=smoke|full scripts/load.sh <scenario>`
-(`perf/README.md`).
+Ports (all loopback): 56080 API, 56081 simulated network, 56082 development store, 56083
+checkout, 56084 dashboard, 56432 PostgreSQL, 56450 the empty cluster of the cross-cluster
+restore test, 56090 load-test server. Loopback is not a credential: the simulator answers
+only the server's `PS_SIM_TOKEN`, and the test controls (the simulator's faults and clock,
+the development store's `PUT /config`) exist only when switched on, by default only with
+`PS_PROFILE=dev`, behind their own operator credentials (D-046). Load runs:
+`MODE=smoke|full scripts/load.sh <scenario>` (`perf/README.md`).
 
 An independently owned, **simulated-money** payment platform for development
 and CI. CMS test stores use our checkout, APIs and signed webhooks without a

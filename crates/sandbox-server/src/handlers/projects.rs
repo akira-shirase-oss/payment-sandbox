@@ -33,7 +33,9 @@ pub struct CreateProject {
 pub async fn create(State(state): State<AppState>, request: Request) -> Result<Response, ApiError> {
     let (parts, body) = request.into_parts();
     if !auth::is_bootstrap(&parts, &state) {
-        return Err(ApiError::Unauthorized);
+        return Err(ApiError::BootstrapTokenRequired {
+            configured: state.config.bootstrap_token.is_some(),
+        });
     }
     // The token is checked before the body is read, so an unauthenticated caller learns
     // nothing about the body rules.

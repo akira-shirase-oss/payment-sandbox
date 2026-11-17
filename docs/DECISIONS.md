@@ -1198,6 +1198,20 @@ closes one of its findings, with the test that failed before the fix.
   operation's and the payment's resolution, and requires all-before or all-after; before
   the fix it read `("authorizing", 0, "succeeded")`.
 
+- **D-077 — The README gets a newcomer to a key; project creation names its credential.**
+  README's "Run it" started the server without `PS_BOOTSTRAP_TOKEN` and never said how to
+  create a project, and without the token `POST /v1/projects` answered `401 "missing or
+  invalid sandbox key"`, which names the wrong credential. "Run it" now sets the bootstrap
+  token and the secret key, starts the network and the server once (with both web apps),
+  creates a project, makes a first payment with the CLI and signs in to the dashboard;
+  it was walked as written (ports moved into the reviewer's range). Project creation
+  without the token answers its own code, `bootstrap_token_required` (`401`), saying to
+  send the server's `PS_BOOTSTRAP_TOKEN` as a bearer token, or, when the server has none,
+  that it was started without one and creates no projects until restarted with it. Tests:
+  `tests/keys.rs::creating_a_project_needs_the_operator_bootstrap_token` and
+  `without_a_configured_bootstrap_token_nobody_can_create_projects` (both failed before:
+  `unauthorized`, "missing or invalid sandbox key").
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is
