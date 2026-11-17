@@ -1357,6 +1357,21 @@ closes one of its findings, with the test that failed before the fix.
   to 1.0.0's data, reconcile and replay old keys, or it fails before it ships (the review's
   mutation check showed a breaking 14th migration would be caught).
 
+- **D-088 — Web vitals of the production builds, budgeted in the gate.** D-064 budgeted the
+  apps' gzip sizes and measured page loads until the payer can act, but not the vitals a
+  user feels. `e2e/tests/vitals.spec.ts` measures LCP, CLS and INP in the page
+  (PerformanceObserver: LCP before the first input, CLS as the largest session window, INP
+  as the longest event entry of a page's scripted interactions, with 16 ms the smallest
+  reported) for the checkout and the dashboard's sign-in, overview, payments, a payment,
+  ledger and webhooks pages, on the apps' production builds served by the real server, and
+  fails on anything over the "good" thresholds (LCP 2.5 s, CLS 0.1, INP 200 ms). It runs in
+  every gate through `scripts/e2e.sh`; `scripts/web-perf.sh` records it with the bundle sizes
+  and page loads (`perf/results/<stamp>-web-v1.json`). Its first run failed: the webhooks
+  page shifted by 0.12 as its tables filled, and every signed-in page by about 0.06 as the
+  nav appeared; the pages now show skeletons until their data is in (no "nothing here yet"
+  that is not true yet) and the layout holds the nav's height while the session loads,
+  bringing every signed-in page to about 0.001.
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

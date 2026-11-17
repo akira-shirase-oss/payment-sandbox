@@ -88,6 +88,10 @@
 					{/each}
 				</ul>
 			</nav>
+		{:else if session.status === 'loading'}
+			<!-- The nav's height, held while the session loads, so the page does not jump down
+			     when it appears (CLS). -->
+			<div class="h-11" aria-hidden="true"></div>
 		{/if}
 	</header>
 	<main class="mx-auto w-full min-w-0 max-w-6xl flex-1 px-4 py-6 sm:px-6">

@@ -30,7 +30,9 @@ cargo test -p sandbox-server --features fault-injection --test drills --locked
 
 # The checkout, the dashboard and the SDK (M6, M7): strict type checks, component and unit
 # tests, then the journeys in Chromium against the real processes (which build both apps),
-# the examples and the SDK's live tests, then the apps' size budgets (D-064).
+# the examples and the SDK's live tests, then the apps' size budgets (D-064). The web-vitals
+# budgets (LCP ≤ 2.5 s, CLS ≤ 0.1, INP ≤ 200 ms on every main page of both apps' production
+# builds, D-088) are a journey: e2e/tests/vitals.spec.ts fails the gate on a miss.
 # Always a clean install from the lockfile, as CI does: a lockfile out of step with a
 # package.json fails here, not first in CI.
 npm ci --no-audit --no-fund --prefer-offline

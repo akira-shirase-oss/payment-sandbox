@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { Skeleton } from '@sandbox/ui/ui/skeleton';
 	import * as Table from '@sandbox/ui/ui/table';
 	import { get, type Balance } from '#lib/api.js';
 	import { account, money } from '#lib/format.js';
@@ -8,10 +9,13 @@
 
 	let balances = $state<Balance[]>([]);
 	let error = $state<Problem | null>(null);
+	// A skeleton until the balances are in: no "No postings yet" that is not true yet.
+	let loaded = $state(false);
 	async function load() {
 		error = null;
 		try {
 			balances = (await get<{ balances: Balance[] }>('/v1/balances')).balances;
+			loaded = true;
 		} catch (e) {
 			error = problem(e, 'the ledger');
 		}
@@ -26,6 +30,9 @@
 	Every balance is summed from the journal. Open one to see the postings that make it up.
 </p>
 {#if error}<LoadError problem={error} retry={load} />{/if}
+{#if !loaded && !error}
+	<Skeleton class="h-64 w-full rounded-xl" aria-busy="true" aria-label="Loading the balances" />
+{:else if loaded}
 <!-- At 360 px the balance stays beside its account: currency and side fold under the name. -->
 <div class="rounded-xl border bg-card">
 	<Table.Root label="Balances">
@@ -49,3 +56,4 @@
 		</Table.Body>
 	</Table.Root>
 </div>
+{/if}

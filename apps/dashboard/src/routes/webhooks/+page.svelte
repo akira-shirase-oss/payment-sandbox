@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { OutcomeBadge } from '@sandbox/ui/components/sandbox/index.js';
 	import { deliveryOutcome, type Outcome } from '@sandbox/ui/outcome';
+	import { Skeleton } from '@sandbox/ui/ui/skeleton';
 	import * as Table from '@sandbox/ui/ui/table';
 	import { get, type Endpoint, type EventRecord } from '#lib/api.js';
 	import { short, when } from '#lib/format.js';
@@ -11,11 +12,19 @@
 	let endpoints = $state<Endpoint[]>([]);
 	let events = $state<EventRecord[]>([]);
 	let error = $state<Problem | null>(null);
+	// Until both lists are in, a skeleton holds their place: no empty state that is not true
+	// yet, and nothing below jumps when the rows arrive (CLS, perf/results web vitals).
+	let loaded = $state(false);
 	async function load() {
 		error = null;
 		try {
-			endpoints = (await get<{ endpoints: Endpoint[] }>('/v1/webhook_endpoints?limit=100')).endpoints;
-			events = (await get<{ events: EventRecord[] }>('/v1/events?limit=100')).events;
+			const [e, ev] = await Promise.all([
+				get<{ endpoints: Endpoint[] }>('/v1/webhook_endpoints?limit=100'),
+				get<{ events: EventRecord[] }>('/v1/events?limit=100')
+			]);
+			endpoints = e.endpoints;
+			events = ev.events;
+			loaded = true;
 		} catch (e) {
 			error = problem(e, 'the webhooks');
 		}
@@ -35,6 +44,14 @@
 
 <h1 class="display-2 mb-6">Webhooks</h1>
 {#if error}<LoadError problem={error} retry={load} />{/if}
+{#if !loaded && !error}
+	<div class="space-y-3" aria-busy="true" aria-label="Loading the webhooks">
+		<Skeleton class="h-6 w-32" />
+		<Skeleton class="h-28 w-full rounded-xl" />
+		<Skeleton class="h-6 w-40" />
+		<Skeleton class="h-64 w-full rounded-xl" />
+	</div>
+{:else if loaded}
 <h2 class="title mb-2">Endpoints</h2>
 <div class="mb-8 rounded-xl border bg-card">
 	<Table.Root label="Endpoints">
@@ -84,3 +101,4 @@
 		</Table.Body>
 	</Table.Root>
 </div>
+{/if}
