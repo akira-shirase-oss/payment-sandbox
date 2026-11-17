@@ -1,0 +1,223 @@
+{
+  "scenario": "m2-refund-race",
+  "mode": "full",
+  "started_utc": "20261117T182143Z",
+  "commit": "1aca349457da69db20958a8305a01b3abe127ff6",
+  "tree_dirty": false,
+  "machine": {
+    "cpu": "Intel(R) Xeon(R) 6975P-C",
+    "cores": 4,
+    "memory_gb": 15,
+    "os": "Linux 7.0.0-1016-aws",
+    "load_average_before": "4.25, 1.79, 0.68",
+    "load_average_after": "2.33, 1.71, 0.73",
+    "note": "GitHub-hosted runner: the load generator, the server, the network and PostgreSQL share one runner VM on shared cloud hardware; an observation, not capacity",
+    "label": "GitHub-hosted runner",
+    "runner": {
+      "image": "ubuntu26/20261111.82.6",
+      "arch": "X64",
+      "workflow_run": 44146585972
+    }
+  },
+  "server_rss_kb_at_end": 16844,
+  "postgres_lock_waits_over_50ms": 0,
+  "thresholds_passed": true,
+  "k6_exit_status": 0,
+  "requests": 37206,
+  "requests_per_second": 587.9408087438236,
+  "failed_rate": 0.6442778046551632,
+  "dropped_iterations": 0,
+  "latency_ms": {
+    "min": 0.389251,
+    "med": 0.7309540000000001,
+    "avg": 1.7895312731548598,
+    "p(90)": 3.4310495000000003,
+    "p(95)": 4.332400249999999,
+    "p(99)": 7.981430349999987,
+    "max": 315.700278
+  },
+  "thresholds": [
+    {
+      "metric": "checks{phase:race}",
+      "thresholds": {
+        "rate==1": false
+      }
+    },
+    {
+      "metric": "http_req_duration{op:refund}",
+      "thresholds": {
+        "p(99)<500": false
+      }
+    },
+    {
+      "metric": "checks{phase:reconcile}",
+      "thresholds": {
+        "rate==1": false
+      }
+    },
+    {
+      "metric": "refunds_admitted",
+      "thresholds": {
+        "count==12030": false
+      }
+    }
+  ],
+  "k6_summary": {
+    "http_req_failed": {
+      "passes": 23971,
+      "fails": 13235,
+      "value": 0.6442778046551632
+    },
+    "iterations": {
+      "count": 36001,
+      "rate": 568.8990231571895
+    },
+    "vus": {
+      "max": 3,
+      "value": 0,
+      "min": 0
+    },
+    "http_req_sending": {
+      "med": 0.012444,
+      "avg": 0.013362251303553061,
+      "p(90)": 0.0159555,
+      "p(95)": 0.01761875,
+      "p(99)": 0.02802949999999997,
+      "max": 2.457862,
+      "min": 0.003839
+    },
+    "http_req_waiting": {
+      "p(95)": 4.27056825,
+      "p(99)": 7.900511549999973,
+      "max": 315.626999,
+      "min": 0.341606,
+      "med": 0.6821740000000001,
+      "avg": 1.7388114276729498,
+      "p(90)": 3.3738185
+    },
+    "checks{phase:race}": {
+      "passes": 36001,
+      "fails": 0,
+      "thresholds": {
+        "rate==1": false
+      },
+      "value": 1
+    },
+    "refunds_refused": {
+      "count": 23971,
+      "rate": 378.7972135246518
+    },
+    "http_req_tls_handshaking": {
+      "min": 0,
+      "med": 0,
+      "avg": 0,
+      "p(90)": 0,
+      "p(95)": 0,
+      "p(99)": 0,
+      "max": 0
+    },
+    "http_req_duration{expected_response:true}": {
+      "p(95)": 6.716252799999997,
+      "p(99)": 10.063052799999996,
+      "max": 315.700278,
+      "min": 0.6615,
+      "med": 3.145697,
+      "avg": 3.669442062334718,
+      "p(90)": 4.9115866000000015
+    },
+    "http_req_blocked": {
+      "min": 0.001247,
+      "med": 0.003479,
+      "avg": 0.004357420308552377,
+      "p(90)": 0.00444,
+      "p(95)": 0.004768,
+      "p(99)": 0.013549799999999989,
+      "max": 1.022621
+    },
+    "vus_max": {
+      "value": 200,
+      "min": 200,
+      "max": 200
+    },
+    "data_received": {
+      "count": 23094352,
+      "rate": 364944.14858610276
+    },
+    "http_req_duration{op:refund}": {
+      "min": 0.389251,
+      "med": 0.721813,
+      "avg": 1.7620601787728158,
+      "p(90)": 3.442369,
+      "p(95)": 4.367182,
+      "p(99)": 7.994892,
+      "max": 54.345376,
+      "thresholds": {
+        "p(99)<500": false
+      }
+    },
+    "data_sent": {
+      "count": 11855539,
+      "rate": 187344.92253276196
+    },
+    "http_req_duration": {
+      "p(99)": 7.981430349999987,
+      "max": 315.700278,
+      "min": 0.389251,
+      "med": 0.7309540000000001,
+      "avg": 1.7895312731548598,
+      "p(90)": 3.4310495000000003,
+      "p(95)": 4.332400249999999
+    },
+    "http_req_receiving": {
+      "min": 0.010074,
+      "med": 0.034424,
+      "avg": 0.037357594178358114,
+      "p(90)": 0.0479725,
+      "p(95)": 0.05801425,
+      "p(99)": 0.13558489999999995,
+      "max": 0.777129
+    },
+    "iteration_duration": {
+      "min": 0.505205,
+      "med": 0.863639,
+      "avg": 1.9005144399322342,
+      "p(90)": 3.584294,
+      "p(95)": 4.530011,
+      "p(99)": 8.15717,
+      "max": 54.627089
+    },
+    "http_reqs": {
+      "count": 37206,
+      "rate": 587.9408087438236
+    },
+    "http_req_connecting": {
+      "p(95)": 0,
+      "p(99)": 0,
+      "max": 0.613446,
+      "min": 0,
+      "med": 0,
+      "avg": 0.0005068858248669572,
+      "p(90)": 0
+    },
+    "checks": {
+      "passes": 36404,
+      "fails": 0,
+      "value": 1
+    },
+    "checks{phase:reconcile}": {
+      "passes": 403,
+      "fails": 0,
+      "thresholds": {
+        "rate==1": false
+      },
+      "value": 1
+    },
+    "refunds_admitted": {
+      "count": 12030,
+      "rate": 190.1018096325377,
+      "thresholds": {
+        "count==12030": false
+      }
+    }
+  }
+}

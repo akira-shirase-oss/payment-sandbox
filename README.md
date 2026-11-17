@@ -3,11 +3,15 @@
 > **SIMULATED MONEY ONLY.** No real cards, balances or banking connection,
 > ever. Every response carries `Sandbox-Simulated: true`.
 >
-> **Status — M0 to M7 in progress: their functional gates pass (tests, drills,
-> reconciliation, the browser journeys in Chromium, and for M7 the CLI, the TypeScript SDK,
-> the scenario library's reproducibility and the release path), and every full
-> ≥1,000,000-request load run is still owed; only smoke runs exist, failures included
-> (`perf/results/smoke/`), and the M6 and M7 scenarios have not run at full scale.**
+> **Status — M0 to M7 in progress, version 1.0.0 not yet tagged: their functional gates pass
+> (tests, drills, reconciliation, the browser journeys in Chromium, and for M7 the CLI, the
+> TypeScript SDK, the scenario library's reproducibility and the release path, with the v1
+> readiness review's findings fixed, D-074 to D-089). The full ≥1,000,000-request load runs
+> ran once on GitHub-hosted runners (`perf/README.md`): `m0-probes`, `m4-webhooks` and
+> `m7-developer` passed, `m2-refund-race` passed at its defined size, and `m1-auth`,
+> `m2-lifecycle`, `m3-uncertain`, `m5-explain` and `m6-checkout` missed (kept as they came
+> out; the end-of-run reconciliation and explanation gates held wherever they ran, and
+> `m3-uncertain`'s timed out before it did). No milestone is Done yet.**
 > Milestones, proof gates and the evidence behind each status live in `docs/ROADMAP.md`.
 
 ## Run it
