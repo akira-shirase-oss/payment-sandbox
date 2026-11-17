@@ -674,3 +674,187 @@ async fn busy_answers_are_retried_under_the_same_key_and_the_retries_are_bounded
         ClientError::NotASandbox { .. }
     ));
 }
+
+/// A server error or a gateway's answer on a keyed (money-moving) request is "no answer":
+/// the request may have been applied, so it is retried under the same key, and if the
+/// retries run out the outcome is unknown, naming the key (D-075). Never "refused" (that
+/// tells a store to start over with a new key: a second charge), never "not a sandbox".
+#[tokio::test]
+async fn server_errors_and_gateway_answers_on_money_moving_calls_are_unknown_not_refused() {
+    let internal =
+        json!({"error": {"code": "internal", "message": "internal error"}, "simulated": true});
+    let done = json!({"operation": {"state": "succeeded"}, "replayed": true, "simulated": true});
+    for (label, first) in [
+        ("500 from the sandbox", (500, internal.clone(), true)),
+        ("502 from a proxy", (502, Value::Null, false)),
+        ("504 from a proxy", (504, Value::Null, false)),
+        ("503 from a proxy", (503, Value::Null, false)),
+    ] {
+        // Once, then the sandbox answers: retried under the same key.
+        let (url, keys) = fake(vec![first.clone(), (200, done.clone(), true)]).await;
+        let client = Client::new(Config::new(&url, Some(KEY), false).unwrap(), fast()).unwrap();
+        let answer = client
+            .post_money("/v1/payments", &json!({"amount": 1}), None)
+            .await
+            .unwrap_or_else(|e| panic!("{label}: {e}"));
+        assert_eq!((answer.status, answer.attempts), (200, 2), "{label}");
+        let seen = keys.lock().unwrap().clone();
+        assert!(seen.len() == 2 && seen[0] == seen[1], "{label}: {seen:?}");
+
+        // Every time: four attempts, then unknown, naming the key.
+        let (url, keys) = fake(vec![first]).await;
+        let client = Client::new(Config::new(&url, Some(KEY), false).unwrap(), fast()).unwrap();
+        let error = client
+            .post_money("/v1/payments", &json!({}), Some("order-7".to_owned()))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, ClientError::Unknown { idempotency_key, attempts: 4, .. } if idempotency_key == "order-7"),
+            "{label}: {error:?}"
+        );
+        assert!(
+            error.to_string().contains("--idempotency-key order-7"),
+            "{label}: {error}"
+        );
+        assert_eq!(keys.lock().unwrap().len(), 4, "{label}");
+    }
+
+    // A read through a gateway that answers 502 is retried, then "unreachable", not "not a
+    // sandbox".
+    let (url, keys) = fake(vec![(502, Value::Null, false)]).await;
+    let client = Client::new(Config::new(&url, Some(KEY), false).unwrap(), fast()).unwrap();
+    let error = client.get("/v1/project").await.unwrap_err();
+    assert!(
+        matches!(&error, ClientError::Unreachable { .. }),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("502"), "{error}");
+    assert_eq!(keys.lock().unwrap().len(), 4);
+    // Something that answers 4xx without the header is still not a sandbox.
+    let (url, _) = fake(vec![(404, Value::Null, false)]).await;
+    let client = Client::new(Config::new(&url, Some(KEY), false).unwrap(), fast()).unwrap();
+    assert!(matches!(
+        client
+            .post_money("/v1/payments", &json!({}), None)
+            .await
+            .unwrap_err(),
+        ClientError::NotASandbox { .. }
+    ));
+
+    // The binary: exit status 4 and the key to retry with.
+    let (url, _) = fake(vec![(502, Value::Null, false)]).await;
+    let output = cli(
+        &url,
+        Some(KEY),
+        &[
+            "--timeout",
+            "5",
+            "payments",
+            "create",
+            "--amount",
+            "1.00",
+            "--currency",
+            "USD",
+            "--idempotency-key",
+            "order-8",
+        ],
+    )
+    .await;
+    assert_eq!(code(&output), 4, "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("--idempotency-key order-8"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+/// A proxy in front of the API while the server restarts in the middle of a payment: the
+/// first `POST /v1/payments` reaches the server, which records it, but the proxy answers
+/// `502` without the sandbox header (its upstream went away); the next attempt finds the
+/// server still down (`502` at once); then it is back.
+async fn restarting_proxy(upstream: String) -> (String, Arc<AtomicUsize>) {
+    const BAD_GATEWAY: &[u8] =
+        b"HTTP/1.1 502 Bad Gateway\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let creates = Arc::new(AtomicUsize::new(0));
+    let counter = creates.clone();
+    tokio::spawn(async move {
+        while let Ok((mut client, _)) = listener.accept().await {
+            let (upstream, counter) = (upstream.clone(), counter.clone());
+            tokio::spawn(async move {
+                let addr = upstream.trim_start_matches("http://");
+                loop {
+                    let Some(request) = read_message(&mut client).await else {
+                        return;
+                    };
+                    let turn = if request.starts_with(b"POST /v1/payments ") {
+                        counter.fetch_add(1, Ordering::SeqCst)
+                    } else {
+                        usize::MAX
+                    };
+                    if turn == 1 {
+                        // The server is still restarting: nothing reaches it.
+                        let _ = client.write_all(BAD_GATEWAY).await;
+                        return;
+                    }
+                    let mut server = tokio::net::TcpStream::connect(addr).await.unwrap();
+                    server.write_all(&request).await.unwrap();
+                    let Some(response) = read_message(&mut server).await else {
+                        return;
+                    };
+                    if turn == 0 {
+                        // The request was applied; its answer died with the server.
+                        let _ = client.write_all(BAD_GATEWAY).await;
+                        return;
+                    }
+                    client.write_all(&response).await.unwrap();
+                }
+            });
+        }
+    });
+    (url, creates)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_server_restart_behind_a_proxy_mid_payment_charges_once() {
+    let stack = Stack::start().await;
+    let (_, admin, _) = stack.project("restart").await;
+    let (proxy, creates) = restarting_proxy(stack.api.clone()).await;
+    let client = Client::new(
+        Config::new(&proxy, Some(&admin), false).unwrap(),
+        RetryPolicy {
+            base: Duration::from_millis(20),
+            cap: Duration::from_millis(100),
+            ..RetryPolicy::default()
+        },
+    )
+    .unwrap();
+    let answer = client
+        .post_money(
+            "/v1/payments",
+            &json!({"amount": 4200, "currency": "USD", "token": "tok_sim_approve"}),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(creates.load(Ordering::SeqCst), 3);
+    assert_eq!(answer.attempts, 3);
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    assert_eq!(
+        answer.body["replayed"], true,
+        "the retry replayed the first request"
+    );
+    let direct = Client::new(
+        Config::new(&stack.api, Some(&admin), false).unwrap(),
+        RetryPolicy::default(),
+    )
+    .unwrap();
+    let payments = direct.get("/v1/payments").await.unwrap();
+    assert_eq!(
+        payments.body["payments"].as_array().unwrap().len(),
+        1,
+        "charged once"
+    );
+    stack.stop().await;
+}

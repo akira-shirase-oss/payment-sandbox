@@ -73,9 +73,10 @@ sandbox-cli scenarios run --all --check
 ```
 
 Exit status: `0` done, `1` refused (the message says why), `2` wrong usage or configuration,
-`3` declined or never executed, `4` **not known yet** (uncertain: check again before trying
-anything new), `5` the sandbox could not be reached. Plain words by default; `--json` prints
-the API's JSON.
+`3` declined or never executed, `4` **not known yet** (uncertain, or no usable answer to a
+money-moving command after its retries: the message names the `--idempotency-key` to retry
+with), `5` the sandbox could not be reached. Plain words by default; `--json` prints the
+API's JSON.
 
 ## 3. The SDK in your store's server
 
@@ -125,7 +126,7 @@ console.log('reconciliation: clean');
 | `outcome: 'declined'` | the network said no (`operation.decline_code`) | ask the payer for another scenario |
 | `outcome: 'not_executed'` | proved never executed (a fenced readback) | nothing moved; start a new payment |
 | `outcome: 'uncertain'` or `'pending'`, `settled: false` | the network's answer is not known yet | `waitForSettlement`; never treat it as paid |
-| `UnknownOutcomeError` | no answer at all after the retries | retry with `error.idempotencyKey`, never a new key |
+| `UnknownOutcomeError` (`settled: false`) | no usable answer after the retries: none at all, a server error, or a proxy answering `502`/`504` while the server restarts | retry with `error.idempotencyKey`, never a new key: the sandbox answers from its record or finishes the same operation |
 | `RefusedError` (`code`, `status`) | the sandbox refused: capacity, conflict, scope, ... | fix the request; `code` is stable |
 
 Retries are already done for you, and safely: every money-moving call carries an

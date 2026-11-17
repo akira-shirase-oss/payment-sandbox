@@ -5,9 +5,13 @@
 //! - Retries are bounded: at most [`RetryPolicy::max_attempts`] attempts, exponential backoff
 //!   with full jitter, never past the overall deadline, and only for answers that say "try
 //!   again" (no answer at all, `429`, and `503` busy/overloaded/unavailable/deadline).
+//! - On a money-moving (keyed) request, a server error (`5xx`) and a gateway's answer (a
+//!   proxy's `5xx` without the sandbox header: the server restarting behind Caddy) are "no
+//!   answer" too: the request may have been applied, so it is retried under the same key,
+//!   which the server replays or finishes, never charging twice (D-075).
 //! - An answer is honest: `202` with an `uncertain` operation is returned as such, never as
-//!   success; a money-moving request that got no answer at all is [`ClientError::Unknown`],
-//!   naming the key to retry with, never "failed".
+//!   success; a money-moving request that got no usable answer is [`ClientError::Unknown`],
+//!   naming the key to retry with, never "failed" or "refused".
 //! - Every answer must come from a sandbox (`Sandbox-Simulated: true`), or the client stops.
 //! - `https://` APIs are spoken to with rustls, trusting this machine's certificate
 //!   authorities plus any given with `--ca-cert` (D-074). A failed TLS handshake is its own
@@ -80,7 +84,7 @@ pub enum ClientError {
     },
     /// A money-moving request got no usable answer: it may or may not have been applied.
     #[error(
-        "no answer from the sandbox after {attempts} attempts ({cause}); the request may or may not have been applied: retry it with --idempotency-key {idempotency_key} to find out, never with a new key"
+        "no usable answer from the sandbox after {attempts} attempts ({cause}); the request may or may not have been applied: retry it with --idempotency-key {idempotency_key} to find out (the sandbox answers from its record or finishes it, never charging twice), never with a new key"
     )]
     Unknown {
         /// The key to retry with.
@@ -147,12 +151,23 @@ enum NoAnswer {
     NotHttp,
     /// The answer was larger than any the API sends.
     TooLarge,
+    /// A gateway answered for the sandbox: a `5xx` without the sandbox header (a proxy whose
+    /// upstream, the server, is restarting or down).
+    Gateway(u16),
 }
 
 impl NoAnswer {
     /// True when the request cannot have reached the server.
     fn never_sent(self) -> bool {
         self == Self::NotConnected
+    }
+
+    /// The `5xx` answers without the sandbox header that are a gateway speaking for it. On a
+    /// read, only the gateway statuses; on a money-moving request, any `5xx`: the request
+    /// may have reached the server, so "not a sandbox" would be the wrong answer.
+    fn gateway(status: u16, keyed: bool) -> Option<Self> {
+        let gateway = matches!(status, 502..=504) || (keyed && (500..600).contains(&status));
+        gateway.then_some(Self::Gateway(status))
     }
 
     fn describe(self, api_url: &str) -> String {
@@ -165,6 +180,9 @@ impl NoAnswer {
             }
             Self::NotHttp => "the answer was not HTTP".to_owned(),
             Self::TooLarge => "the answer exceeded 4 MiB".to_owned(),
+            Self::Gateway(status) => format!(
+                "a proxy answered HTTP {status} for the sandbox: the server behind it did not answer (restarting, or down)"
+            ),
         }
     }
 }
@@ -276,11 +294,24 @@ impl Client {
                             attempts,
                         });
                     }
-                    let refusal = refusal(status, &body)?;
-                    if !retryable(status, refusal.code().unwrap_or_default()) {
-                        return Err(refusal);
+                    // A server error on a money-moving request: it may have been applied
+                    // before the error (the operation commits first), so it is no answer,
+                    // retried under the same key, never a refusal (D-075).
+                    let keyed_server_error = key.is_some() && status >= 500;
+                    match refusal(status, &body) {
+                        Ok(refusal)
+                            if keyed_server_error
+                                || retryable(status, refusal.code().unwrap_or_default()) =>
+                        {
+                            (retry_after, refusal.to_string())
+                        }
+                        Ok(refusal) => return Err(refusal),
+                        Err(_) if keyed_server_error => (
+                            retry_after,
+                            format!("HTTP {status} without the API's error"),
+                        ),
+                        Err(unreadable) => return Err(unreadable),
                     }
-                    (retry_after, refusal.to_string())
                 }
                 Attempt::Failed(no_answer) => {
                     let cause = no_answer.describe(&self.config.api_url);
@@ -351,6 +382,9 @@ impl Client {
             .get(SIMULATED_HEADER)
             .is_some_and(|v| v.as_bytes() == b"true");
         if !simulated {
+            if let Some(gateway) = NoAnswer::gateway(status, key.is_some()) {
+                return Ok(Attempt::Failed(gateway));
+            }
             return Err(ClientError::NotASandbox {
                 url: self.config.api_url.clone(),
             });
@@ -368,7 +402,12 @@ impl Client {
         let body = if bytes.is_empty() {
             Value::Null
         } else {
-            serde_json::from_slice(&bytes).map_err(|_| ClientError::Unreadable { status })?
+            match serde_json::from_slice(&bytes) {
+                Ok(body) => body,
+                // A server error's body decides nothing; `send` reads its status.
+                Err(_) if status >= 500 => Value::Null,
+                Err(_) => return Err(ClientError::Unreadable { status }),
+            }
         };
         Ok(Attempt::Answered {
             status,

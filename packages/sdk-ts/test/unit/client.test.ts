@@ -92,6 +92,46 @@ describe('retries', () => {
 		await expect(sandbox.project()).rejects.toBeInstanceOf(NotASandboxError);
 	});
 
+	// D-075: on a money-moving call, a server error or a proxy's answer for the sandbox is no
+	// answer: retried under the same key, then unknown (settled: false), never a refusal.
+	const internal = { status: 500, body: { error: { code: 'internal', message: 'internal error' }, simulated: true } };
+	const gateways: Array<[string, Reply]> = [
+		['500 from the sandbox', internal],
+		['502 from a proxy', { status: 502, body: '', simulated: false }],
+		['503 from a proxy', { status: 503, body: '', simulated: false }],
+		['504 from a proxy', { status: 504, body: '', simulated: false }]
+	];
+	for (const [label, reply] of gateways) {
+		it(`treats a ${label} on a money-moving call as no answer`, async () => {
+			const once = fake([reply, created('succeeded', 200)]);
+			const sandbox = new Sandbox({ apiKey: KEY, fetch: once.fetch, retry: FAST });
+			const result = await sandbox.payments.create({ amount: 100, currency: 'USD' });
+			expect([result.attempts, result.replayed]).toEqual([2, true]);
+			expect(new Set(once.seen.map((s) => s.key)).size).toBe(1);
+
+			const always = fake([reply]);
+			const again = new Sandbox({ apiKey: KEY, fetch: always.fetch, retry: FAST });
+			const error = await again.payments.capture('p1', 100, { idempotencyKey: 'order-7-capture' }).catch((e) => e);
+			expect(error).toBeInstanceOf(UnknownOutcomeError);
+			expect([error.idempotencyKey, error.settled, error.attempts]).toEqual(['order-7-capture', false, DEFAULT_RETRY.maxAttempts]);
+			expect(error.message).toContain('idempotencyKey order-7-capture');
+			expect(always.seen.length).toBe(DEFAULT_RETRY.maxAttempts);
+		});
+	}
+
+	it('retries a read through a proxy that answers 502, then says unreachable, not "not a sandbox"', async () => {
+		const { fetch, seen } = fake([{ status: 502, body: '', simulated: false }]);
+		const sandbox = new Sandbox({ apiKey: KEY, fetch, retry: FAST });
+		const error = await sandbox.project().catch((e) => e);
+		expect(error).toBeInstanceOf(UnreachableError);
+		expect(error.message).toContain('502');
+		expect(seen.length).toBe(DEFAULT_RETRY.maxAttempts);
+		// A 4xx without the header is still not a sandbox.
+		const other = fake([{ status: 404, body: '', simulated: false }]);
+		const strict = new Sandbox({ apiKey: KEY, fetch: other.fetch, retry: FAST });
+		await expect(strict.payments.create({ amount: 100, currency: 'USD' })).rejects.toBeInstanceOf(NotASandboxError);
+	});
+
 	it('reports an uncertain answer as not settled, never as success', async () => {
 		const { fetch } = fake([created('uncertain', 202)]);
 		const sandbox = new Sandbox({ apiKey: KEY, fetch, retry: FAST });

@@ -28,17 +28,21 @@ export class RefusedError extends SandboxError {
 }
 
 /**
- * A money-moving request got no usable answer after its retries: it may or may not have
- * been applied. Retry with the same `idempotencyKey` to find out; never with a new one.
+ * A money-moving request got no usable answer after its retries (no answer at all, a server
+ * error, or a proxy answering for a restarting server): it may or may not have been
+ * applied. `settled` is false, as for an uncertain operation. Retry with the same
+ * `idempotencyKey` to find out; never with a new one.
  */
 export class UnknownOutcomeError extends SandboxError {
 	readonly idempotencyKey: string;
 	readonly attempts: number;
+	/** Not known yet, like `MoneyResult.settled: false`: never treat it as failed or paid. */
+	readonly settled = false as const;
 
 	constructor(idempotencyKey: string, attempts: number, cause: string) {
 		super(
 			'unknown_outcome',
-			`No answer from the sandbox after ${attempts} attempts (${cause}); the request may or may not have been applied. Retry it with idempotencyKey ${idempotencyKey} to find out, never with a new key.`
+			`No usable answer from the sandbox after ${attempts} attempts (${cause}); the request may or may not have been applied. Retry it with idempotencyKey ${idempotencyKey} to find out (the sandbox answers from its record or finishes it, never charging twice), never with a new key.`
 		);
 		this.idempotencyKey = idempotencyKey;
 		this.attempts = attempts;

@@ -1160,6 +1160,28 @@ closes one of its findings, with the test that failed before the fix.
   the release API behind Caddy (pinned, checksummed, `scripts/install-caddy.sh`) with its
   local authority, `status` and a payment over `https`, and the untrusted case refused.
 
+- **D-075 — A server error or a gateway's answer on a money-moving call is "no answer".**
+  The clients used to end a keyed call at once on any answer without
+  `Sandbox-Simulated` ("not a sandbox") and treat a `500` as a refusal ("fix the request").
+  Behind the documented Caddy, a server restart during a payment produces exactly those: a
+  `502`/`504` from the proxy, or a `500` after the operation committed (D-015 records the
+  operation before the network call). A store following the old answer would start over
+  with a new key: a second charge. Now, on a call with an idempotency key, any `5xx` from
+  the sandbox and any `5xx` without the sandbox header (a gateway speaking for it) are no
+  answer: retried under the same key within the attempt and deadline budget (the server
+  replays or finishes the recorded operation), then `ClientError::Unknown` (CLI exit 4) /
+  `UnknownOutcomeError` (`settled: false`) naming the key. A read through a gateway's
+  `502`/`503`/`504` is retried too and then reported unreachable, naming the status; a
+  plain `POST` (no key) is not re-sent after a gateway answer. `2xx` and `4xx` without the
+  header stay "not a sandbox". Tests (each failed before the fix: the `500` came back as
+  "internal error (internal, HTTP 500)", the proxy's `502` as `NotASandbox`):
+  `tests/cli.rs::server_errors_and_gateway_answers_on_money_moving_calls_are_unknown_not_refused`
+  (500, 502, 503, 504; the binary's exit 4 naming the key),
+  `tests/cli.rs::a_server_restart_behind_a_proxy_mid_payment_charges_once` (a proxy stub in
+  front of a real sandbox answers `502` after the server applied the payment, `502` again
+  while it "restarts", then forwards: 3 attempts, `replayed: true`, one payment), and the
+  SDK's `client.test.ts` (the same four answers, the read through a `502`).
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

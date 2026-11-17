@@ -4,9 +4,13 @@
 //   server replays or re-drives the same operation, so a retry can never charge twice.
 // - Retries are bounded (attempts, jittered backoff, an overall deadline) and only for
 //   answers that say "try again": no answer, 429, and 503 busy/overloaded/unavailable.
+// - On a money-moving call, a server error (5xx) and a proxy's 5xx without the sandbox
+//   header (the server restarting behind Caddy) are no answer too: the request may have been
+//   applied, so it is retried under the same key, which the server replays or finishes,
+//   never charging twice (D-075).
 // - Answers are honest: a 202 uncertain operation comes back as `outcome: 'uncertain'`,
-//   `settled: false`, never as success; no answer at all is UnknownOutcomeError, which
-//   names the key to retry with.
+//   `settled: false`, never as success; no usable answer is UnknownOutcomeError
+//   (`settled: false`), which names the key to retry with.
 // - Every answer must say `Sandbox-Simulated: true`, or the client stops.
 
 import { checkConfig, type CheckedConfig, type RetryPolicy, type SandboxOptions } from './config.ts';
@@ -144,6 +148,14 @@ async function readBounded(response: Response): Promise<Uint8Array> {
 		offset += chunk.byteLength;
 	}
 	return out;
+}
+
+/**
+ * A 5xx without the sandbox header is a gateway (a proxy) answering for the sandbox: on a
+ * read only 502–504, on a money-moving call any 5xx, since the request may have arrived.
+ */
+export function gatewayAnswer(status: number, keyed: boolean): boolean {
+	return (status >= 502 && status <= 504) || (keyed && status >= 500 && status <= 599);
 }
 
 function refusedConnection(error: unknown): boolean {
@@ -302,28 +314,39 @@ export class Sandbox {
 					redirect: 'error',
 					signal: AbortSignal.timeout(retry.attemptTimeoutMs)
 				});
-				if (response.headers.get('sandbox-simulated') !== 'true') throw new NotASandboxError(apiUrl);
-				const bytes = await readBounded(response);
-				let parsed: Record<string, unknown> = {};
-				if (bytes.byteLength > 0) {
-					try {
-						parsed = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
-					} catch {
-						throw new SandboxError('unreadable', `The sandbox sent an unreadable answer (HTTP ${response.status}).`);
+				const keyed = idempotencyKey !== undefined;
+				if (response.headers.get('sandbox-simulated') !== 'true') {
+					if (!gatewayAnswer(response.status, keyed)) throw new NotASandboxError(apiUrl);
+					await response.body?.cancel();
+					const gateway = `a proxy answered HTTP ${response.status} for the sandbox: the server behind it did not answer (restarting, or down)`;
+					// A POST without a key may have arrived: never re-sent.
+					if (method === 'POST' && !keyed) throw new UnreachableError(apiUrl, `${gateway}; the request may or may not have been applied`);
+					lastFailure = gateway;
+				} else {
+					const bytes = await readBounded(response);
+					// A server error on a money-moving call decides nothing by its body.
+					const serverError = keyed && response.status >= 500;
+					let parsed: Record<string, unknown> = {};
+					if (bytes.byteLength > 0) {
+						try {
+							parsed = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
+						} catch {
+							if (!serverError) throw new SandboxError('unreadable', `The sandbox sent an unreadable answer (HTTP ${response.status}).`);
+						}
 					}
+					if (response.ok) return { status: response.status, body: parsed, attempts };
+					const envelope = parsed.error as { code?: string; message?: string; request_id?: string | null } | undefined;
+					const refused = new RefusedError(
+						response.status,
+						envelope?.code ?? 'failed',
+						envelope?.message ?? `The sandbox answered ${response.status}.`,
+						envelope?.request_id ?? null
+					);
+					if (!serverError && !retryable(response.status, refused.code)) throw refused;
+					const after = Number(response.headers.get('retry-after'));
+					retryAfterMs = Number.isFinite(after) && response.headers.get('retry-after') !== null ? after * 1_000 : null;
+					lastFailure = serverError ? `${refused.message} (HTTP ${response.status})` : refused.message;
 				}
-				if (response.ok) return { status: response.status, body: parsed, attempts };
-				const envelope = parsed.error as { code?: string; message?: string; request_id?: string | null } | undefined;
-				const refused = new RefusedError(
-					response.status,
-					envelope?.code ?? 'failed',
-					envelope?.message ?? `The sandbox answered ${response.status}.`,
-					envelope?.request_id ?? null
-				);
-				if (!retryable(response.status, refused.code)) throw refused;
-				const after = Number(response.headers.get('retry-after'));
-				retryAfterMs = Number.isFinite(after) && response.headers.get('retry-after') !== null ? after * 1_000 : null;
-				lastFailure = refused.message;
 			} catch (error) {
 				if (error instanceof SandboxError) throw error;
 				// No answer. A POST without a key is re-sent only if it cannot have arrived.
