@@ -918,7 +918,7 @@ async fn recording_an_approval_survives_a_transient_lock_timeout() {
         .await;
     let pid = id(&auth);
     sim.fault(
-        json!({"kind": "capture", "target": null, "action": "delay", "delay_ms": 200, "count": 1}),
+        json!({"kind": "capture", "target": null, "action": "delay", "delay_ms": 800, "count": 1}),
     );
     let app = Arc::new(app);
     let capture = {
@@ -941,7 +941,11 @@ async fn recording_an_approval_survives_a_transient_lock_timeout() {
         .execute(&mut *blocker)
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(450)).await;
+    // The answer arrives about 800 ms after the request; hold the row past that, so
+    // recording it meets the lock (and retries) instead of a free row. The wider delay
+    // keeps the reservation visible long enough to observe on a slow runner (CI missed a
+    // 200 ms window once).
+    tokio::time::sleep(Duration::from_millis(1_050)).await;
     blocker.commit().await.unwrap();
     let (status, reply) = capture.await.unwrap();
     assert_eq!(status, StatusCode::CREATED, "{reply}");
