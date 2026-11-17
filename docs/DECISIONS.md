@@ -1423,6 +1423,25 @@ closes one of its findings, with the test that failed before the fix.
   connection and requires the next user to be outside both (it inherited `transaction_read_only
   = on` before the fix).
 
+- **D-092 — The full runs' misses, classified.** With D-090's CPU record and its two
+  harness fixes, the five misses of the first GitHub-hosted run were re-run once and
+  classified (both results of each are committed; `perf/README.md` has the table).
+  `m6-checkout` was the harness: with the metric series per session gone it passes (p95 24
+  ms, p99 104 ms). `m3-uncertain` was the harness first (its gate was never checked), and
+  its re-run's gate held (nothing open, journal, payments and network agree over 1.79
+  million requests), but 3.35% of its load checks failed with the CPU 64% busy: the product.
+  `m2-lifecycle` is the product too: 12% failed and authorize p99 59 s while the CPU was 40%
+  busy and almost never saturated, so requests waited rather than computed; the leading
+  suspect is the network's durable write per request (one fsync each) under bursts, the
+  per-payment queue the other. `m5-explain` is the product: PostgreSQL spent about 2 cores
+  summing every journal line per balances call and per explanation page; the fix is derived
+  per-account balances kept with each posting and reconciled to the journal, which stays
+  the only authority. `m1-auth` is the runner: the machine was saturated in 88% of samples
+  with the generator taking about half, and each read cost about 0.5 ms of CPU in the server
+  and PostgreSQL together; its 25 ms p95 budget was chosen, not measured, and stays until a
+  run with the generator on its own machine. No threshold was changed. The product misses
+  are owed fixes, each to be profiled and proven with a new run before v1.0.0 claims them.
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

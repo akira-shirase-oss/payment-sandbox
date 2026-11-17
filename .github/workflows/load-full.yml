@@ -87,11 +87,14 @@ jobs:
           PATH="$RUNNER_TEMP/bin:$PATH" MODE=full scripts/load.sh "$SCENARIO"
           echo "k6_status=$?" >> "$GITHUB_OUTPUT"
       - name: Label the result as a GitHub-hosted runner observation
+        id: label
         if: always()
         run: |
-          shopt -s nullglob
-          results=(perf/results/*-"$SCENARIO"-full.json)
-          [ "${#results[@]}" -eq 1 ] || { echo "expected one result, found ${#results[@]}" >&2; exit 1; }
+          # This run's result is the one file git does not know (earlier results are committed).
+          mapfile -t results < <(git status --porcelain --untracked-files=all -- perf/results \
+            | awk '/^\?\? / {print $2}' | grep -- "-$SCENARIO-full.json$" || true)
+          [ "${#results[@]}" -eq 1 ] || { echo "expected one new result, found ${#results[@]}" >&2; exit 1; }
+          echo "result=${results[0]}" >> "$GITHUB_OUTPUT"
           labelled="$(jq \
             --arg image "${ImageOS:-unknown}/${ImageVersion:-unknown}" \
             --arg arch "$RUNNER_ARCH" \
@@ -106,7 +109,7 @@ jobs:
         if: always()
         with:
           name: load-${{ matrix.scenario }}
-          path: perf/results/*-${{ matrix.scenario }}-full.json
+          path: ${{ steps.label.outputs.result }}
           if-no-files-found: error
           retention-days: 30
       - name: A threshold miss fails the job (the result is kept either way)

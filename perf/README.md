@@ -27,10 +27,10 @@ database and (from M2) the simulated network all listen on loopback.
 | `m0-probes` | M0 | liveness (no I/O) and readiness (one PostgreSQL round trip), 4:1 | **full run on a GitHub-hosted runner: pass** (999,988 requests at 10,000/s, p99 2.4 ms; below) |
 | `m1-auth` | M1 | authenticated project reads: key hash + lookup per request, two projects | **full run on a GitHub-hosted runner: miss** (3,734 of 5,000 requests/s served, p95 155 ms; below) |
 | `m2-lifecycle` | M2 | two projects; authorize, capture 600, refund 200 at 100 purchases/s with 5× bursts; then reconciliation | **full run on a GitHub-hosted runner: miss** (9.5% failed under the bursts, p99 13.8 s; reconciliation clean; below) |
-| `m3-uncertain` | M3 | 80% approvals, 10% lost replies, 10% network unavailable, the reconciler running; then nothing open, clean two-way reconciliation | **full run on a GitHub-hosted runner: miss** (load thresholds met; the end-of-run reconciliation wait timed out; below) |
+| `m3-uncertain` | M3 | 80% approvals, 10% lost replies, 10% network unavailable, the reconciler running; then nothing open, clean two-way reconciliation | **full runs on GitHub-hosted runners: miss** (re-run: reconciliation gate clean, 3.35% of load checks failed; below) |
 | `m4-webhooks` | M4 | purchases with webhooks on: the deliverer signs and delivers every event to `fixtures/dev-store`, which must fulfill every captured payment exactly once | **full run on a GitHub-hosted runner: pass** (1,000,093 requests, every captured payment fulfilled once; below) |
 | `m5-explain` | M5 | seeded purchases, then balances and explain pages at a fixed rate; every account walked to its end must sum to its balance | **full run on a GitHub-hosted runner: miss** (298 reads/s of 2,500 offered, 60% failed; the explain gate held; below) |
-| `m6-checkout` | M6 | the hosted checkout as payers use it: a session (API), the page (checkout origin), a read, a paid attempt (authorize and capture) and a repeat of it under the same key; then every session paid once and reconciliation clean | **full run on a GitHub-hosted runner: miss** (latency only: every check and the reconciliation gate passed; below) |
+| `m6-checkout` | M6 | the hosted checkout as payers use it: a session (API), the page (checkout origin), a read, a paid attempt (authorize and capture) and a repeat of it under the same key; then every session paid once and reconciliation clean | **full run on a GitHub-hosted runner: pass on the re-run** (the first run's latency miss was the harness; below) |
 | `m7-developer` | M7 | test stores as the SDK and the CLI drive them: an authorization, its retry (replayed), a conflicting reuse of its key (refused), a capture, a partial refund, a refund past the capacity (refused), a read; one in ten declined; one in five on a third project whose dataset is reset every 30 s under that traffic; then every project's current epoch reconciles with nothing open | **full run on a GitHub-hosted runner: pass** (1,008,135 requests, p99 21 ms; below) |
 | `m2-refund-race` | M2 | the hot-account and hot-payment refund races (D-027): exact admitted count, then reconciliation | **run at its defined size on a GitHub-hosted runner: pass** (36,000 offered refunds, below the 1,000,000 rule by design; below) |
 
@@ -83,6 +83,28 @@ What each miss says (from its result file):
 - `m6-checkout`: every check, the paid-once gate and the reconciliation passed with 0%
   failed; the session, pay and repeat steps missed their latency thresholds (overall p95
   115 ms, p99 423 ms).
+
+### The misses, classified (D-090, D-092)
+
+The first run's five misses were re-run once (workflow run 44161455474, commit `29949da`,
+with `load.sh` now recording where the CPU went and the two harness errors fixed). Both
+results of each are kept.
+
+| Scenario | Result | Thresholds | Requests | Requests/s | Failed | Dropped iterations | p95 / p99 | Lock waits > 50 ms | Runner |
+|---|---|---|---|---|---|---|---|---|---|
+| `m5-explain` | `perf/results/20261117T194338Z-m5-explain-full.json` | **miss** | 265209 | 332 | 55.74% | 834999 | 2021.5 ms / 2952.9 ms | 0 | 4 vCPU AMD EPYC 9V45 96-Core Processor, 15 GB |
+| `m1-auth` | `perf/results/20261117T194342Z-m1-auth-full.json` | **miss** | 737889 | 3471 | 0.45% | 262114 | 167.7 ms / 186.5 ms | 0 | 4 vCPU AMD EPYC 9V74 80-Core Processor, 15 GB |
+| `m6-checkout` | `perf/results/20261117T194342Z-m6-checkout-full.json` | **pass** | 999861 | 498 | 0% | 30 | 24.3 ms / 103.9 ms | 0 | 4 vCPU AMD EPYC 9V74 80-Core Processor, 15 GB |
+| `m2-lifecycle` | `perf/results/20261117T194350Z-m2-lifecycle-full.json` | **miss** | 885455 | 291 | 12.17% | 65842 | 1324.9 ms / 48780.1 ms | 0 | 4 vCPU AMD EPYC 9V74 80-Core Processor, 15 GB |
+| `m3-uncertain` | `perf/results/20261117T194359Z-m3-uncertain-full.json` | **miss** | 1786803 | 513 | 3.35% | 929 | 2002.9 ms / 2008.1 ms | 0 | 4 vCPU Intel(R) Xeon(R) 6975P-C, 15 GB |
+
+| Scenario | Class | Evidence | Cause and next step |
+|---|---|---|---|
+| `m6-checkout` | (a) harness, fixed | First run: latency miss only (p95 115 ms, p99 423 ms) with k6 keeping a metric series per session URL. Re-run with ids folded into `name` tags: **pass**, p95 24 ms, p99 104 ms, 0% failed, CPU 73% busy, never saturated | The generator's own cost; nothing owed |
+| `m3-uncertain` | (a) harness, fixed; then (b) product | First run: `teardown()` timed out at 180 s before its gate. Re-run: the gate ran and held (both projects: nothing open, journal, payments and network all agree); approve p95 20 ms; but 3.35% of load-phase checks failed with the CPU 64% busy and saturated in 1% of samples | Not the runner. The failed checks are answers that were not the expected `201`/`202` under 300 purchases/s; leading suspect, shared with `m2-lifecycle`: the network's per-request durable write. Owed: profile and fix |
+| `m2-lifecycle` | (b) product | Both runs missed (re-run: 12.2% failed, authorize p99 59 s, 65,842 iterations dropped) while the CPU was 40% busy on average and saturated in under 1% of samples; no lock waits over 50 ms | Requests waited, not computed. Leading suspect: the simulated network's durable `redb` commit per request (one fsync each) under the 5× bursts on a cloud disk; the per-payment queue is the other candidate. Owed: profile (the network's commit latency, the queue's wait) and fix with evidence |
+| `m5-explain` | (b) product | Re-run: 332 reads/s of 2,500, 56% failed; PostgreSQL used 1,570 CPU-seconds (about 2 of 4 cores) against the server's 130; the CPU was saturated in half the samples (the read phase) | `/v1/balances` sums every journal line of the epoch on each call and each explanation page counts and sums the account's lines: a full scan per read over 100,002 postings. Owed: derived per-account balances maintained with each posting and reconciled to the journal (the journal stays the authority), then a new run |
+| `m1-auth` | (b) runner | Both runs: about 3,500 of 5,000 reads/s. Re-run: the CPU was at least 95% busy in 88% of samples; the server used 172 CPU-seconds and PostgreSQL 199 over 213 s, and k6 about the rest (roughly half the machine). Product cost measured: about 0.23 ms of server CPU and 0.27 ms of PostgreSQL CPU per authenticated read | The rate is not sized for 4 vCPUs shared with the generator; the 25 ms p95 budget was chosen, not measured. Owed: a run with the generator on its own machine (or a larger runner) before the budget or the rate changes |
 
 ## The web apps (M6)
 

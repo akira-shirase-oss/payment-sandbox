@@ -60,7 +60,8 @@ to it as automated tests; a load scenario with thresholds under `perf/`.
 | Secrets never in logs | `tests/logs.rs`: `no_secret_ever_reaches_the_logs` — every event at TRACE from server, Tower and sqlx, with a canary proving the capture works; a planted leak of the key made it fail (mutation check, reverted) |
 | Load scenario | `perf/scenarios/m1-auth.js` (hash + key lookup + project read per request). Smoke 500/s × 20 s on `bbb8104` + working tree: 10,005 requests, 0 failed, p99 21.4 ms — **machine busy (load average 130–256), a smoke observation only** |
 | **Full run** | GitHub-hosted runner, 2026-11-17 (D-089): **miss**, 3,734 of 5,000 reads/s served on 4 vCPUs shared with the generator, p95 155 ms, 0.41% failed (`perf/results/20261117T182157Z-m1-auth-full.json`) |
-| **Owed** | A full run that meets its thresholds (a larger runner, or a decision on the per-request key cost) |
+| **Re-run** | 2026-11-17 with the CPU recorded: **miss**, the runner saturated in 88% of samples with the generator taking about half; about 0.5 ms of server and PostgreSQL CPU per read (D-092) (`perf/results/20261117T194342Z-m1-auth-full.json`) |
+| **Owed** | A run with the load generator on its own machine before the 25 ms budget (chosen, not measured) or the rate changes |
 
 ### M2 status — In progress (functional gates pass; lifecycle full run missed, refund race passed)
 
@@ -79,7 +80,8 @@ to it as automated tests; a load scenario with thresholds under `perf/`.
 | Regressions from the first race smoke (D-033) | `a_hot_payment_cannot_starve_the_pool_for_other_payments`, `recording_an_approval_survives_a_transient_lock_timeout` — each shown to fail without its fix |
 | Load | `perf/scenarios/m2-refund-race.js` smoke: 2,065 requests, exactly 630 admitted / 1,370 refused / 0 shed, refund p99 39 ms, 0 lock waits over 50 ms, reconciliation clean — passed. `perf/scenarios/m2-lifecycle.js` smoke: 3,121 requests, 0 failed, reconciliation clean, **latency thresholds missed** (p95 512 ms, p99 635 ms against 100/250 ms) with the machine at load average 33–43 — both busy-machine observations on commit `d6228f5` + working tree |
 | **Full runs** | GitHub-hosted runners, 2026-11-17 (D-089): `m2-lifecycle` **miss**, 1,063,905 requests, 9.5% failed under the bursts, p99 13.8 s, reconciliation clean (`perf/results/20261117T182142Z-m2-lifecycle-full.json`); `m2-refund-race` **pass** at its defined size (36,000 offered, below the 1,000,000 rule by design), refund p99 8 ms (`perf/results/20261117T182143Z-m2-refund-race-full.json`) |
-| **Owed** | An `m2-lifecycle` full run that meets its thresholds; its latency thresholds are still to be decided by a run on a larger or quieter machine |
+| **Re-run** | 2026-11-17 with the CPU recorded: **miss**, 12.2% failed, authorize p99 59 s while the CPU was 40% busy: the product, not the runner (D-092) (`perf/results/20261117T194350Z-m2-lifecycle-full.json`) |
+| **Owed** | Profile the waiting (the network's durable write per request, the per-payment queue), fix it with evidence, re-run |
 
 ### M3 status — In progress (functional gates pass; full load run missed)
 
@@ -98,7 +100,8 @@ to it as automated tests; a load scenario with thresholds under `perf/`.
 | Supervised background tasks (review 19, D-051) | `supervisor::tests`; drill `a_panicking_reconciler_is_restarted_and_still_resolves_uncertain_operations` |
 | A restore into another cluster (review N2, D-055) | `a_restore_into_another_cluster_explains_the_same_and_keeps_posted_entries_closed` (second cluster `postgres-restore`, 56450, local and CI); the rehearsal fails on a weakened source (`the_rehearsal_fails_when_the_source_itself_was_weakened`, D-058) |
 | **Full run** | GitHub-hosted runner, 2026-11-17 (D-089): **miss**, 1,836,007 requests, load thresholds met, but the end-of-run wait for the reconciler hit `teardown()`'s 180 s limit, so the reconciliation gate was not measured (`perf/results/20261117T182149Z-m3-uncertain-full.json`) |
-| **Owed** | A teardown limit above its own wait and fewer metric tags in `m3-uncertain.js`, then a new full run; the reconciler's defaults (D-048) are chosen, not measured |
+| **Re-run** | 2026-11-17, after D-090's harness fixes: **miss**, the reconciliation gate held (nothing open, network complete) but 3.35% of load checks failed with the CPU 64% busy: a product cause (D-092) (`perf/results/20261117T194359Z-m3-uncertain-full.json`) |
+| **Owed** | Profile and fix the failed load checks (D-092's suspect: the network's durable write per request); the reconciler's defaults (D-048) are chosen, not measured |
 
 ### M4 status — In progress (functional gates pass; full load run passed; a saturation run owed)
 
@@ -131,7 +134,8 @@ to it as automated tests; a load scenario with thresholds under `perf/`.
 | Reports are bounded per project (review 9, D-047) | `tests/reports.rs`: `reports_are_rate_limited_per_project`; `reports::tests`; the network's listings run outside its writer (`listings_and_the_clock_are_served_while_the_writer_is_busy`) |
 | Sealed explanation cursors, card-guarded query strings (review N3, D-056) | `a_cursor_the_server_did_not_issue_is_refused_before_any_query`; `tests/logs.rs`; `cursor::tests` |
 | **Full run** | GitHub-hosted runner, 2026-11-17 (D-089): **miss**, 298 reads/s served of 2,500 offered over 100,002 postings, 60% failed, the explain gate held (`perf/results/20261117T182158Z-m5-explain-full.json`) |
-| **Owed** | An `m5-explain` full run that meets its thresholds (the reports' cost on a 4-vCPU runner is the finding); a load run of the report budget itself (429 under saturation; D-047's defaults are chosen, not measured) |
+| **Re-run** | 2026-11-17 with the CPU recorded: **miss**, PostgreSQL spent about 2 cores summing every journal line per read (D-092) (`perf/results/20261117T194338Z-m5-explain-full.json`) |
+| **Owed** | Derived per-account balances kept with each posting and reconciled to the journal, then a new run; a load run of the report budget itself (429 under saturation; D-047's defaults are chosen, not measured) |
 
 ### M6 status — In progress (functional gates pass; full load run missed on latency)
 
@@ -153,7 +157,7 @@ review's fixes).
 | Size budgets and page loads | `scripts/web-budget.mjs` in `scripts/check.sh` and CI (D-064); `perf/results/*-web-m6.json` (`scripts/web-perf.sh`) |
 | Review fixes (D-065) | A restore cannot lead to a second charge: a network identity conflict closes the session (`after_a_restore_a_conflicting_attempt_closes_the_session_and_never_charges_twice`, restored into the second cluster; `after_a_restore_paying_again_recovers_the_payment_without_a_second_charge`); the dashboard answers on its own host name and needs fetch metadata or its Origin on reads (`reads_need_fetch_metadata_or_this_origin_even_with_the_cookie`, `the_dashboard_answers_only_on_its_own_host_name`); at most 8 sessions per key |
 | **Full run** | GitHub-hosted runner, 2026-11-17 (D-089): **miss** on latency only, 999,061 requests, 0% failed, every session paid once and reconciled, p95 115 ms, p99 423 ms (`perf/results/20261117T182141Z-m6-checkout-full.json`) |
-| **Owed** | An `m6-checkout` full run within its latency thresholds |
+| **Re-run** | 2026-11-17, after D-090's harness fix: **pass**, 999,861 requests, p95 24 ms, p99 104 ms (`perf/results/20261117T194342Z-m6-checkout-full.json`); the first miss was the generator's metric series (D-092) |
 
 ### M7 status — In progress (functional gates pass; full load run passed)
 
