@@ -117,8 +117,8 @@ transient database failures with exponential backoff and full jitter.
 | 56084 | the dashboard origin (`PS_DASHBOARD_LISTEN`, on with `PS_DASHBOARD_DIR`), reached as `http://dashboard.localhost:56084` (D-065) |
 | 56460–56465 | `scripts/e2e.sh`: API, network, checkout, dashboard, store, the test merchant page |
 | 56090 / 56091 | server / simulator during load runs (`scripts/load.sh`) |
-| 56466 | the SDK live tests' webhook receiver (`scripts/e2e.sh`) |
-| 56470–56473 | `scripts/release-smoke.sh`: API, network, checkout, dashboard |
+| free (port 0) | the webhook receivers of the SDK's live tests and of `examples/webhook-receiver.mjs` in `scripts/e2e.sh`: the kernel picks them, since a fixed port can be held by an outgoing connection's ephemeral port |
+| 56470–56475 | `scripts/release-smoke.sh`: API, network, checkout, dashboard, then Caddy's HTTPS and HTTP ports |
 
 ## Consistency story
 

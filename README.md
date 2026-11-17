@@ -47,7 +47,7 @@ Working on the sandbox itself:
 
 ```sh
 scripts/check.sh                                   # the gate CI runs: fmt, clippy, architecture, tests, web apps and journeys, cargo-deny
-scripts/e2e.sh                                     # the browser journeys only (Chromium, ports 56460-56466)
+scripts/e2e.sh                                     # the browser journeys only (Chromium, ports 56460-56465)
 scripts/restore-rehearsal.sh payment_sandbox ps_rehearsal   # pg_dump → fresh database → identical fingerprint (D-053)
 cargo run -p sandbox-dev-store                     # the development store (a webhook consumer) on 127.0.0.1:56082
 ```

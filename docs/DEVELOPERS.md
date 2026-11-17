@@ -226,17 +226,15 @@ payment (they can arrive out of order):
 ```js
 // A webhook receiver from docs/DEVELOPERS.md, run as written by CI against a real sandbox.
 // Needs PS_API_URL, PS_API_KEY (an admin key: it registers its own endpoint) and
-// RECEIVER_PORT, a loopback port the server allows (PS_WEBHOOK_PORTS).
+// RECEIVER_PORT, a loopback port the server allows (PS_WEBHOOK_PORTS; 0 picks a free one,
+// for a server in the dev profile, which allows any).
 // SIMULATED MONEY ONLY: no real cards, balances or banking connection.
 import { createServer } from 'node:http';
 import { Sandbox, WebhookVerificationError, verifyWebhook } from '@sandbox/sdk';
 
 const sandbox = new Sandbox({ apiUrl: process.env.PS_API_URL, apiKey: process.env.PS_API_KEY });
-const port = Number(process.env.RECEIVER_PORT ?? 56100);
 const seen = new Set(); // your store keeps the ids it handled in its database (an inbox)
-
-// Register the endpoint once and keep its secret; it is shown only in this answer.
-const { secret } = await sandbox.webhookEndpoints.create(`http://127.0.0.1:${port}/webhooks`);
+let secret; // the endpoint's signing secret, from its registration below
 
 let fulfil;
 const captured = new Promise((resolve) => (fulfil = resolve));
@@ -263,7 +261,14 @@ const server = createServer((request, response) => {
 		if (payment.status === 'captured') fulfil(payment);
 	});
 });
-await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
+await new Promise((resolve, reject) => {
+	server.once('error', reject);
+	server.listen(Number(process.env.RECEIVER_PORT ?? 56100), '127.0.0.1', resolve);
+});
+
+// Register the endpoint once and keep its secret; it is shown only in this answer.
+const { port } = server.address();
+({ secret } = await sandbox.webhookEndpoints.create(`http://127.0.0.1:${port}/webhooks`));
 
 const hold = await sandbox.payments.create({ amount: 1500, currency: 'USD', description: 'Order 1005' });
 await sandbox.payments.capture(hold.payment.id, 1500);

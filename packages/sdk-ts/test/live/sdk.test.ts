@@ -14,7 +14,6 @@ function required(name: string): string {
 }
 const api = required('E2E_API');
 const bootstrap = required('E2E_BOOTSTRAP');
-const webhookPort = Number(required('E2E_SDK_WEBHOOK_PORT'));
 
 let counter = 0;
 async function project(): Promise<{ slug: string; admin: string }> {
@@ -121,7 +120,14 @@ describe('the SDK against the real sandbox', () => {
 				response.writeHead(200, { 'content-type': 'application/json' }).end('{}');
 			});
 		});
-		await new Promise<void>((resolve) => server.listen(webhookPort, '127.0.0.1', resolve));
+		// A free port the kernel picks: a fixed one can be taken by any outgoing connection's
+		// ephemeral port (CI saw EADDRINUSE). The e2e server, in the dev profile without
+		// PS_WEBHOOK_PORTS, accepts any loopback port but its own.
+		await new Promise<void>((resolve, reject) => {
+			server.once('error', reject);
+			server.listen(0, '127.0.0.1', resolve);
+		});
+		const webhookPort = (server.address() as { port: number }).port;
 		try {
 			const { endpoint, secret } = await sandbox.webhookEndpoints.create(`http://127.0.0.1:${webhookPort}/hooks`);
 			expect(secret).toMatch(/^whsec_sim_/);
