@@ -5,7 +5,7 @@
 import { createServer, type IncomingMessage } from 'node:http';
 import { createServer as createTcpServer, connect, type Socket } from 'node:net';
 import { describe, expect, it } from 'vitest';
-import { ConfigError, RefusedError, Sandbox, verifyWebhook, type SandboxEvent } from '../../src/index.ts';
+import { ConfigError, RefusedError, SANDBOX_NOTICE, Sandbox, verifyWebhook, type SandboxEvent } from '../../src/index.ts';
 
 function required(name: string): string {
 	const value = process.env[name];
@@ -61,7 +61,8 @@ describe('the SDK against the real sandbox', () => {
 	it('purchases, declines and settles an uncertain answer honestly', async () => {
 		const { admin } = await project();
 		const sandbox = new Sandbox({ apiUrl: api, apiKey: admin });
-		expect((await sandbox.notice()).simulated).toBe(true);
+		const notice = await sandbox.notice();
+		expect([notice.simulated, notice.notice]).toEqual([true, SANDBOX_NOTICE]);
 		const hold = await sandbox.payments.create({ amount: 4_200, currency: 'USD', description: 'Order 1' });
 		expect([hold.outcome, hold.settled, hold.status]).toEqual(['succeeded', true, 201]);
 		expect((await sandbox.payments.capture(hold.payment.id, 4_200)).payment.status).toBe('captured');

@@ -1,0 +1,19 @@
+# Payment Sandbox: apply database migrations as the schema's owner (D-038). A one-shot:
+#   systemctl start payment-sandbox-migrate   (on install, and before starting an upgrade)
+[Unit]
+Description=Payment Sandbox database migrations (simulated money only)
+Documentation=https://github.com/akira-shirase-oss/payment-sandbox/blob/main/docs/OPERATING.md
+After=network.target postgresql.service
+
+[Service]
+Type=oneshot
+User=payment-sandbox
+Group=payment-sandbox
+EnvironmentFile=/etc/payment-sandbox/migrate.env
+ExecStart=/opt/payment-sandbox/bin/sandbox-server migrate
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

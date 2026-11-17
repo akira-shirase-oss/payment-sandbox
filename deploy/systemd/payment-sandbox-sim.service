@@ -1,0 +1,40 @@
+# Payment Sandbox: the simulated network (SIMULATED MONEY ONLY). See docs/OPERATING.md.
+[Unit]
+Description=Payment Sandbox simulated network (simulated money only)
+Documentation=https://github.com/akira-shirase-oss/payment-sandbox/blob/main/docs/OPERATING.md
+After=network.target
+
+[Service]
+Type=simple
+User=payment-sandbox
+Group=payment-sandbox
+EnvironmentFile=/etc/payment-sandbox/sim.env
+ExecStart=/opt/payment-sandbox/bin/sandbox-sim
+# The network's store (a redb file) lives here; nothing else writes to disk.
+StateDirectory=payment-sandbox
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/payment-sandbox
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=20
+LimitNOFILE=4096
+# Hardening: no privileges, no writable system, loopback networking only in practice.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

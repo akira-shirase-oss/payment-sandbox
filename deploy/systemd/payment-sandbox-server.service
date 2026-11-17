@@ -1,0 +1,39 @@
+# Payment Sandbox: the API, the checkout and the dashboard (SIMULATED MONEY ONLY).
+# See docs/OPERATING.md. Migrations are not run here (the server does not own the schema,
+# D-038): run payment-sandbox-migrate.service first, on install and on every upgrade.
+[Unit]
+Description=Payment Sandbox server (simulated money only)
+Documentation=https://github.com/akira-shirase-oss/payment-sandbox/blob/main/docs/OPERATING.md
+After=network.target postgresql.service payment-sandbox-sim.service
+Wants=payment-sandbox-sim.service
+
+[Service]
+Type=simple
+User=payment-sandbox
+Group=payment-sandbox
+EnvironmentFile=/etc/payment-sandbox/server.env
+ExecStart=/opt/payment-sandbox/bin/sandbox-server serve
+Restart=on-failure
+RestartSec=2
+# Draining takes at most PS_SHUTDOWN_GRACE_MS (default 10 s); then the process exits.
+TimeoutStopSec=30
+LimitNOFILE=4096
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

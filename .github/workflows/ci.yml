@@ -144,6 +144,53 @@ jobs:
           path: e2e/test-results
           retention-days: 7
 
+  # The production path (D-071; docs/OPERATING.md): release builds installed from the env
+  # templates and run in the shared profile behind public origins (scripts/release-smoke.sh),
+  # then the same install under systemd, from the units in deploy/systemd.
+  release:
+    name: release (release build, env files, systemd units)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        # Same image and digest as deploy/compose.yaml.
+        image: postgres:18.6-trixie@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6
+        env:
+          POSTGRES_USER: sandbox
+          POSTGRES_PASSWORD: sandbox-dev
+          POSTGRES_DB: sandbox
+        ports:
+          - 56432:5432
+        options: >-
+          --health-cmd "pg_isready --host=127.0.0.1 --username=sandbox --dbname=sandbox"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      PS_ADMIN_DATABASE_URL: postgres://sandbox:sandbox-dev@127.0.0.1:56432/sandbox
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Release smoke (release binaries from the env templates, shared profile)
+        env:
+          PS_PG_CONTAINER: ${{ job.services.postgres.id }}
+        run: scripts/release-smoke.sh
+      - name: The systemd units, installed and started
+        env:
+          PS_PG_CONTAINER: ${{ job.services.postgres.id }}
+        run: sudo --preserve-env=PS_PG_CONTAINER,PS_ADMIN_DATABASE_URL scripts/release-systemd.sh
+
   supply-chain:
     name: supply chain (cargo-deny)
     runs-on: ubuntu-latest

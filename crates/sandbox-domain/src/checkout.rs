@@ -296,6 +296,50 @@ pub fn validate_description(text: &str) -> Result<(), FieldError> {
 /// The host part of a loopback authority, lowercased, if it is one: `127.0.0.1`, `[::1]`,
 /// `localhost`, or a name under `localhost` (RFC 6761; browsers resolve every
 /// `*.localhost` to loopback, D-065), such as `dashboard.localhost`.
+/// A public origin for a site behind the reverse proxy of a shared host (D-071): `https://`,
+/// a DNS name (two or more labels of letters, digits and inner hyphens; no IP literal, no
+/// `localhost`), and an optional port, written as browsers send it in `Origin` (no `:443`).
+/// Only the `shared` profile accepts one; the processes still listen on loopback.
+pub fn canonical_public_origin(origin: &str) -> Result<String, FieldError> {
+    let (scheme, authority, tail) = split_url(origin).ok_or(FieldError::EmbedOrigin)?;
+    if scheme != "https" || !tail.is_empty() || authority.contains('@') {
+        return Err(FieldError::EmbedOrigin);
+    }
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) => {
+            let port: u16 = port.parse().map_err(|_| FieldError::EmbedOrigin)?;
+            if port == 0 {
+                return Err(FieldError::EmbedOrigin);
+            }
+            (host, (port != 443).then_some(port))
+        }
+        None => (authority, None),
+    };
+    let host = host.to_ascii_lowercase();
+    let labels: Vec<&str> = host.split('.').collect();
+    let named = host.len() <= 253
+        && labels.len() >= 2
+        && labels.iter().all(|label| {
+            (1..=63).contains(&label.len())
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
+        // The last label of a name is never all digits: that is an IPv4 address.
+        && labels.last().is_some_and(|tld| !tld.bytes().all(|b| b.is_ascii_digit()))
+        && host != "localhost"
+        && !host.ends_with(".localhost");
+    if !named {
+        return Err(FieldError::EmbedOrigin);
+    }
+    Ok(match port {
+        Some(port) => format!("https://{host}:{port}"),
+        None => format!("https://{host}"),
+    })
+}
+
 fn loopback_host(host: &str) -> Option<String> {
     let host = host.to_ascii_lowercase();
     let named = host.strip_suffix(".localhost").is_some_and(|label| {
@@ -390,6 +434,53 @@ pub fn validate_lifetime(seconds: i64) -> Result<i64, FieldError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_origins_are_https_names_written_as_browsers_send_them() {
+        for (given, canonical) in [
+            (
+                "https://pay.sandbox.example.com",
+                "https://pay.sandbox.example.com",
+            ),
+            (
+                "https://Dashboard.Example.COM",
+                "https://dashboard.example.com",
+            ),
+            ("https://pay.example.com:443", "https://pay.example.com"),
+            (
+                "https://pay.example.com:8443",
+                "https://pay.example.com:8443",
+            ),
+            (
+                "https://xn--bcher-kva.example",
+                "https://xn--bcher-kva.example",
+            ),
+        ] {
+            assert_eq!(
+                canonical_public_origin(given).as_deref(),
+                Ok(canonical),
+                "{given}"
+            );
+        }
+        for refused in [
+            "http://pay.example.com",
+            "https://localhost",
+            "https://dashboard.localhost",
+            "https://127.0.0.1",
+            "https://10.0.0.5",
+            "https://[::1]",
+            "https://example",
+            "https://pay.example.com/path",
+            "https://pay.example.com/",
+            "https://user@pay.example.com",
+            "https://-bad.example.com",
+            "https://pay.example.com:0",
+            "https://pay_example.com",
+            "",
+        ] {
+            assert!(canonical_public_origin(refused).is_err(), "{refused}");
+        }
+    }
     use OperationState as S;
 
     fn facts(authorize: Option<S>, capture: Option<S>, captured: i64) -> AttemptFacts {

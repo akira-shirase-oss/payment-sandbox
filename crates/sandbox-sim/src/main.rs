@@ -12,6 +12,25 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    match std::env::args().nth(1).as_deref() {
+        None => {}
+        Some("--version" | "-V") => {
+            println!(
+                "sandbox-sim {}\n{}",
+                env!("CARGO_PKG_VERSION"),
+                sandbox_domain::SANDBOX_NOTICE
+            );
+            return Ok(());
+        }
+        Some("--help" | "-h") => {
+            println!(
+                "sandbox-sim: the simulated card network, with its own store.\n{}\n\nUsage: sandbox-sim (settings from PS_SIM_* and PS_PROFILE; docs/OPERATING.md lists them)",
+                sandbox_domain::SANDBOX_NOTICE
+            );
+            return Ok(());
+        }
+        Some(other) => anyhow::bail!("unknown argument {other:?}; run sandbox-sim --help"),
+    }
     let filter =
         EnvFilter::try_new(std::env::var("PS_SIM_LOG").unwrap_or_else(|_| "info".to_owned()))?;
     tracing_subscriber::fmt()

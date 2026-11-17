@@ -7,13 +7,36 @@ use sandbox_server::supervisor::supervise;
 use sandbox_server::{AppState, Config, shutdown, telemetry};
 use tokio::net::TcpListener;
 
+const HELP: &str = "sandbox-server: the Payment Sandbox API, checkout and dashboard.
+SIMULATED MONEY ONLY: Payment Sandbox moves no real money and accepts no real cards.
+
+Usage:
+  sandbox-server [serve]   serve (settings from PS_* variables; docs/OPERATING.md lists them)
+  sandbox-server setup     create the roles and the database, as the administrator
+                           (PS_ADMIN_DATABASE_URL; PS_DATABASE_NAME, PS_OWNER_PASSWORD and
+                           PS_APP_PASSWORD optional; existing passwords are never reset)
+  sandbox-server migrate   apply migrations as the owner (PS_MIGRATE_DATABASE_URL)
+  sandbox-server --version";
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     match std::env::args().nth(1).as_deref() {
         None | Some("serve") => serve().await,
         Some("setup") => setup().await,
         Some("migrate") => migrate_command().await,
-        Some(other) => anyhow::bail!("unknown command {other:?}; use serve, setup or migrate"),
+        Some("--version" | "-V" | "version") => {
+            println!(
+                "sandbox-server {}\n{}",
+                env!("CARGO_PKG_VERSION"),
+                sandbox_domain::SANDBOX_NOTICE
+            );
+            Ok(())
+        }
+        Some("--help" | "-h" | "help") => {
+            println!("{HELP}");
+            Ok(())
+        }
+        Some(other) => anyhow::bail!("unknown command {other:?}; run sandbox-server --help"),
     }
 }
 
@@ -25,12 +48,22 @@ async fn setup() -> anyhow::Result<()> {
     let admin_url =
         std::env::var("PS_ADMIN_DATABASE_URL").context("PS_ADMIN_DATABASE_URL is required")?;
     let name = std::env::var("PS_DATABASE_NAME").unwrap_or_else(|_| "payment_sandbox".to_owned());
+    let passwords = sandbox_db::roles::RolePasswords::new(
+        std::env::var("PS_OWNER_PASSWORD").ok(),
+        std::env::var("PS_APP_PASSWORD").ok(),
+    )
+    .context("PS_OWNER_PASSWORD / PS_APP_PASSWORD")?;
     let mut admin = sqlx::PgConnection::connect(&admin_url)
         .await
         .context("connecting as the administrator")?;
-    sandbox_db::roles::bootstrap(&mut admin)
+    sandbox_db::roles::bootstrap_with(&mut admin, &passwords)
         .await
         .context("creating the roles")?;
+    if passwords == sandbox_db::roles::RolePasswords::default() {
+        eprintln!(
+            "note: roles created now get the public development passwords; on a shared host set PS_OWNER_PASSWORD and PS_APP_PASSWORD (existing passwords were left as they are)"
+        );
+    }
     let exists: bool =
         sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)")
             .bind(&name)

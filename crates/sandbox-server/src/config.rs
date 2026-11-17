@@ -454,9 +454,9 @@ impl<F: Fn(&str) -> Option<String>> Parser<'_, F> {
 
     /// The two sites, the profile and the webhook ports (which may target neither site).
     fn sites(&mut self, listen: SocketAddr, sim_url: &str, database_url: &str) -> Sites {
-        let (checkout, checkout_origin) = self.ui_site("CHECKOUT", 56083);
-        let (dashboard, dashboard_origin) = self.ui_site("DASHBOARD", 56084);
         let profile = self.profile();
+        let (checkout, checkout_origin) = self.ui_site("CHECKOUT", 56083, profile);
+        let (dashboard, dashboard_origin) = self.ui_site("DASHBOARD", 56084, profile);
         let own_ports: Vec<u16> = [&checkout, &dashboard]
             .into_iter()
             .flatten()
@@ -488,8 +488,14 @@ impl<F: Fn(&str) -> Option<String>> Parser<'_, F> {
 
     /// `PS_<name>_DIR` (the site is off without it), `PS_<name>_LISTEN` and
     /// `PS_<name>_ORIGIN`; the origin is returned even when the site is off (session URLs
-    /// name the checkout's).
-    fn ui_site(&mut self, name: &str, default_port: u16) -> (Option<UiSite>, String) {
+    /// name the checkout's). The origin is a loopback one, or, in the `shared` profile only,
+    /// an `https://` name the reverse proxy serves (D-071); the listener is loopback either way.
+    fn ui_site(
+        &mut self,
+        name: &str,
+        default_port: u16,
+        profile: Profile,
+    ) -> (Option<UiSite>, String) {
         let default_listen = SocketAddr::from(([127, 0, 0, 1], default_port));
         let listen = match (self.lookup)(&format!("PS_{name}_LISTEN")) {
             None => default_listen,
@@ -507,12 +513,18 @@ impl<F: Fn(&str) -> Option<String>> Parser<'_, F> {
             format!("http://{listen}")
         };
         let raw_origin = (self.lookup)(&format!("PS_{name}_ORIGIN")).unwrap_or(default_origin);
-        let origin = sandbox_domain::checkout::canonical_origin(&raw_origin).unwrap_or_else(|_| {
-            self.errors.push(format!(
-                "PS_{name}_ORIGIN must be an origin like http://127.0.0.1:{default_port} (loopback, D-023)"
-            ));
-            raw_origin.clone()
-        });
+        let origin = sandbox_domain::checkout::canonical_origin(&raw_origin)
+            .or_else(|e| match profile {
+                Profile::Shared => sandbox_domain::checkout::canonical_public_origin(&raw_origin),
+                Profile::Dev | Profile::Ci => Err(e),
+            })
+            .unwrap_or_else(|_| {
+                self.errors.push(format!(
+                    "PS_{name}_ORIGIN must be an origin like http://127.0.0.1:{default_port} (loopback, D-023), or, with PS_PROFILE=shared, the https:// name the reverse proxy serves, like https://{} (D-071)",
+                    if name == "DASHBOARD" { "dashboard.sandbox.example.com" } else { "pay.sandbox.example.com" }
+                ));
+                raw_origin.clone()
+            });
         let site = (self.lookup)(&format!("PS_{name}_DIR")).map(|dir| UiSite {
             listen,
             dir: PathBuf::from(dir),
@@ -672,6 +684,51 @@ mod tests {
             "PS_REQUEST_TIMEOUT_MS must exceed",
         ] {
             assert!(text.contains(needle), "missing {needle:?} in {text}");
+        }
+    }
+
+    #[test]
+    fn the_sites_may_have_public_https_origins_only_in_the_shared_profile() {
+        let base = [
+            ("PS_DATABASE_URL", "postgres://x@127.0.0.1:56432/db"),
+            ("PS_SIM_TOKEN", SIM_TOKEN),
+            ("PS_CHECKOUT_DIR", "apps/checkout/build"),
+            ("PS_DASHBOARD_DIR", "apps/dashboard/build"),
+            ("PS_CHECKOUT_ORIGIN", "https://Pay.Sandbox.Example.com"),
+            (
+                "PS_DASHBOARD_ORIGIN",
+                "https://dashboard.sandbox.example.com:443",
+            ),
+        ];
+        let mut shared = base.to_vec();
+        shared.push(("PS_PROFILE", "shared"));
+        let c = config(&shared).unwrap();
+        assert_eq!(c.checkout_origin, "https://pay.sandbox.example.com");
+        assert_eq!(
+            c.dashboard.unwrap().origin,
+            "https://dashboard.sandbox.example.com"
+        );
+        // The listeners stay on loopback whatever the origins say (D-023).
+        assert!(c.checkout.unwrap().listen.ip().is_loopback());
+        for profile in ["dev", "ci"] {
+            let mut local = base.to_vec();
+            local.push(("PS_PROFILE", profile));
+            let err = config(&local).unwrap_err().to_string();
+            assert!(
+                err.contains("PS_CHECKOUT_ORIGIN must be an origin"),
+                "{profile}: {err}"
+            );
+            assert!(err.contains("PS_PROFILE=shared"), "{err}");
+        }
+        for refused in [
+            "http://pay.sandbox.example.com",
+            "https://10.0.0.5",
+            "https://pay.example.com/c",
+        ] {
+            let mut bad = shared.clone();
+            bad.retain(|(k, _)| *k != "PS_CHECKOUT_ORIGIN");
+            bad.push(("PS_CHECKOUT_ORIGIN", refused));
+            assert!(config(&bad).is_err(), "{refused}");
         }
     }
 

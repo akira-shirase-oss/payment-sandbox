@@ -1,0 +1,16 @@
+# Payment Sandbox behind Caddy (SIMULATED MONEY ONLY): TLS for three names, everything else
+# stays on loopback (D-023, D-071). Replace sandbox.example.com with your names; Caddy
+# obtains the certificates. The Host header is passed through unchanged, which the
+# dashboard requires (it answers only on its own host name, D-065).
+
+api.sandbox.example.com {
+	reverse_proxy 127.0.0.1:56080
+}
+
+pay.sandbox.example.com {
+	reverse_proxy 127.0.0.1:56083
+}
+
+dashboard.sandbox.example.com {
+	reverse_proxy 127.0.0.1:56084
+}
