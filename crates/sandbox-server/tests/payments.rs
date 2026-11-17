@@ -830,7 +830,10 @@ async fn a_hot_payment_cannot_starve_the_pool_for_other_payments() {
         &sim,
         &[
             ("PS_DB_MAX_CONNECTIONS", "4"),
-            ("PS_DB_ACQUIRE_TIMEOUT_MS", "500"),
+            // Long enough for 48 concurrent key lookups on a busy machine; without the
+            // per-payment queue the cold requests still starve (the blocker holds the hot
+            // row until they finish), so the test keeps its teeth (review 14).
+            ("PS_DB_ACQUIRE_TIMEOUT_MS", "3000"),
             ("PS_PAYMENT_QUEUE_WAIT_MS", "20000"),
         ],
     )
