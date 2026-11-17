@@ -35,8 +35,8 @@ install -m 0755 "$release/sandbox-server" "$release/sandbox-sim" "$release/sandb
 rm -rf /opt/payment-sandbox/checkout /opt/payment-sandbox/dashboard
 cp -R apps/checkout/build /opt/payment-sandbox/checkout
 cp -R apps/dashboard/build /opt/payment-sandbox/dashboard
-install -d -m 0750 -g payment-sandbox /etc/payment-sandbox
-for f in server sim migrate; do install -m 0640 -g payment-sandbox "deploy/env/$f.env.example" "/etc/payment-sandbox/$f.env"; done
+install -d -m 0700 /etc/payment-sandbox
+for f in server sim migrate; do install -m 0600 "deploy/env/$f.env.example" "/etc/payment-sandbox/$f.env"; done
 sim_token="$(secret)" bootstrap="$(secret)"
 set_var /etc/payment-sandbox/sim.env PS_SIM_TOKEN "$sim_token"
 set_var /etc/payment-sandbox/server.env PS_SIM_TOKEN "$sim_token"
@@ -51,6 +51,19 @@ PS_ADMIN_DATABASE_URL="$admin_url" /opt/payment-sandbox/bin/sandbox-server setup
 systemctl daemon-reload
 systemctl start payment-sandbox-migrate
 systemctl start payment-sandbox-sim payment-sandbox-server
+
+# The env files are root's alone (D-081): no service user can read them, least of all the
+# schema owner's password in migrate.env; the migrate unit runs as its own throwaway user.
+fail() { echo "release-systemd: $*" >&2; exit 1; }
+[ "$(stat -c '%a %U %G' /etc/payment-sandbox)" = "700 root root" ] || fail "/etc/payment-sandbox is $(stat -c '%a %U %G' /etc/payment-sandbox)"
+for f in server sim migrate; do
+  mode="$(stat -c '%a %U %G' "/etc/payment-sandbox/$f.env")"
+  [ "$mode" = "600 root root" ] || fail "$f.env is $mode, not 600 root root"
+  if runuser -u payment-sandbox -- test -r "/etc/payment-sandbox/$f.env"; then
+    fail "the server's user can read $f.env"
+  fi
+done
+[ "$(systemctl show -p DynamicUser --value payment-sandbox-migrate)" = yes ] || fail "the migrate unit runs as a fixed user"
 
 # Section 2: first run.
 for _ in $(seq 1 100); do

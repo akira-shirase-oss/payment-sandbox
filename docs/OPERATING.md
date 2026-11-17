@@ -33,10 +33,16 @@ install -d -m 0755 /opt/payment-sandbox/bin
 install -m 0755 target/release/sandbox-server target/release/sandbox-sim target/release/sandbox-cli /opt/payment-sandbox/bin/
 cp -R apps/checkout/build /opt/payment-sandbox/checkout
 cp -R apps/dashboard/build /opt/payment-sandbox/dashboard
-install -d -m 0750 -g payment-sandbox /etc/payment-sandbox
-for f in server sim migrate; do install -m 0640 -g payment-sandbox deploy/env/$f.env.example /etc/payment-sandbox/$f.env; done
+install -d -m 0700 /etc/payment-sandbox
+for f in server sim migrate; do install -m 0600 deploy/env/$f.env.example /etc/payment-sandbox/$f.env; done
 install -m 0644 deploy/systemd/*.service /etc/systemd/system/
 ```
+
+The env files are `0600 root`: systemd reads them as root before it starts each service,
+so no service user needs to, and none can. In particular the server's user can never read
+`migrate.env`, which holds the schema owner's password (the owner could switch off the
+journal's protections, D-038/D-058); the migrate unit runs as its own throwaway user
+(`DynamicUser=yes`). The release job checks both (D-081).
 
 Fill in `/etc/payment-sandbox/*.env`. Each line is explained in the file; the empty secrets
 must be generated (`openssl rand -hex 32` for each of `PS_SIM_TOKEN`, the same value in

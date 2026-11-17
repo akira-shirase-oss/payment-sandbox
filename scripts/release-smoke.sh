@@ -66,7 +66,7 @@ mkdir -p "$root/opt/bin" "$root/etc" "$root/var"
 install -m 0755 "$release/sandbox-server" "$release/sandbox-sim" "$release/sandbox-cli" "$root/opt/bin/"
 cp -R apps/checkout/build "$root/opt/checkout"
 cp -R apps/dashboard/build "$root/opt/dashboard"
-for f in server sim migrate; do install -m 0640 "deploy/env/$f.env.example" "$root/etc/$f.env"; done
+for f in server sim migrate; do install -m 0600 "deploy/env/$f.env.example" "$root/etc/$f.env"; done
 secret() { od -An -N32 -tx1 /dev/urandom | tr -d ' \n'; }
 # Sets KEY=VALUE in an env file; the template must already name KEY.
 set_var() {

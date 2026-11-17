@@ -1248,6 +1248,17 @@ closes one of its findings, with the test that failed before the fix.
   anything starts. Test: `fixtures/dev-store/tests/labels.rs` (it was still running after
   5 s before the fix).
 
+- **D-081 — On the host, no service user can read an env file.** D-071 installed the three
+  env files `0640 root:payment-sandbox`, and the server and the migrations both ran as
+  `payment-sandbox`, so a compromised server process could read `migrate.env`, take the
+  schema owner's password and switch off the journal's triggers, undoing D-038/D-058's role
+  split on the host. systemd reads `EnvironmentFile=` as root before it drops privileges, so
+  the services never need to read them: the files are now `0600 root:root` in a `0700`
+  directory, and the migrate unit runs as its own throwaway user (`DynamicUser=yes`). The
+  release job asserts the modes, that `payment-sandbox` cannot read any of the files, and
+  the migrate unit's dynamic user (`scripts/release-systemd.sh`); the same check against the
+  old install line reports `640`.
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

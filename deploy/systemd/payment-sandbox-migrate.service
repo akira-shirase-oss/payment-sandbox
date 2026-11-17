@@ -7,8 +7,9 @@ After=network.target postgresql.service
 
 [Service]
 Type=oneshot
-User=payment-sandbox
-Group=payment-sandbox
+# Its own throwaway user, not payment-sandbox: the schema owner's password (migrate.env, root
+# only) never reaches a process the server's user could inspect (D-081).
+DynamicUser=yes
 EnvironmentFile=/etc/payment-sandbox/migrate.env
 ExecStart=/opt/payment-sandbox/bin/sandbox-server migrate
 NoNewPrivileges=yes
