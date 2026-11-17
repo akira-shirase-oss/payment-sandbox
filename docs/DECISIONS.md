@@ -1241,6 +1241,13 @@ closes one of its findings, with the test that failed before the fix.
   exits 2 naming `https://` and `--allow-plain-http`; it tried to connect, exit 5, before),
   and the SDK's `config.test.ts` (`plain_http`, which it accepted before).
 
+- **D-080 — The development store answers `--version` and `--help`.** It ignored its
+  arguments, so `sandbox-dev-store --version` started a store on 56082 and wrote
+  `sandbox-dev-store.redb` in the current directory. It now handles them like
+  `sandbox-sim` (the notice, the settings it reads, an unknown argument refused) before
+  anything starts. Test: `fixtures/dev-store/tests/labels.rs` (it was still running after
+  5 s before the fix).
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

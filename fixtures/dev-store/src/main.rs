@@ -9,6 +9,26 @@ use sandbox_domain::access::{self, Profile};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Arguments first: `--version` and `--help` answer and exit before anything starts.
+    match std::env::args().nth(1).as_deref() {
+        None => {}
+        Some("--version" | "-V") => {
+            println!(
+                "sandbox-dev-store {}\n{}",
+                env!("CARGO_PKG_VERSION"),
+                sandbox_domain::SANDBOX_NOTICE
+            );
+            return Ok(());
+        }
+        Some("--help" | "-h") => {
+            println!(
+                "sandbox-dev-store: the development store, a reference webhook consumer (inbox, re-read, fulfillment under its own key).\n{}\n\nUsage: sandbox-dev-store (settings from the environment: PS_STORE_LISTEN, default 127.0.0.1:56082; PS_STORE_DB, default ./sandbox-dev-store.redb; PS_STORE_SANDBOX_URL, PS_STORE_API_KEY, PS_STORE_WEBHOOK_SECRETS; PS_PROFILE, PS_STORE_CONTROL, PS_STORE_CONTROL_TOKEN for its test control)",
+                sandbox_domain::SANDBOX_NOTICE
+            );
+            return Ok(());
+        }
+        Some(other) => anyhow::bail!("unknown argument {other:?}; run sandbox-dev-store --help"),
+    }
     tracing_subscriber::fmt().json().init();
     tracing::warn!(
         notice = sandbox_domain::SANDBOX_NOTICE,
