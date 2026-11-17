@@ -81,6 +81,8 @@ pub struct Config {
     pub reconcile_network_max_pages: usize,
     /// Report budgets and concurrency (D-047).
     pub reports: ReportSettings,
+    /// The reconciler's fairness, concurrency, backoff and alert (D-048).
+    pub reconcile: ReconcileTuning,
     /// Key that encrypts webhook signing secrets (64 hex); webhooks are off without it.
     pub secret_key: Option<Secret>,
     /// How often the deliverer looks for due deliveries when idle.
@@ -101,6 +103,22 @@ pub struct ReportSettings {
     pub per_project: u32,
     /// Most reports the server runs at once (`PS_REPORT_CONCURRENCY`).
     pub concurrency: usize,
+}
+
+/// The reconciler's fairness, concurrency, backoff and alert (D-048).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReconcileTuning {
+    /// Readbacks in flight at once (`PS_RECONCILE_CONCURRENCY`).
+    pub concurrency: usize,
+    /// Most operations of one project per sweep (`PS_RECONCILE_PER_PROJECT`; default the
+    /// batch). Projects are taken in turn either way.
+    pub per_project: i64,
+    /// Longest wait before re-checking an operation whose check failed
+    /// (`PS_RECONCILE_BACKOFF_MAX_MS`); the first wait is one sweep interval.
+    pub backoff_max: Duration,
+    /// An open operation older than this is logged at WARN on every sweep
+    /// (`PS_RECONCILE_ALERT_AGE_MS`).
+    pub alert_age: Duration,
 }
 
 /// Every configuration problem found, reported together.
@@ -155,20 +173,14 @@ impl Config {
             parse.value("PS_RECONCILE_NETWORK_MAX_PAGES", Some(1_000));
         let delivery_poll = parse.millis("PS_DELIVERY_POLL_MS", 250);
         let reports = parse.reports();
+        let reconcile = parse.reconcile_tuning(reconcile_batch);
         let secret_key = lookup("PS_SECRET_KEY");
         if let Some(key) = &secret_key
             && crate::secrets::SecretBox::from_hex(key).is_err()
         {
             errors.push("PS_SECRET_KEY must be 64 hex characters (32 bytes)".to_owned());
         }
-        let log_format = match lookup("PS_LOG_FORMAT").as_deref() {
-            None | Some("json") => LogFormat::Json,
-            Some("pretty") => LogFormat::Pretty,
-            Some(_) => {
-                errors.push("PS_LOG_FORMAT must be json or pretty".to_owned());
-                LogFormat::Json
-            }
-        };
+        let log_format = log_format(lookup("PS_LOG_FORMAT").as_deref(), &mut errors);
         let log_filter = lookup("PS_LOG").unwrap_or_else(|| "info".to_owned());
         let sim_url = lookup("PS_SIM_URL").unwrap_or_else(|| "http://127.0.0.1:56081".to_owned());
         if !is_loopback_http(&sim_url) {
@@ -209,6 +221,7 @@ impl Config {
             reconcile_network_max_pages: reconcile_network_max_pages.clamp(1, 100_000),
             secret_key: secret_key.map(Secret::new),
             reports,
+            reconcile,
             delivery_poll,
         };
         // Every problem at once: parse errors and cross-field rules together.
@@ -276,6 +289,17 @@ impl Config {
     }
 }
 
+fn log_format(raw: Option<&str>, errors: &mut Vec<String>) -> LogFormat {
+    match raw {
+        None | Some("json") => LogFormat::Json,
+        Some("pretty") => LogFormat::Pretty,
+        Some(_) => {
+            errors.push("PS_LOG_FORMAT must be json or pretty".to_owned());
+            LogFormat::Json
+        }
+    }
+}
+
 /// True for `http://127.0.0.1:<port>`, `http://[::1]:<port>` or `http://localhost:<port>`.
 fn is_loopback_http(url: &str) -> bool {
     let Some(rest) = url.strip_prefix("http://") else {
@@ -308,6 +332,17 @@ impl<F: Fn(&str) -> Option<String>> Parser<'_, F> {
                 T::default()
             }),
             None => default.unwrap_or_default(),
+        }
+    }
+
+    fn reconcile_tuning(&mut self, batch: i64) -> ReconcileTuning {
+        let concurrency: usize = self.value("PS_RECONCILE_CONCURRENCY", Some(8));
+        let per_project: i64 = self.value("PS_RECONCILE_PER_PROJECT", Some(batch));
+        ReconcileTuning {
+            concurrency: concurrency.clamp(1, 256),
+            per_project: per_project.clamp(1, 10_000),
+            backoff_max: self.millis("PS_RECONCILE_BACKOFF_MAX_MS", 300_000),
+            alert_age: self.millis("PS_RECONCILE_ALERT_AGE_MS", 600_000),
         }
     }
 

@@ -9,15 +9,24 @@
 //!   never execute later, and the operation becomes `not_executed`, releasing any
 //!   reservation.
 //!
-//! Nothing is ever re-sent blindly. A network error leaves the operation for the next sweep.
-//! Each sweep is bounded (`PS_RECONCILE_BATCH`), and the loop stops on shutdown.
+//! Nothing is ever re-sent blindly. Each sweep is bounded (`PS_RECONCILE_BATCH`) and fair
+//! (D-048, review finding 11): projects are taken in turn, so one project's backlog cannot
+//! starve another's recovery; readbacks run concurrently, at most
+//! `PS_RECONCILE_CONCURRENCY` at once; a check that fails (network unreachable, an unusable
+//! answer) postpones that operation with exponential backoff instead of heading every
+//! sweep; and an operation open longer than `PS_RECONCILE_ALERT_AGE_MS` is reported at
+//! WARN on every sweep. A full batch is followed at once by the next sweep. The loop stops
+//! on shutdown.
+
+use std::sync::Arc;
 
 use sandbox_db::ProjectScope;
-use sandbox_db::payments::{self, NetworkResult};
+use sandbox_db::payments::{self, NetworkResult, OpenOperation};
 use sandbox_domain::NetworkOutcome;
 use sandbox_domain::network::{Outcome, ReadbackStatus};
 use serde::Serialize;
-use tokio::sync::watch;
+use tokio::sync::{Semaphore, watch};
+use tokio::task::JoinSet;
 use uuid::Uuid;
 
 use crate::error::ApiError;
@@ -33,33 +42,91 @@ pub struct SweepReport {
     pub resolved_from_record: usize,
     /// Fenced: proved never executed.
     pub fenced: usize,
-    /// Left open (network unreachable, or recording failed); retried next sweep.
+    /// Left open (network unreachable, or recording failed); checked again after a backoff.
     pub left_open: usize,
+    /// Age of the oldest open operation of any project, in milliseconds, if one is open.
+    pub oldest_open_ms: Option<u64>,
 }
 
-/// One bounded pass over the open operations.
+/// One bounded, fair pass over the open operations.
 pub async fn sweep(state: &AppState) -> Result<SweepReport, ApiError> {
+    let tuning = state.config.reconcile;
     let open = payments::open_operations(
         &state.db,
         state.config.reconcile_grace,
         state.config.reconcile_batch,
+        tuning.per_project,
     )
     .await?;
     let mut report = SweepReport {
         examined: open.len(),
         ..SweepReport::default()
     };
+    let permits = Arc::new(Semaphore::new(tuning.concurrency));
+    let mut checks = JoinSet::new();
     for op in open {
-        match resolve(state, op.scope, op.payment_id, op.id).await {
+        let Ok(permit) = permits.clone().acquire_owned().await else {
+            break;
+        };
+        let state = state.clone();
+        checks.spawn(async move {
+            let outcome = resolve(&state, op.scope, op.payment_id, op.id).await;
+            drop(permit);
+            (op, outcome)
+        });
+    }
+    while let Some(joined) = checks.join_next().await {
+        let (op, outcome) = match joined {
+            Ok(done) => done,
+            Err(error) => {
+                tracing::error!(%error, "a readback task failed; its operation stays open");
+                report.left_open += 1;
+                continue;
+            }
+        };
+        match outcome {
             Ok(Some(NetworkOutcome::NotExecuted)) => report.fenced += 1,
             Ok(Some(_)) => report.resolved_from_record += 1,
-            Ok(None) | Err(_) => report.left_open += 1,
+            Ok(None) => {
+                report.left_open += 1;
+                postpone(state, &op).await;
+            }
+            Err(error) => {
+                tracing::warn!(operation = %op.id, %error, "recording a readback failed; the operation stays open");
+                report.left_open += 1;
+                postpone(state, &op).await;
+            }
         }
+    }
+    let oldest = payments::oldest_open_age(&state.db).await?;
+    report.oldest_open_ms = oldest.map(|age| u64::try_from(age.as_millis()).unwrap_or(u64::MAX));
+    if let Some(age) = oldest
+        && age > tuning.alert_age
+    {
+        tracing::warn!(
+            oldest_open_ms = report.oldest_open_ms,
+            "an operation has been open longer than PS_RECONCILE_ALERT_AGE_MS"
+        );
     }
     if report.examined > 0 {
         tracing::info!(?report, "reconciliation sweep");
     }
     Ok(report)
+}
+
+/// A failed check waits before the next: one interval, doubling, at most the maximum.
+async fn postpone(state: &AppState, op: &OpenOperation) {
+    if let Err(error) = payments::postpone_check(
+        &state.db,
+        op.scope,
+        op.id,
+        state.config.reconcile_interval,
+        state.config.reconcile.backoff_max,
+    )
+    .await
+    {
+        tracing::warn!(operation = %op.id, %error, "postponing a failed check failed; it is due again at once");
+    }
 }
 
 /// Resolves one open operation by fenced readback. `None` when the network could not be
@@ -131,9 +198,16 @@ async fn expected_fingerprint(
 /// Runs a sweep at once and then every `interval`, until `shutdown` turns true.
 pub async fn run(state: AppState, mut shutdown: watch::Receiver<bool>) {
     let interval = state.config.reconcile_interval;
+    let full = usize::try_from(state.config.reconcile_batch).unwrap_or(usize::MAX);
     loop {
-        if let Err(error) = sweep(&state).await {
-            tracing::warn!(%error, "reconciliation sweep failed");
+        match sweep(&state).await {
+            // A full batch: more may be due; the next bounded sweep starts at once.
+            Ok(report) if report.examined >= full && !*shutdown.borrow() => {
+                tokio::task::yield_now().await;
+                continue;
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "reconciliation sweep failed"),
         }
         tokio::select! {
             () = tokio::time::sleep(interval) => {}

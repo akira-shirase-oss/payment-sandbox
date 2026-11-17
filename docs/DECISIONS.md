@@ -459,6 +459,23 @@ review found. Each states the choice, the alternative and the cost.
   `listings_and_the_clock_are_served_while_the_writer_is_busy` (a test hook
   holds the writer; the listing used to wait behind it).
 
+- **D-048 — The reconciler takes projects in turn, checks concurrently and
+  backs off failures.** Review finding: each sweep took the 200 oldest open
+  operations of *every* project and read them back one at a time, and an
+  operation whose readback kept failing was picked first again on every
+  sweep, so one project's backlog starved every other project's recovery
+  while their reservations stayed held. Now a sweep takes the projects with
+  open operations in turn (every project's most overdue operation, then
+  every project's second, ...), at most `PS_RECONCILE_PER_PROJECT` of one
+  project (default: the batch) and `PS_RECONCILE_BATCH` in all; readbacks
+  run concurrently, at most `PS_RECONCILE_CONCURRENCY` (default 8); a check
+  that fails postpones that operation (`operations.next_check_at`, one
+  sweep interval doubling to `PS_RECONCILE_BACKOFF_MAX_MS`, default 5 min;
+  `checks` counts them, migration 0007); a full batch is followed at once by
+  the next sweep; and every sweep reports the oldest open operation's age,
+  logging WARN past `PS_RECONCILE_ALERT_AGE_MS` (default 10 min). Tests:
+  `tests/reconciler.rs`.
+
 ## Open questions (still open)
 
 - **Dashboard authentication** — per-project-owner session login is the

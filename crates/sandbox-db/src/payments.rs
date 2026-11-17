@@ -746,23 +746,39 @@ pub struct OpenOperation {
     pub payment_id: Uuid,
 }
 
-/// Open operations of every project older than `grace`, oldest first, at most `limit`.
-/// Younger ones may still have a request in flight; leaving them alone avoids fencing an
-/// identity a live request is about to deliver.
+/// Open operations due for a check, at most `limit`, **taking the projects in turn**
+/// (review finding 11): every project's most overdue operation first, then every project's
+/// second, and so on, at most `per_project` of any one project. So one project's backlog
+/// cannot hold another's recovery back. Only operations older than `grace` are taken
+/// (a younger one may still have its request in flight), and only those whose
+/// `next_check_at` has come (a failed check backs off, see [`postpone_check`]).
 pub async fn open_operations(
     pool: &PgPool,
     grace: std::time::Duration,
     limit: i64,
+    per_project: i64,
 ) -> Result<Vec<OpenOperation>, DbError> {
     let grace_ms = i64::try_from(grace.as_millis()).unwrap_or(i64::MAX);
     let rows = sqlx::query(
-        "SELECT project_id, dataset_epoch, id, payment_id FROM operations
-          WHERE state IN ('pending', 'uncertain')
-            AND created_at < now() - make_interval(secs => $1::float8 / 1000.0)
-          ORDER BY created_at LIMIT $2",
+        "SELECT o.project_id, o.dataset_epoch, o.id, o.payment_id
+           FROM (SELECT DISTINCT project_id FROM operations
+                  WHERE state IN ('pending', 'uncertain')) p
+           CROSS JOIN LATERAL (
+               SELECT q.project_id, q.dataset_epoch, q.id, q.payment_id, q.created_at,
+                      row_number() OVER (ORDER BY q.next_check_at, q.created_at) AS turn
+                 FROM operations q
+                WHERE q.project_id = p.project_id AND q.state IN ('pending', 'uncertain')
+                  AND q.next_check_at <= now()
+                  AND q.created_at < now() - make_interval(secs => $1::float8 / 1000.0)
+                ORDER BY q.next_check_at, q.created_at
+                LIMIT $3
+           ) o
+          ORDER BY o.turn, o.created_at
+          LIMIT $2",
     )
     .bind(grace_ms)
     .bind(limit.clamp(1, 10_000))
+    .bind(per_project.clamp(1, 10_000))
     .fetch_all(pool)
     .await?;
     rows.iter()
@@ -777,6 +793,44 @@ pub async fn open_operations(
             })
         })
         .collect()
+}
+
+/// Records a failed check of an open operation: its next check waits `base` × 2^checks,
+/// at most `max`. A resolved operation is left alone (it may have resolved meanwhile).
+pub async fn postpone_check(
+    pool: &PgPool,
+    scope: ProjectScope,
+    id: Uuid,
+    base: std::time::Duration,
+    max: std::time::Duration,
+) -> Result<(), DbError> {
+    let base_ms = i64::try_from(base.as_millis()).unwrap_or(i64::MAX);
+    let max_ms = i64::try_from(max.as_millis()).unwrap_or(i64::MAX);
+    sqlx::query(
+        "UPDATE operations
+            SET next_check_at = now() + make_interval(
+                    secs => least($3::float8 * power(2, least(checks, 30)), $4::float8) / 1000.0),
+                checks = checks + 1
+          WHERE project_id = $1 AND id = $2 AND state IN ('pending', 'uncertain')",
+    )
+    .bind(scope.project_id)
+    .bind(id)
+    .bind(base_ms)
+    .bind(max_ms)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// How long the oldest open operation (of any project) has been open, if any is.
+pub async fn oldest_open_age(pool: &PgPool) -> Result<Option<std::time::Duration>, DbError> {
+    let ms: Option<i64> = sqlx::query_scalar(
+        "SELECT (extract(epoch FROM now() - min(created_at)) * 1000)::bigint FROM operations
+          WHERE state IN ('pending', 'uncertain')",
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(ms.map(|ms| std::time::Duration::from_millis(u64::try_from(ms).unwrap_or(0))))
 }
 
 /// Which of `ids` this project has no record of.

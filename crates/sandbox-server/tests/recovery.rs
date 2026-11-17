@@ -207,7 +207,14 @@ async fn an_identity_the_network_never_executed_is_fenced_and_its_reservation_re
 async fn the_networks_record_survives_its_restart_mid_operation() {
     let sim = TestSim::start().await;
     let addr = sim.addr();
-    let app = TestApp::with_sim(&sim, &[("PS_SIM_TIMEOUT_MS", "300")]).await;
+    let app = TestApp::with_sim(
+        &sim,
+        &[
+            ("PS_SIM_TIMEOUT_MS", "300"),
+            ("PS_RECONCILE_INTERVAL_MS", "200"),
+        ],
+    )
+    .await;
     let (_, key) = app.project("store").await;
     let (status, first) = app
         .authorize(&key, "r", 450, "JPY", "tok_sim_lost_reply")
@@ -218,6 +225,8 @@ async fn the_networks_record_survives_its_restart_mid_operation() {
     let sweep = reconciler::sweep(&app.state).await.unwrap();
     assert_eq!(sweep.left_open, 1, "{sweep:?}");
     let sim = TestSim::start_on(&addr, path, Duration::from_secs(3)).await;
+    // A failed check waits out its backoff (one sweep interval, D-048) before the next.
+    tokio::time::sleep(Duration::from_millis(500)).await;
     let sweep = reconciler::sweep(&app.state).await.unwrap();
     assert_eq!(sweep.resolved_from_record, 1, "{sweep:?}");
     let (_, payment) = app.get(&format!("/v1/payments/{}", id(&first)), &key).await;
