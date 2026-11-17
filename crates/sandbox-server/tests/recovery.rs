@@ -273,6 +273,7 @@ async fn drill_b_virtual_clock_jumps_never_change_posted_history() {
     for seconds in [90 * 86_400_i64, -180 * 86_400] {
         let response = http
             .post(format!("{}/v1/clock", sim.url))
+            .bearer_auth(common::SIM_CONTROL_TOKEN)
             .json(&json!({"seconds": seconds}))
             .send()
             .await

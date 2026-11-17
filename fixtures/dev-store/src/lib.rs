@@ -11,6 +11,10 @@
 //!    — the payment id — at most once.
 //!
 //! A failure to re-read the payment answers `503`, so the sandbox retries later.
+//!
+//! `PUT /config` replaces the API key and the signing secrets the store trusts, so it is a
+//! test control (D-046): mounted only when the store was given an operator credential
+//! ([`DevStore::with_control`]), and refused without it.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -21,11 +25,12 @@ use axum::{
     Json, Router,
     body::Bytes,
     extract::{DefaultBodyLimit, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post, put},
 };
 use redb::{Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition};
+use sandbox_domain::access::Credential;
 use sandbox_domain::webhook::{self, EVENT_ID_HEADER, EventPayload, SIGNATURE_HEADER};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -71,6 +76,7 @@ pub struct DevStore {
     config: Arc<RwLock<StoreConfig>>,
     http: reqwest::Client,
     counters: Arc<Counters>,
+    control: Option<Arc<Credential>>,
 }
 
 impl std::fmt::Debug for DevStore {
@@ -106,7 +112,16 @@ impl DevStore {
             config: Arc::new(RwLock::new(config)),
             http,
             counters: Arc::new(Counters::default()),
+            control: None,
         })
+    }
+
+    /// Mounts `PUT /config`, admitting only `credential` (D-046). Without it the route does
+    /// not exist.
+    #[must_use]
+    pub fn with_control(mut self, credential: Option<Credential>) -> Self {
+        self.control = credential.map(Arc::new);
+        self
     }
 
     /// Every fulfillment.
@@ -145,15 +160,18 @@ impl DevStore {
 
 /// The store's HTTP API.
 pub fn app(store: DevStore) -> Router {
-    Router::new()
+    let mut router = Router::new()
         .route(
             "/healthz",
             get(|| async { Json(json!({"status": "ok", "simulated": true})) }),
         )
         .route("/webhooks", post(receive))
         .route("/fulfillments", get(list))
-        .route("/stats", get(stats))
-        .route("/config", put(configure))
+        .route("/stats", get(stats));
+    if store.control.is_some() {
+        router = router.route("/config", put(configure));
+    }
+    router
         .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(store)
 }
@@ -349,7 +367,23 @@ async fn stats(State(store): State<DevStore>) -> Response {
     )
 }
 
-async fn configure(State(store): State<DevStore>, Json(config): Json<StoreConfig>) -> Response {
+async fn configure(State(store): State<DevStore>, headers: HeaderMap, body: Bytes) -> Response {
+    let presented = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok());
+    // Checked before the body is parsed: nothing an unauthenticated caller sends is read.
+    if !store.control.as_ref().is_some_and(|c| c.admits(presented)) {
+        return reply(
+            StatusCode::UNAUTHORIZED,
+            json!({"error": "credential_required"}),
+        );
+    }
+    let Ok(config) = serde_json::from_slice::<StoreConfig>(&body) else {
+        return reply(
+            StatusCode::BAD_REQUEST,
+            json!({"error": "not a store config"}),
+        );
+    };
     store.configure(config).await;
     reply(StatusCode::OK, json!({"configured": true}))
 }

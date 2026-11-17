@@ -45,16 +45,22 @@ mkdir -p target/perf
 load_before="$(uptime | sed 's/.*load averages*: *//')"
 started_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 sim_db="target/perf/sim-${scenario}-${stamp}.redb"
+# Fresh credentials per run (D-046): the network's, which the server presents, and the
+# store's operator credential for PUT /config. The network's test controls stay off.
+sim_token="sim-$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
+store_control="store-$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
+PS_SIM_TOKEN="$sim_token" PS_SIM_CONTROL=off \
 PS_SIM_LISTEN="127.0.0.1:${sim_port}" PS_SIM_DB="$sim_db" PS_SIM_LOG=warn \
   ./target/release/sandbox-sim >"target/perf/sim-${scenario}-${stamp}.log" 2>&1 &
 sim=$!
 store_port="$((port + 2))"
+PS_STORE_CONTROL=on PS_STORE_CONTROL_TOKEN="$store_control" \
 PS_STORE_LISTEN="127.0.0.1:${store_port}" PS_STORE_DB="target/perf/store-${scenario}-${stamp}.redb" \
   ./target/release/sandbox-dev-store >"target/perf/store-${scenario}-${stamp}.log" 2>&1 &
 store=$!
 # A fresh operator token per run: scenarios create their own projects with it.
 bootstrap="load-$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
-PS_SIM_URL="http://127.0.0.1:${sim_port}" PS_RECONCILE_INTERVAL_MS=2000 \
+PS_SIM_URL="http://127.0.0.1:${sim_port}" PS_SIM_TOKEN="$sim_token" PS_RECONCILE_INTERVAL_MS=2000 \
 PS_SECRET_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
 PS_BOOTSTRAP_TOKEN="$bootstrap" PS_LISTEN="127.0.0.1:${port}" PS_LOG=warn PS_LOG_FORMAT=json \
   ./target/release/sandbox-server >"$log" 2>&1 &
@@ -67,7 +73,7 @@ done
 curl -fsS "http://127.0.0.1:${port}/readyz" >/dev/null
 
 set +e
-STORE_URL="http://127.0.0.1:${store_port}" \
+STORE_URL="http://127.0.0.1:${store_port}" STORE_TOKEN="$store_control" \
 BOOTSTRAP="$bootstrap" BASE_URL="http://127.0.0.1:${port}" MODE="$mode" k6 run --quiet \
   --summary-export "$summary" "$script"
 k6_status=$?

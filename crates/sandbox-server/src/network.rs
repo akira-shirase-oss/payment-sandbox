@@ -46,9 +46,16 @@ pub struct Network {
 }
 
 impl Network {
-    /// Builds the client.
-    pub fn new(base: &str, timeout: Duration) -> Result<Self, NetworkError> {
+    /// Builds the client. Every request presents `credential` (D-046); the header is marked
+    /// sensitive, so no debug output prints it.
+    pub fn new(base: &str, credential: &str, timeout: Duration) -> Result<Self, NetworkError> {
+        let mut bearer = reqwest::header::HeaderValue::from_str(&format!("Bearer {credential}"))
+            .map_err(|_| NetworkError("the network credential is not a header value".to_owned()))?;
+        bearer.set_sensitive(true);
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::AUTHORIZATION, bearer);
         let http = reqwest::Client::builder()
+            .default_headers(headers)
             .connect_timeout(timeout.min(Duration::from_millis(500)))
             .timeout(timeout)
             .pool_max_idle_per_host(256)

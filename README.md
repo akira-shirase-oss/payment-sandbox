@@ -14,7 +14,7 @@
 ```sh
 export PATH="$(brew --prefix rustup)/bin:$PATH"   # the pinned toolchain (rust-toolchain.toml)
 scripts/stack.sh up                                # PostgreSQL on 127.0.0.1:56432 (compose project payment-sandbox)
-eval "$(scripts/stack.sh env)"
+eval "$(scripts/stack.sh env)"                     # database URLs, PS_PROFILE=dev and dev credentials (D-046)
 cargo run -p sandbox-server -- setup               # roles ps_owner / ps_runtime / ps_app + database (D-038)
 cargo run -p sandbox-server -- migrate             # migrations, as the owner
 scripts/check.sh                                   # the gate CI runs: fmt, clippy, architecture, tests, cargo-deny
@@ -24,7 +24,11 @@ cargo run -p sandbox-dev-store                     # the development store on 12
 ```
 
 Ports (all loopback): 56432 PostgreSQL, 56080 API, 56081 simulator (M2),
-56090 load-test server. Load runs: `MODE=smoke|full scripts/load.sh <scenario>`
+56090 load-test server. Loopback is not a credential: the simulator answers
+only the server's `PS_SIM_TOKEN`, and the test controls (the simulator's
+faults and clock, the development store's `PUT /config`) exist only when
+switched on, by default only with `PS_PROFILE=dev`, behind their own
+operator credentials (D-046). Load runs: `MODE=smoke|full scripts/load.sh <scenario>`
 (`perf/README.md`).
 
 An independently owned, **simulated-money** payment platform for development

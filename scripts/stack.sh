@@ -27,6 +27,13 @@ case "${1:-}" in
     echo "export PS_MIGRATE_DATABASE_URL=postgres://ps_owner:ps-owner-dev@127.0.0.1:${port}/payment_sandbox"
     echo "export PS_DATABASE_URL=postgres://ps_app:ps-app-dev@127.0.0.1:${port}/payment_sandbox"
     echo "export PS_TEST_DATABASE_URL=postgres://sandbox:sandbox-dev@127.0.0.1:${port}/sandbox"
+    # The local processes' credentials (D-046), public development values like the ones
+    # above: the network's (the server presents it), and the operator's for the test
+    # controls, which the dev profile switches on.
+    echo "export PS_PROFILE=dev"
+    echo "export PS_SIM_TOKEN=sim-dev-network-credential-not-a-secret"
+    echo "export PS_SIM_CONTROL_TOKEN=sim-dev-control-credential-not-a-secret"
+    echo "export PS_STORE_CONTROL_TOKEN=store-dev-control-credential-not-a-secret"
     ;;
   *)
     echo "usage: scripts/stack.sh up|down|reset|env" >&2

@@ -29,6 +29,10 @@ fn config(database_url: &str, extra: &[(&str, &str)]) -> Config {
         ("PS_DATABASE_URL".to_owned(), database_url.to_owned()),
         ("PS_DB_ACQUIRE_TIMEOUT_MS".to_owned(), "300".to_owned()),
         ("PS_READINESS_TIMEOUT_MS".to_owned(), "500".to_owned()),
+        (
+            "PS_SIM_TOKEN".to_owned(),
+            "skeleton-network-credential-0123456789".to_owned(),
+        ),
     ]);
     for (k, v) in extra {
         vars.insert((*k).to_owned(), (*v).to_owned());

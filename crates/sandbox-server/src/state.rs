@@ -32,15 +32,20 @@ impl AppState {
     ///
     /// # Panics
     ///
-    /// Only if the HTTP client cannot be built, which needs a broken TLS-less reqwest build.
+    /// Only if the HTTP client cannot be built, which needs a broken TLS-less reqwest build
+    /// (the network credential was already validated by the configuration).
     pub fn new(config: Config, db: PgPool) -> Self {
         let gate = Arc::new(Semaphore::new(config.max_in_flight));
         #[expect(
             clippy::expect_used,
-            reason = "invariant: a plain-HTTP reqwest client always builds"
+            reason = "invariant: a plain-HTTP reqwest client always builds, and the credential was validated as visible ASCII by the config"
         )]
-        let network = Network::new(&config.sim_url, config.sim_timeout)
-            .expect("invariant: HTTP client builds");
+        let network = Network::new(
+            &config.sim_url,
+            config.sim_token.expose(),
+            config.sim_timeout,
+        )
+        .expect("invariant: HTTP client builds");
         let secrets = config
             .secret_key
             .as_ref()

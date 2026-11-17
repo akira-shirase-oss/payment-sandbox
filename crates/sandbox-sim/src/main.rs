@@ -6,7 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
-use sandbox_sim::{SimState, faults::Faults, store::Store};
+use sandbox_domain::access::{self, Credential, Profile};
+use sandbox_sim::{Access, SimState, faults::Faults, store::Store};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -37,6 +38,13 @@ async fn main() -> anyhow::Result<()> {
         .parse()
         .context("PS_SIM_LOST_REPLY_HOLD_MS is not a number")?;
 
+    let access = read_access()?;
+    if access.control.is_some() {
+        tracing::warn!(
+            "the test control plane is ON: faults and the virtual clock answer PS_SIM_CONTROL_TOKEN"
+        );
+    }
+
     let store = Store::open(&path)
         .await
         .with_context(|| format!("opening {}", path.display()))?;
@@ -44,6 +52,7 @@ async fn main() -> anyhow::Result<()> {
         store: store.clone(),
         faults: Arc::new(Faults::default()),
         lost_reply_hold: Duration::from_millis(hold_ms),
+        access: Arc::new(access),
     };
     let listener = tokio::net::TcpListener::bind(listen)
         .await
@@ -61,4 +70,23 @@ async fn main() -> anyhow::Result<()> {
         .await
         .ok();
     Ok(())
+}
+
+/// The credentials (D-046): `PS_SIM_TOKEN` is required; the control plane follows
+/// `PS_SIM_CONTROL` (`on`/`off`), by default on only when `PS_PROFILE=dev`, and then needs
+/// `PS_SIM_CONTROL_TOKEN`.
+fn read_access() -> anyhow::Result<Access> {
+    let var = |name: &str| std::env::var(name).ok();
+    let profile = Profile::parse(var("PS_PROFILE").as_deref()).context("PS_PROFILE")?;
+    let token = var("PS_SIM_TOKEN")
+        .context("PS_SIM_TOKEN is required: the credential the server presents (D-046)")?;
+    let network = Credential::new(&token).context("PS_SIM_TOKEN")?;
+    let control = access::control_plane(
+        profile,
+        var("PS_SIM_CONTROL").as_deref(),
+        var("PS_SIM_CONTROL_TOKEN").as_deref(),
+        &[&token],
+    )
+    .context("the test control plane (PS_SIM_CONTROL, PS_SIM_CONTROL_TOKEN)")?;
+    Ok(Access { network, control })
 }

@@ -405,6 +405,35 @@ review found. Each states the choice, the alternative and the cost.
   `axum::rejection` logging is off in every filter. Test: `tests/logs.rs`
   (a card number in the path and in `X-Request-Id`).
 
+- **D-046 — Loopback is not a credential: the local processes' internal
+  routes need one.** Review finding: the simulator's executions, fences,
+  listings, faults and virtual clock, and the development store's
+  `PUT /config` (which swaps the API key and signing secrets it trusts),
+  answered anyone who reached the port, including a webhook target the
+  server was told to call; and the network decided a capture, void or
+  refund against any parent authorization, whatever its project. Now the
+  simulator refuses to start without `PS_SIM_TOKEN` (at least 32 visible
+  characters) and answers `401` on executions, readbacks (and so fences)
+  and listings without it; the server presents it (`PS_SIM_TOKEN`, a
+  required setting, sent as a sensitive header). Test controls (the
+  network's faults and clock, the store's `PUT /config`) are a control
+  plane: mounted only when `PS_SIM_CONTROL` / `PS_STORE_CONTROL` is `on`,
+  which by default only `PS_PROFILE=dev` is (`ci` and the default `shared`
+  leave them off, so the routes do not exist), and then behind a separate
+  operator credential (`PS_SIM_CONTROL_TOKEN`, `PS_STORE_CONTROL_TOKEN`)
+  that must differ from the network's. An unknown profile, a control plane
+  without a credential, or a weak credential refuses to start. Only digests
+  are kept and compared. The network now declines a child operation whose
+  parent authorization belongs to another project as `no_authorization`,
+  exactly as an unknown one, so neither capacity nor existence leaks
+  across projects. Webhook targets on the processes' own ports are not
+  refused separately: a delivery carries no credential, so it gets `401` or
+  `404`. `scripts/stack.sh env` prints public development credentials;
+  `scripts/load.sh` makes fresh ones per run. Tests:
+  `crates/sandbox-sim/tests/access.rs` and `fixtures/dev-store/tests/control.rs`
+  (the real binaries), `another_projects_authorization_cannot_be_captured_voided_or_refunded`,
+  `access::tests`.
+
 ## Open questions (still open)
 
 - **Dashboard authentication** — per-project-owner session login is the

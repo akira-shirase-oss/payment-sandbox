@@ -43,6 +43,7 @@ impl Server {
             .env("PS_DATABASE_URL", db.url())
             .env("PS_LISTEN", format!("127.0.0.1:{port}"))
             .env("PS_SIM_URL", sim_url)
+            .env("PS_SIM_TOKEN", common::SIM_TOKEN)
             .env("PS_BOOTSTRAP_TOKEN", BOOTSTRAP)
             .env("PS_RECONCILE_GRACE_MS", "1")
             .env("PS_RECONCILE_INTERVAL_MS", "200")

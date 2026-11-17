@@ -500,6 +500,11 @@ fn decide(t: &Tables<'_>, request: &ExecuteRequest) -> Result<Decision, StoreErr
     let Some(parent) = request.parent_id else {
         return Ok((Outcome::Declined, Some("no_authorization"), None));
     };
+    // Another project's authorization does not exist for this request (D-046): declined
+    // exactly as an unknown one, so neither its capacity nor its existence leaks.
+    if get_stored(t, parent)?.is_none_or(|p| p.project_id != request.project_id) {
+        return Ok((Outcome::Declined, Some("no_authorization"), None));
+    }
     let auth: Authorization = match t.authorizations.get(parent.as_u128()).map_err(storage)? {
         Some(guard) => load(guard.value())?,
         None => return Ok((Outcome::Declined, Some("no_authorization"), None)),

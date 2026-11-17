@@ -186,3 +186,37 @@ async fn listing_pages_through_every_record_in_order() {
     }
     assert_eq!(seen, (10..17).collect::<Vec<_>>());
 }
+
+/// Review finding 10: a capture, void or refund is decided against its parent
+/// authorization only when that authorization is the same project's. Another project's
+/// request naming it is declined as if it did not exist, and moves none of its capacity.
+#[tokio::test]
+async fn another_projects_authorization_cannot_be_captured_voided_or_refunded() {
+    let store = Store::open(&path()).await.unwrap();
+    let auth = Uuid::now_v7();
+    store
+        .execute(&authorize(auth, 100, "tok_sim_approve"))
+        .await
+        .unwrap();
+    let other = Uuid::from_u128(2);
+    for kind in [
+        OperationKind::Capture,
+        OperationKind::Void,
+        OperationKind::Refund,
+    ] {
+        let mut request = child(Uuid::now_v7(), auth, kind, 1);
+        request.project_id = other;
+        let reply = store.execute(&request).await.unwrap().reply;
+        assert_eq!(
+            (reply.outcome, reply.decline_code.as_deref()),
+            (Outcome::Declined, Some("no_authorization")),
+            "{kind:?} by another project"
+        );
+    }
+    // The owner still has every unit of its authorization.
+    let all = store
+        .execute(&child(Uuid::now_v7(), auth, OperationKind::Capture, 100))
+        .await
+        .unwrap();
+    assert_eq!(all.reply.outcome, Outcome::Approved);
+}

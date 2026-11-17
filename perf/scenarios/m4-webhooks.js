@@ -46,7 +46,7 @@ export function setup() {
     sandbox_url: __ENV.BASE_URL || 'http://127.0.0.1:56090',
     api_key: reader.json().secret,
     secrets: [endpoint.json().secret],
-  }), { headers: { 'content-type': 'application/json' } });
+  }), { headers: { 'content-type': 'application/json', authorization: `Bearer ${__ENV.STORE_TOKEN}` } });
   if (config.status !== 200) fail(`store config: ${config.status}`);
   return { key };
 }

@@ -65,6 +65,9 @@ pub struct Config {
     pub bootstrap_token: Option<Secret>,
     /// Base URL of the simulated network; loopback only (D-023).
     pub sim_url: String,
+    /// The credential the network requires on every execution, readback and listing
+    /// (`PS_SIM_TOKEN`, D-046).
+    pub sim_token: Secret,
     /// Longest a request waits for its payment's turn before it is shed (D-033).
     pub payment_queue_wait: Duration,
     /// Time between reconciliation sweeps.
@@ -114,6 +117,7 @@ impl Config {
             }),
         };
         let database_url = parse.required("PS_DATABASE_URL");
+        let sim_token = parse.required("PS_SIM_TOKEN");
         let pool = PoolSettings {
             max_connections: parse.value("PS_DB_MAX_CONNECTIONS", Some(32)),
             acquire_timeout: parse.millis("PS_DB_ACQUIRE_TIMEOUT_MS", 1_000),
@@ -157,6 +161,9 @@ impl Config {
                     .to_owned(),
             );
         }
+        if !sim_token.is_empty() && sandbox_domain::access::Credential::new(&sim_token).is_err() {
+            errors.push("PS_SIM_TOKEN must be at least 32 visible characters".to_owned());
+        }
         let bootstrap_token = lookup("PS_BOOTSTRAP_TOKEN");
         if let Some(token) = &bootstrap_token
             && (token.len() < 32 || token.chars().any(|c| c.is_whitespace() || c.is_control()))
@@ -177,6 +184,7 @@ impl Config {
             log_filter,
             bootstrap_token: bootstrap_token.map(Secret::new),
             sim_url: sim_url.trim_end_matches('/').to_owned(),
+            sim_token: Secret::new(sim_token),
             sim_timeout,
             payment_queue_wait,
             reconcile_interval,
@@ -295,13 +303,31 @@ mod tests {
         Config::from_lookup(|name| map.get(name).cloned())
     }
 
+    const SIM_TOKEN: &str = "sim-credential-for-config-tests-0123456789";
+
     #[test]
     fn defaults_are_bounded_and_loopback() {
-        let c = config(&[("PS_DATABASE_URL", "postgres://x@127.0.0.1/db")]).unwrap();
+        let c = config(&[
+            ("PS_DATABASE_URL", "postgres://x@127.0.0.1/db"),
+            ("PS_SIM_TOKEN", SIM_TOKEN),
+        ])
+        .unwrap();
         assert_eq!(c.listen, "127.0.0.1:56080".parse().unwrap());
         assert_eq!(c.max_body_bytes, 16 * 1024);
         assert!(c.request_timeout > c.pool.statement_timeout);
         assert_eq!(format!("{:?}", c.database_url), "Secret(<redacted>)");
+        assert_eq!(format!("{:?}", c.sim_token), "Secret(<redacted>)");
+    }
+
+    #[test]
+    fn the_network_credential_is_required_and_strong() {
+        let missing = config(&[("PS_DATABASE_URL", "x")]).unwrap_err();
+        assert!(
+            missing.to_string().contains("PS_SIM_TOKEN is required"),
+            "{missing}"
+        );
+        let weak = config(&[("PS_DATABASE_URL", "x"), ("PS_SIM_TOKEN", "short")]).unwrap_err();
+        assert!(weak.to_string().contains("PS_SIM_TOKEN must be"), "{weak}");
     }
 
     #[test]

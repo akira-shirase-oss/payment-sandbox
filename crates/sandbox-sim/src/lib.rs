@@ -4,7 +4,10 @@
 //! repeated identity, and supports fenced readback (D-017), listing for reverse
 //! reconciliation, a virtual test clock, and test-only fault rules.
 //!
-//! No real network exists behind it, and it listens on loopback only.
+//! No real network exists behind it, and it listens on loopback only. Loopback is not a
+//! credential (D-046): executions, readbacks and listings need the server's network
+//! credential, and the test control plane (faults, the clock) is mounted only when the
+//! startup flag turns it on, behind the operator's credential.
 
 pub mod faults;
 pub mod store;
@@ -14,11 +17,13 @@ use std::time::Duration;
 
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, Query, State},
-    http::{HeaderValue, StatusCode},
+    extract::{DefaultBodyLimit, Path, Query, Request, State},
+    http::{HeaderValue, StatusCode, header},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use sandbox_domain::access::Credential;
 use sandbox_domain::network::ExecuteRequest;
 use sandbox_domain::scenario::Scenario;
 use serde::Deserialize;
@@ -31,6 +36,16 @@ use uuid::Uuid;
 use crate::faults::{FaultAction, FaultRule, Faults};
 use crate::store::{Store, StoreError};
 
+/// Who may call which routes (D-046).
+#[derive(Debug, Clone)]
+pub struct Access {
+    /// The server's credential: executions, readbacks (and so fences) and listings.
+    pub network: Credential,
+    /// The operator's credential for faults and the virtual clock. `None` (the default
+    /// outside the `dev` profile) leaves those routes unmounted.
+    pub control: Option<Credential>,
+}
+
 /// Shared state.
 #[derive(Debug, Clone)]
 pub struct SimState {
@@ -40,19 +55,51 @@ pub struct SimState {
     pub faults: Arc<Faults>,
     /// How long a lost reply is held.
     pub lost_reply_hold: Duration,
+    /// Credentials.
+    pub access: Arc<Access>,
+}
+
+/// Refuses a request without the route group's credential, before its body is read.
+async fn require(
+    State(credential): State<Arc<Credential>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let presented = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok());
+    if credential.admits(presented) {
+        next.run(request).await
+    } else {
+        error(StatusCode::UNAUTHORIZED, "credential_required")
+    }
 }
 
 /// The network's HTTP API.
 pub fn app(state: SimState) -> Router {
-    Router::new()
+    let network = Router::new()
+        .route("/v1/operations", post(execute).get(list))
+        .route("/v1/operations/{id}", get(readback))
+        .route_layer(middleware::from_fn_with_state(
+            Arc::new(state.access.network.clone()),
+            require,
+        ));
+    let mut router = Router::new()
         .route(
             "/healthz",
             get(|| async { Json(json!({"status": "ok", "simulated": true})) }),
         )
-        .route("/v1/operations", post(execute).get(list))
-        .route("/v1/operations/{id}", get(readback))
-        .route("/v1/clock", get(clock).post(advance))
-        .route("/v1/faults", post(add_fault).delete(clear_faults))
+        .merge(network);
+    if let Some(control) = state.access.control.clone() {
+        router = router.merge(
+            Router::new()
+                .route("/v1/clock", get(clock).post(advance))
+                .route("/v1/faults", post(add_fault).delete(clear_faults))
+                .route_layer(middleware::from_fn_with_state(Arc::new(control), require)),
+        );
+    }
+    router
         .with_state(state)
         .layer(SetResponseHeaderLayer::overriding(
             axum::http::HeaderName::from_static("sandbox-simulated"),

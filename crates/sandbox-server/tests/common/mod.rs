@@ -57,10 +57,15 @@ impl TestSim {
     pub async fn start_on(addr: &str, path: PathBuf, lost_reply_hold: Duration) -> Self {
         let store = sandbox_sim::store::Store::open(&path).await.unwrap();
         let faults = Arc::new(sandbox_sim::faults::Faults::default());
+        let access = sandbox_sim::Access {
+            network: sandbox_domain::access::Credential::new(SIM_TOKEN).unwrap(),
+            control: Some(sandbox_domain::access::Credential::new(SIM_CONTROL_TOKEN).unwrap()),
+        };
         let state = sandbox_sim::SimState {
             store: store.clone(),
             faults: faults.clone(),
             lost_reply_hold,
+            access: Arc::new(access),
         };
         let listener = bind_retrying(addr).await;
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -134,6 +139,10 @@ pub fn sim_vars<'a>(sim: &'a TestSim, extra: &[(&'a str, &'a str)]) -> Vec<(&'a 
 
 /// The operator token the test apps are configured with.
 pub const BOOTSTRAP: &str = "test-bootstrap-token-0123456789abcdef";
+/// The network credential the test networks require and the test apps present (D-046).
+pub const SIM_TOKEN: &str = "test-network-credential-0123456789abcdef";
+/// The test networks' control-plane credential (faults, the virtual clock).
+pub const SIM_CONTROL_TOKEN: &str = "test-network-control-credential-0123456789";
 
 /// An app on its own database.
 pub struct TestApp {
@@ -168,6 +177,7 @@ impl TestApp {
         let mut vars: HashMap<String, String> = HashMap::from([
             ("PS_DATABASE_URL".to_owned(), db.url()),
             ("PS_BOOTSTRAP_TOKEN".to_owned(), BOOTSTRAP.to_owned()),
+            ("PS_SIM_TOKEN".to_owned(), SIM_TOKEN.to_owned()),
         ]);
         for (k, v) in extra {
             vars.insert((*k).to_owned(), (*v).to_owned());

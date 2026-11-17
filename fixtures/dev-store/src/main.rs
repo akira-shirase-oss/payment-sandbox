@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use anyhow::Context as _;
 use sandbox_dev_store::{DevStore, StoreConfig};
+use sandbox_domain::access::{self, Profile};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -35,7 +36,23 @@ async fn main() -> anyhow::Result<()> {
             .map(str::to_owned)
             .collect(),
     };
-    let store = DevStore::open(&path, config).map_err(|e| anyhow::anyhow!("{e}"))?;
+    // `PUT /config` is a test control (D-046): by default only in the dev profile, and
+    // always behind PS_STORE_CONTROL_TOKEN.
+    let var = |name: &str| std::env::var(name).ok();
+    let profile = Profile::parse(var("PS_PROFILE").as_deref()).context("PS_PROFILE")?;
+    let control = access::control_plane(
+        profile,
+        var("PS_STORE_CONTROL").as_deref(),
+        var("PS_STORE_CONTROL_TOKEN").as_deref(),
+        &[config.api_key.as_str()],
+    )
+    .context("the store's control plane (PS_STORE_CONTROL, PS_STORE_CONTROL_TOKEN)")?;
+    if control.is_some() {
+        tracing::warn!("PUT /config is ON: it answers PS_STORE_CONTROL_TOKEN");
+    }
+    let store = DevStore::open(&path, config)
+        .map_err(|e| anyhow::anyhow!("{e}"))?
+        .with_control(control);
     let listener = tokio::net::TcpListener::bind(listen)
         .await
         .context("binding")?;
