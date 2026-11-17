@@ -3,11 +3,14 @@
 //! a card field or carries a card-number-like digit run is refused before parsing goes
 //! further, and the value is never echoed, logged or stored.
 //!
-//! "Card-number-like" (review finding 6; D-043): a run of 13 or more digits — ASCII or
-//! full-width, joined across separators of at most two non-alphanumeric characters — that
-//! has a Luhn-valid window of 13–19 digits. Letters, longer gaps and canonical UUIDs end a
-//! run. The windowed check refuses some long digit strings that are not card numbers; in a
-//! sandbox that never needs them, that is the right side to err on.
+//! "Card-number-like" (review finding 6, N7; D-043, D-059): a run of 13 or more digits —
+//! any Unicode decimal digit (ASCII, full-width, Arabic-Indic, Devanagari, mathematical
+//! digits and the other `Nd` scripts) or a superscript, subscript or circled digit, joined
+//! across separators of at most three non-alphanumeric characters — that has a Luhn-valid
+//! window of 13–19 digits. Letters, longer gaps and canonical UUIDs that contain a letter
+//! end a run (an all-digit UUID is digits like any other). The windowed check refuses some
+//! long digit strings that are not card numbers; in a sandbox that never needs them, that
+//! is the right side to err on.
 
 /// Field names that only card data would use. Compared case-insensitively after removing
 /// `_` and `-`.
@@ -54,18 +57,46 @@ pub fn luhn_valid(digits: &[u8]) -> bool {
     !digits.is_empty() && sum.is_multiple_of(10)
 }
 
-/// Most separator characters allowed between two digit groups of one number.
-const MAX_SEPARATOR: usize = 2;
+/// Most separator characters allowed between two digit groups of one number
+/// (`4242 - 4242` has three).
+const MAX_SEPARATOR: usize = 3;
 
-/// The decimal value of an ASCII or full-width digit.
+/// The zero of every block of ten Unicode decimal digits (`Nd`) outside ASCII: a digit's
+/// value is its distance from its block's zero.
+const DIGIT_ZEROS: [u32; 67] = [
+    0x0660, 0x06F0, 0x07C0, 0x0966, 0x09E6, 0x0A66, 0x0AE6, 0x0B66, 0x0BE6, 0x0C66, 0x0CE6, 0x0D66,
+    0x0DE6, 0x0E50, 0x0ED0, 0x0F20, 0x1040, 0x1090, 0x17E0, 0x1810, 0x1946, 0x19D0, 0x1A80, 0x1A90,
+    0x1B50, 0x1BB0, 0x1C40, 0x1C50, 0xA620, 0xA8D0, 0xA900, 0xA9D0, 0xA9F0, 0xAA50, 0xABF0, 0xFF10,
+    0x104A0, 0x10D30, 0x11066, 0x110F0, 0x11136, 0x111D0, 0x112F0, 0x11450, 0x114D0, 0x11650,
+    0x116C0, 0x11730, 0x118E0, 0x11950, 0x11C50, 0x11D50, 0x11DA0, 0x11F50, 0x16A60, 0x16AC0,
+    0x16B50, 0x1D7CE, 0x1D7D8, 0x1D7E2, 0x1D7EC, 0x1D7F6, 0x1E140, 0x1E2F0, 0x1E4F0, 0x1E950,
+    0x1FBF0,
+];
+
+/// The decimal value of a digit in any of the forms above.
 fn digit_of(c: char) -> Option<u8> {
+    let code = u32::from(c);
     if c.is_ascii_digit() {
-        return u8::try_from(u32::from(c).wrapping_sub(u32::from('0'))).ok();
+        return u8::try_from(code.wrapping_sub(u32::from('0'))).ok();
     }
-    if ('\u{ff10}'..='\u{ff19}').contains(&c) {
-        return u8::try_from(u32::from(c).wrapping_sub(0xff10)).ok();
+    if code < 0x80 {
+        return None;
     }
-    None
+    let value = match code {
+        // Superscripts, subscripts, circled digits (compatibility forms).
+        0x00B9 => Some(1),
+        0x00B2 => Some(2),
+        0x00B3 => Some(3),
+        0x2070 | 0x2080 | 0x24EA => Some(0),
+        0x2074..=0x2079 => Some(code.wrapping_sub(0x2070)),
+        0x2081..=0x2089 => Some(code.wrapping_sub(0x2080)),
+        0x2460..=0x2468 => Some(code.wrapping_sub(0x245F)),
+        _ => DIGIT_ZEROS
+            .iter()
+            .find(|&&zero| (zero..zero.saturating_add(10)).contains(&code))
+            .map(|&zero| code.wrapping_sub(zero)),
+    };
+    value.and_then(|v| u8::try_from(v).ok())
 }
 
 /// True when `text` carries a card-number-like digit run (review finding 6).
@@ -113,7 +144,8 @@ pub fn contains_pan_like(text: &str) -> bool {
     run_has_pan(&digits)
 }
 
-/// A canonical hyphenated UUID starts here (identifiers are never card numbers).
+/// A canonical hyphenated UUID with at least one letter starts here (identifiers are never
+/// card numbers; an all-digit "UUID" is digits like any other, review N7).
 fn starts_uuid(chars: &[char]) -> bool {
     if chars.len() < 36 {
         return false;
@@ -121,7 +153,8 @@ fn starts_uuid(chars: &[char]) -> bool {
     chars[..36].iter().enumerate().all(|(n, c)| match n {
         8 | 13 | 18 | 23 => *c == '-',
         _ => c.is_ascii_hexdigit(),
-    }) && chars.get(36).is_none_or(|c| !c.is_ascii_hexdigit())
+    }) && chars[..36].iter().any(char::is_ascii_alphabetic)
+        && chars.get(36).is_none_or(|c| !c.is_ascii_hexdigit())
 }
 
 fn run_has_pan(digits: &[u8]) -> bool {
@@ -170,13 +203,26 @@ mod tests {
         }
     }
 
+    /// Review N7: shapes the guard of D-043 missed.
+    #[test]
+    fn wide_gaps_other_digit_forms_and_all_digit_uuids_are_detected() {
+        for shape in [
+            "4242 - 4242 - 4242 - 4242",
+            "\u{1d7d2}\u{1d7d0}\u{1d7d2}\u{1d7d0}\u{1d7d2}\u{1d7d0}\u{1d7d2}\u{1d7d0}\u{1d7d2}\u{1d7d0}\u{1d7d2}\u{1d7d0}\u{1d7d2}\u{1d7d0}\u{1d7d2}\u{1d7d0}",
+            "\u{2074}\u{b2}\u{2074}\u{b2}\u{2074}\u{b2}\u{2074}\u{b2}\u{2074}\u{b2}\u{2074}\u{b2}\u{2074}\u{b2}\u{2074}\u{b2}",
+            "\u{664}\u{662}\u{664}\u{662}\u{664}\u{662}\u{664}\u{662}\u{664}\u{662}\u{664}\u{662}\u{664}\u{662}\u{664}\u{662}",
+            "42424242-4242-4242-4242-424242424242",
+        ] {
+            assert!(contains_pan_like(shape), "{shape:?}");
+        }
+    }
+
     #[test]
     fn ordinary_text_and_identifiers_are_not_card_like() {
         let clean = [
             "tok_sim_approve",
             "order-1234",
             "018f2f0e-3c1a-7cc0-9e1e-3f1f6b7f9a01",
-            "12345678-1234-1234-1234-123456789012",
             // 12 digits: shorter than any card number. (A 16-digit string that fails Luhn
             // as a whole is still refused when a 13-15 digit window inside it passes: the
             // windowed check trades those false positives for catching embedded numbers.)
@@ -189,6 +235,26 @@ mod tests {
         for text in clean {
             assert!(!contains_pan_like(text), "{text:?}");
         }
+    }
+
+    #[test]
+    fn every_digit_block_is_ten_numeric_characters() {
+        for zero in DIGIT_ZEROS {
+            for n in 0..10 {
+                let c = char::from_u32(zero + n).unwrap();
+                assert!(c.is_numeric(), "U+{:04X}", zero + n);
+                assert_eq!(
+                    digit_of(c),
+                    Some(u8::try_from(n).unwrap()),
+                    "U+{:04X}",
+                    zero + n
+                );
+            }
+        }
+        assert_eq!(digit_of('\u{b9}'), Some(1));
+        assert_eq!(digit_of('\u{2468}'), Some(9));
+        assert_eq!(digit_of('a'), None);
+        assert_eq!(digit_of('\u{e9}'), None);
     }
 
     #[test]
@@ -218,17 +284,12 @@ mod tests {
     }
 
     proptest! {
-        /// Every all-digit UUID passes: digit-only groups are at most 12 long and the
-        /// 8-4-4-4-12 grouping is not a card grouping.
+        /// Every UUID with a letter passes, whatever its digits. (One made only of digits is
+        /// treated as digits, review N7; a random UUID is that with probability ~(10/16)^32.)
         #[test]
         fn uuids_never_look_like_cards(id in any::<u128>()) {
             let text = uuid::Uuid::from_u128(id).to_string();
-            prop_assert!(!contains_pan_like(&text));
-        }
-
-        #[test]
-        fn digit_uuids_never_look_like_cards(groups in ("[0-9]{8}", "[0-9]{4}", "[0-9]{4}", "[0-9]{4}", "[0-9]{12}")) {
-            let text = format!("{}-{}-{}-{}-{}", groups.0, groups.1, groups.2, groups.3, groups.4);
+            prop_assume!(text.bytes().any(|b| b.is_ascii_alphabetic()));
             prop_assert!(!contains_pan_like(&text));
         }
     }

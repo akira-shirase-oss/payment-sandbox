@@ -696,6 +696,15 @@ review found. Each states the choice, the alternative and the cost.
   - *N6:* a set-but-empty `PS_SIM_TOKEN` is refused like a weak one (it
     used to pass, leaving every operation uncertain while readiness was
     green). Test: `config::tests::the_network_credential_is_required_and_strong`.
+  - *N7:* the card guard joins digits across separators of up to three
+    characters (`4242 - 4242`), reads every Unicode decimal digit (a table
+    of the `Nd` blocks' zeros, checked against `char::is_numeric`) plus
+    superscript, subscript and circled digits, and exempts only UUIDs that
+    contain a letter, so the all-digit UUID shape is digits like any other
+    and is no longer accepted as a request id either. Tests:
+    `wide_gaps_other_digit_forms_and_all_digit_uuids_are_detected`,
+    `every_digit_block_is_ten_numeric_characters`, `request_id_policy`,
+    `every_common_card_number_shape_is_refused_and_never_stored`.
 
 ## Open questions (still open)
 

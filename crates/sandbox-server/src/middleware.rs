@@ -51,7 +51,10 @@ impl MakeRequestId for MakeRequestUuidV7 {
 /// True for client ids safe to copy into logs and back onto responses: canonical UUIDs only
 /// (review finding 8). Free-form ids let a card number reach logs and response headers.
 pub fn is_acceptable_request_id(value: &str) -> bool {
-    value.len() == 36 && uuid::Uuid::try_parse(value).is_ok()
+    // A UUID made only of digits is card-like (review N7): one letter at least.
+    value.len() == 36
+        && uuid::Uuid::try_parse(value).is_ok()
+        && value.bytes().any(|b| b.is_ascii_alphabetic())
 }
 
 async fn sanitize_request_id(mut request: Request) -> Request {
@@ -236,6 +239,8 @@ mod tests {
             ("018f2f0e-3c1a-7cc0-9e1e-3f1f6b7f9a01", true),
             ("trace.42_a", false),
             ("4111111111111111", false),
+            // Review N7: an all-digit UUID passes the card guard's UUID exemption.
+            ("42424242-4242-4242-4242-424242424242", false),
             ("", false),
             ("has space", false),
             ("new\nline", false),

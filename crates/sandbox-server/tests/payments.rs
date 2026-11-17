@@ -970,6 +970,13 @@ async fn every_common_card_number_shape_is_refused_and_never_stored() {
         "4242/4242/4242/4242",
         "4242_4242_4242_4242",
         "37828224631000 5",
+        // Review N7: three-character gaps, mathematical-bold, superscript and Arabic-Indic
+        // digits, and the all-digit UUID shape were all stored.
+        "4242 - 4242 - 4242 - 4242",
+        "\u{1d7d2}\u{1d7d0}\u{1d7d2}\u{1d7d0}\u{1d7d2}\u{1d7d0}\u{1d7d2}\u{1d7d0}\u{1d7d2}\u{1d7d0}\u{1d7d2}\u{1d7d0}\u{1d7d2}\u{1d7d0}\u{1d7d2}\u{1d7d0}",
+        "\u{2074}\u{b2}\u{2074}\u{b2}\u{2074}\u{b2}\u{2074}\u{b2}\u{2074}\u{b2}\u{2074}\u{b2}\u{2074}\u{b2}\u{2074}\u{b2}",
+        "\u{664}\u{662}\u{664}\u{662}\u{664}\u{662}\u{664}\u{662}\u{664}\u{662}\u{664}\u{662}\u{664}\u{662}\u{664}\u{662}",
+        "42424242-4242-4242-4242-424242424242",
     ];
     for (n, shape) in shapes.iter().enumerate() {
         let body = json!({"amount": 100, "currency": "USD", "token": "tok_sim_approve", "description": format!("card {shape}")});
