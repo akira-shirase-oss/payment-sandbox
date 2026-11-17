@@ -77,6 +77,13 @@ pub struct ExecuteReply {
     pub virtual_time: i64,
     /// True when this answer replays an earlier execution.
     pub replayed: bool,
+    /// Fingerprint of the request the network recorded under this identity. A caller
+    /// compares it with its own request before believing the answer applies to it.
+    pub fingerprint: String,
+    /// The recorded operation's kind.
+    pub kind: OperationKind,
+    /// The recorded operation's amount.
+    pub amount_minor: i64,
     /// Always true.
     pub simulated: bool,
 }

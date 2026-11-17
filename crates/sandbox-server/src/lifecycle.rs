@@ -149,19 +149,11 @@ pub async fn drive(
     payment: &Payment,
     replayed: bool,
 ) -> Result<Outcome, ApiError> {
-    let request = ExecuteRequest {
-        id: operation.id,
-        project_id: scope.project_id,
-        kind: operation.kind,
-        parent_id: (operation.kind != OperationKind::Authorize)
-            .then_some(payment.authorize_operation_id),
-        amount_minor: operation.amount_minor,
-        currency: payment.currency,
-        token: (operation.kind == OperationKind::Authorize).then(|| payment.token.clone()),
-    };
+    let request = network_request(scope, operation, payment);
     crate::faults::point(crate::faults::Point::BeforeNetwork, operation.kind);
     let answer = state.network.execute(&request).await;
     crate::faults::point(crate::faults::Point::AfterNetwork, operation.kind);
+    let conflict = answer == Answer::Conflict;
     let result = network_result(&answer);
     if let Answer::Unknown(reason) = answer {
         tracing::warn!(operation = %operation.id, kind = %operation.kind, reason, "network answer unknown; operation stays uncertain");
@@ -169,6 +161,11 @@ pub async fn drive(
     let (operation, payment) = apply_with_retry(state, scope, payment.id, operation.id, &result)
         .await?
         .into_parts();
+    if conflict {
+        // The key was used with other fields (here: the server's record of it was lost to
+        // a restore). Recorded as declined, reservation released, and never reinterpreted.
+        return Err(ApiError::IdempotencyKeyConflict);
+    }
     Ok(Outcome {
         operation,
         payment,
@@ -228,6 +225,28 @@ pub(crate) fn full_jitter(ceiling: std::time::Duration) -> std::time::Duration {
     std::time::Duration::from_micros(u64::from_le_bytes(bytes) % max)
 }
 
+/// The request the network gets for `operation`; its fingerprint is what any answer or
+/// readback must match.
+pub fn network_request(
+    scope: ProjectScope,
+    operation: &Operation,
+    payment: &Payment,
+) -> ExecuteRequest {
+    ExecuteRequest {
+        id: operation.id,
+        project_id: scope.project_id,
+        kind: operation.kind,
+        parent_id: (operation.kind != OperationKind::Authorize)
+            .then_some(payment.authorize_operation_id),
+        amount_minor: operation.amount_minor,
+        currency: payment.currency,
+        token: (operation.kind == OperationKind::Authorize).then(|| payment.token.clone()),
+    }
+}
+
+/// Decline code recorded when the network holds another request under the identity.
+pub const IDENTITY_CONFLICT: &str = "network_identity_conflict";
+
 /// Translates a network answer into what is recorded.
 pub fn network_result(answer: &Answer) -> NetworkResult {
     match answer {
@@ -244,6 +263,11 @@ pub fn network_result(answer: &Answer) -> NetworkResult {
         Answer::Unknown(_) => NetworkResult {
             outcome: NetworkOutcome::Unknown,
             decline_code: None,
+            network_ref: None,
+        },
+        Answer::Conflict => NetworkResult {
+            outcome: NetworkOutcome::Declined,
+            decline_code: Some(IDENTITY_CONFLICT.to_owned()),
             network_ref: None,
         },
         Answer::Fenced => NetworkResult {

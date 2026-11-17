@@ -327,6 +327,20 @@ review found. Each states the choice, the alternative and the cost.
   `a_temporary_table_cannot_shadow_the_journal_in_its_triggers`, run as a
   role that does have `TEMP`.
 
+- **D-040 — A network conflict is final; a record is applied only to its
+  own request.** Review finding: after a restore, the same key with a
+  different amount was reinterpreted. The network's `409` became
+  `uncertain`, and the readback's outcome was then applied to the server's
+  new amount. Now the network's answers and readbacks carry the recorded
+  request's fingerprint, kind and amount. A `409`, or a record whose
+  fingerprint differs from the request the server would send, resolves the
+  operation as declined (`network_identity_conflict`), releases its
+  reservation, posts nothing, and answers the client
+  `409 idempotency_key_conflict`. It is never retried and never
+  reinterpreted. Test: `after_a_restore_the_same_key_with_another_amount_is_a_conflict_not_a_reinterpretation`
+  (the reviewer's R1). The report flags the resulting server/network
+  disagreement from D-041 on.
+
 ## Open questions (still open)
 
 - **Dashboard authentication** — per-project-owner session login is the

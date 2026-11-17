@@ -77,7 +77,19 @@ async fn resolve(
             return Ok(None);
         }
     };
+    let expected = expected_fingerprint(state, scope, payment_id, operation_id).await?;
     let result = match (readback.status, readback.result) {
+        // The network's record is of another request (the key was reused with other
+        // fields, e.g. after a restore): declined as a conflict, never applied.
+        (ReadbackStatus::Executed, Some(reply))
+            if Some(&reply.fingerprint) != expected.as_ref() =>
+        {
+            NetworkResult {
+                outcome: NetworkOutcome::Declined,
+                decline_code: Some(lifecycle::IDENTITY_CONFLICT.to_owned()),
+                network_ref: None,
+            }
+        }
         (ReadbackStatus::Executed, Some(reply)) => NetworkResult {
             outcome: match reply.outcome {
                 Outcome::Approved => NetworkOutcome::Approved,
@@ -100,6 +112,20 @@ async fn resolve(
     lifecycle::apply_with_retry(state, scope, payment_id, operation_id, &result).await?;
     tracing::info!(operation = %operation_id, ?outcome, "resolved by readback");
     Ok(Some(outcome))
+}
+
+/// The fingerprint of the request the server would send for this operation.
+async fn expected_fingerprint(
+    state: &AppState,
+    scope: ProjectScope,
+    payment_id: Uuid,
+    operation_id: Uuid,
+) -> Result<Option<String>, ApiError> {
+    let operation = payments::get_operation(&state.db, scope, operation_id).await?;
+    let payment = payments::get_payment(&state.db, scope, payment_id).await?;
+    Ok(operation
+        .zip(payment)
+        .map(|(o, p)| lifecycle::network_request(scope, &o, &p).fingerprint()))
 }
 
 /// Runs a sweep at once and then every `interval`, until `shutdown` turns true.

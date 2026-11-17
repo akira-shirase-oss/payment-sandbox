@@ -371,6 +371,9 @@ fn reply_of(id: Uuid, stored: &Stored, replayed: bool) -> ExecuteReply {
         network_ref: stored.network_ref.clone(),
         virtual_time: stored.virtual_time,
         replayed,
+        fingerprint: stored.fingerprint.clone(),
+        kind: stored.kind,
+        amount_minor: stored.amount_minor,
         simulated: true,
     }
 }

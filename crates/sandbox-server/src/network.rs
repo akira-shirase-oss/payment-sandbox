@@ -25,6 +25,10 @@ pub enum Answer {
     Declined(ExecuteReply),
     /// No usable answer: timeout, refused connection, 5xx, malformed reply.
     Unknown(&'static str),
+    /// The network holds a *different* request under this identity (it answered 409, or
+    /// its record's fingerprint differs): the same key was reused with other fields.
+    /// Final: never applied, never retried.
+    Conflict,
     /// The identity was fenced by an earlier readback: it never executed and never will.
     Fenced,
 }
@@ -76,6 +80,12 @@ impl Network {
         };
         match response.status() {
             StatusCode::OK => match read_json::<ExecuteReply>(response, MAX_REPLY_BYTES).await {
+                Some(reply)
+                    if reply.id == request.id && reply.fingerprint != request.fingerprint() =>
+                {
+                    tracing::warn!(operation = %request.id, "the network's record is of another request");
+                    Answer::Conflict
+                }
                 Some(reply) if reply.id != request.id => {
                     tracing::error!(operation = %request.id, "network answered for another identity");
                     Answer::Unknown("wrong identity")
@@ -88,8 +98,8 @@ impl Network {
             },
             StatusCode::GONE => Answer::Fenced,
             StatusCode::CONFLICT => {
-                tracing::error!(operation = %request.id, "network refused: identity reused with another request");
-                Answer::Unknown("identity conflict")
+                tracing::warn!(operation = %request.id, "the network holds another request under this identity");
+                Answer::Conflict
             }
             status if status.is_server_error() => Answer::Unknown("unavailable"),
             status => {

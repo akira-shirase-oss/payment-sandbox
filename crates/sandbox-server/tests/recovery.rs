@@ -440,3 +440,87 @@ async fn reverse_reconciliation_pages_through_more_than_one_full_listing_page() 
     app.cleanup().await;
     sim.remove().await;
 }
+
+/// Review finding 3 (experiment R1): after the server's database is restored, the same key
+/// with a different amount must be a conflict — never the network's outcome applied to the
+/// server's new amount.
+#[tokio::test]
+async fn after_a_restore_the_same_key_with_another_amount_is_a_conflict_not_a_reinterpretation() {
+    let sim = TestSim::start().await;
+    let vars = sim_vars(&sim, &[]);
+    let first = TestApp::on(TestDb::new().await, &vars);
+    let (_, key) = first.project("store").await;
+    let (_, p1) = first
+        .authorize(&key, "order-1", 1_000, "USD", "tok_sim_approve")
+        .await;
+    let p1 = id(&p1);
+    first.state.db.close().await;
+    let TestApp { db: mut live, .. } = first;
+    let backup = live.snapshot().await;
+
+    let after = TestApp::on(live, &vars);
+    let (status, p9) = after
+        .authorize(&key, "order-9", 100, "USD", "tok_sim_approve")
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let p9 = id(&p9);
+    let (status, _) = after
+        .post(
+            &format!("/v1/payments/{p1}/captures"),
+            &key,
+            Some("cap-x"),
+            json!({"amount": 100}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    after.state.db.close().await;
+
+    let restored = TestApp::on(backup, &vars);
+    let (status, reply) = restored
+        .authorize(&key, "order-9", 500, "USD", "tok_sim_approve")
+        .await;
+    assert_eq!(
+        (status, reply["error"]["code"].as_str()),
+        (StatusCode::CONFLICT, Some("idempotency_key_conflict")),
+        "{reply}"
+    );
+    let (status, reply) = restored
+        .post(
+            &format!("/v1/payments/{p1}/captures"),
+            &key,
+            Some("cap-x"),
+            json!({"amount": 700}),
+        )
+        .await;
+    assert_eq!(
+        (status, reply["error"]["code"].as_str()),
+        (StatusCode::CONFLICT, Some("idempotency_key_conflict")),
+        "{reply}"
+    );
+    let sweep = reconciler::sweep(&restored.state).await.unwrap();
+    assert_eq!(
+        sweep.examined, 0,
+        "nothing is left open to be reinterpreted: {sweep:?}"
+    );
+
+    let (_, payment) = restored.get(&format!("/v1/payments/{p9}"), &key).await;
+    assert_eq!(payment["payment"]["authorized"], 0, "{payment}");
+    assert_eq!(
+        payment["payment"]["decline_code"],
+        "network_identity_conflict"
+    );
+    let (_, payment) = restored.get(&format!("/v1/payments/{p1}"), &key).await;
+    assert_eq!(payment["payment"]["captured"], 0, "{payment}");
+    assert_eq!(
+        payment["payment"]["reserved"]["capture"], 0,
+        "the reservation is released"
+    );
+    assert_eq!(
+        sim.store.count().await.unwrap(),
+        3,
+        "the network executed nothing new"
+    );
+    after.cleanup().await;
+    restored.cleanup().await;
+    sim.remove().await;
+}
