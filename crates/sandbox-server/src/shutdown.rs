@@ -1,4 +1,5 @@
-//! Graceful shutdown with a hard deadline: axum's graceful shutdown has none of its own.
+//! Signals, and serving within transport limits with a hard drain deadline (D-054):
+//! axum's graceful shutdown has no deadline and its server no transport timeouts.
 
 use std::future::Future;
 use std::io;
@@ -6,16 +7,8 @@ use std::time::Duration;
 
 use axum::Router;
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
 
-/// How serving ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ShutdownOutcome {
-    /// Every in-flight request finished.
-    Graceful,
-    /// The deadline elapsed with requests still running.
-    DeadlineExceeded,
-}
+pub use sandbox_http::ShutdownOutcome;
 
 /// Installs SIGTERM and Ctrl-C handlers now (a failure is a startup error) and returns a
 /// future that resolves on either.
@@ -34,29 +27,14 @@ pub fn os_signal() -> io::Result<impl Future<Output = &'static str> + Send + 'st
     })
 }
 
-/// Serves until `trigger`, then stops accepting and drains for at most `grace`.
+/// Serves until `trigger` within the transport `limits` (D-054), then stops accepting and
+/// drains for at most `grace`.
 pub async fn serve(
     listener: TcpListener,
     app: Router,
+    limits: sandbox_http::Limits,
     grace: Duration,
     trigger: impl Future<Output = ()> + Send + 'static,
 ) -> io::Result<ShutdownOutcome> {
-    let (triggered_tx, triggered_rx) = oneshot::channel::<()>();
-    let stop = async move {
-        trigger.await;
-        let _ = triggered_tx.send(());
-    };
-    let server = axum::serve(listener, app)
-        .with_graceful_shutdown(stop)
-        .into_future();
-    let deadline = async move {
-        if triggered_rx.await.is_err() {
-            std::future::pending::<()>().await;
-        }
-        tokio::time::sleep(grace).await;
-    };
-    tokio::select! {
-        result = server => result.map(|()| ShutdownOutcome::Graceful),
-        () = deadline => Ok(ShutdownOutcome::DeadlineExceeded),
-    }
+    sandbox_http::serve(listener, app, limits, grace, trigger).await
 }

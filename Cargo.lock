@@ -1340,10 +1340,12 @@ dependencies = [
  "redb",
  "reqwest",
  "sandbox-domain",
+ "sandbox-http",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
+ "tower-http 0.7.1",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -1364,6 +1366,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "sandbox-http"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "tokio",
+ "tower",
+ "tower-http 0.7.1",
+ "tracing",
+]
+
+[[package]]
 name = "sandbox-server"
 version = "0.1.0"
 dependencies = [
@@ -1378,6 +1394,7 @@ dependencies = [
  "sandbox-db",
  "sandbox-dev-store",
  "sandbox-domain",
+ "sandbox-http",
  "sandbox-sim",
  "serde",
  "serde_json",
@@ -1402,6 +1419,7 @@ dependencies = [
  "redb",
  "reqwest",
  "sandbox-domain",
+ "sandbox-http",
  "serde",
  "serde_json",
  "sha2 0.11.1",

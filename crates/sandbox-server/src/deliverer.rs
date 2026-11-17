@@ -137,6 +137,8 @@ impl Deliverer {
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
             .pool_max_idle_per_host(32)
+            // Under every receiver's read timeout (D-054).
+            .pool_idle_timeout(sandbox_http::CLIENT_POOL_IDLE)
             .build()
             .ok()?;
         Some(Self {

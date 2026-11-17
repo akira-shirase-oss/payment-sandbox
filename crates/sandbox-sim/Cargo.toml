@@ -12,6 +12,7 @@ name = "sandbox-sim"
 path = "src/main.rs"
 
 [dependencies]
+sandbox-http.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 hex.workspace = true

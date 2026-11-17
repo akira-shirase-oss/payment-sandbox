@@ -59,7 +59,7 @@ impl Network {
             .connect_timeout(timeout.min(Duration::from_millis(500)))
             .timeout(timeout)
             .pool_max_idle_per_host(256)
-            .pool_idle_timeout(Duration::from_secs(30))
+            .pool_idle_timeout(sandbox_http::CLIENT_POOL_IDLE)
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .build()

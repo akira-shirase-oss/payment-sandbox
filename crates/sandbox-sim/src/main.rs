@@ -53,6 +53,12 @@ async fn main() -> anyhow::Result<()> {
         faults: Arc::new(Faults::default()),
         lost_reply_hold: Duration::from_millis(hold_ms),
         access: Arc::new(access),
+        transport: sandbox_http::Limits::from_lookup(
+            "PS_SIM_",
+            |name| std::env::var(name).ok(),
+            sandbox_sim::SIM_LIMITS,
+        )
+        .map_err(|problems| anyhow::anyhow!("{}", problems.join("; ")))?,
     };
     let listener = tokio::net::TcpListener::bind(listen)
         .await

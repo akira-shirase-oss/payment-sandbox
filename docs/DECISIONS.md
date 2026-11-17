@@ -573,6 +573,40 @@ review found. Each states the choice, the alternative and the cost.
   (`PSJ01`), and a new posting takes a sequence number after every
   restored one.
 
+- **D-054 — Every listener is bounded at the transport.** Review N1: the
+  server, the simulator and the development store used `axum::serve`,
+  which builds hyper's connection without a timer, so the header-read
+  timeout never ran; nothing bounded idle keep-alive connections, the
+  number of connections, or a client that stops reading, and the store had
+  no request timeout. Half-sent heads and idle connections stayed open
+  past 40 s, and under a 64-descriptor limit 70 silent connections stopped
+  the simulator accepting its real client. Now all three serve through
+  `sandbox-http`: hyper's HTTP/1 builder with `TokioTimer`; a connection
+  cap taken *before* accept (past it, connections wait in the listen
+  backlog and use no descriptor); a read timeout for request heads (hyper
+  restarts it while a keep-alive connection waits for its next request, so
+  it is also the idle timeout) and for pauses inside a request body; a
+  write deadline that closes a connection whose response write makes no
+  progress; and, per connection, a request count and an age past which the
+  next response carries `Connection: close`. Shutdown stops accepting,
+  asks every connection to close after its request and cuts stragglers off
+  after the grace period. The store also gets a 10 s request timeout and a
+  64 KiB body limit. Settings: `PS_`, `PS_SIM_` and `PS_STORE_` +
+  `MAX_CONNECTIONS` (512 / 1,024 / 256), `READ_TIMEOUT_MS` and
+  `WRITE_TIMEOUT_MS` (10 s), `MAX_REQUESTS_PER_CONNECTION` (10,000) and
+  `MAX_CONNECTION_AGE_MS` (10 min), all chosen, not measured: the owed
+  load runs set them. A client must keep pooled connections idle for less
+  than the server's read timeout, or it may send on a connection being
+  closed (for an execute, that would be an honest but needless
+  `uncertain`); the sandbox's own clients keep theirs at most 4 s
+  (`sandbox_http::CLIENT_POOL_IDLE`). The cap should sit below the
+  process's descriptor limit. Tests: `tests/transport.rs` in the server
+  (half-sent, idle and silent connections closed; request and age limits;
+  the cap holds a fifth connection in the backlog), the simulator (70
+  silent connections under `ulimit -n 64`; a half-sent head) and the store
+  (a stalled webhook body and a half-sent head), each against the real
+  binary; `sandbox-http`'s write-stall test over a 1 KiB pipe.
+
 ## Open questions (still open)
 
 - **Dashboard authentication** — per-project-owner session login is the

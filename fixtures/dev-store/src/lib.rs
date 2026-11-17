@@ -77,7 +77,13 @@ pub struct DevStore {
     http: reqwest::Client,
     counters: Arc<Counters>,
     control: Option<Arc<Credential>>,
+    transport: sandbox_http::Limits,
 }
+
+/// The store listener's default transport limits (chosen, not measured; D-054).
+pub const STORE_LIMITS: sandbox_http::Limits = sandbox_http::Limits::with_connections(256);
+/// Deadline of one request to the store (its re-read of the payment is 2 s at most).
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl std::fmt::Debug for DevStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -104,6 +110,7 @@ impl DevStore {
         txn.commit().map_err(err)?;
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(2))
+            .pool_idle_timeout(sandbox_http::CLIENT_POOL_IDLE)
             .no_proxy()
             .build()
             .map_err(err)?;
@@ -113,7 +120,15 @@ impl DevStore {
             http,
             counters: Arc::new(Counters::default()),
             control: None,
+            transport: STORE_LIMITS,
         })
+    }
+
+    /// Serves within `limits` instead of [`STORE_LIMITS`].
+    #[must_use]
+    pub const fn with_transport(mut self, limits: sandbox_http::Limits) -> Self {
+        self.transport = limits;
+        self
     }
 
     /// Mounts `PUT /config`, admitting only `credential` (D-046). Without it the route does
@@ -173,18 +188,31 @@ pub fn app(store: DevStore) -> Router {
     }
     router
         .layer(DefaultBodyLimit::max(64 * 1024))
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(64 * 1024))
+        .layer(tower_http::timeout::TimeoutLayer::with_status_code(
+            StatusCode::SERVICE_UNAVAILABLE,
+            REQUEST_TIMEOUT,
+        ))
         .with_state(store)
 }
 
-/// Serves until `shutdown`.
+/// Serves until `shutdown` within the store's transport limits (D-054), then drains for at
+/// most 5 s.
 pub async fn serve(
     listener: tokio::net::TcpListener,
     store: DevStore,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
-    axum::serve(listener, app(store))
-        .with_graceful_shutdown(shutdown)
-        .await
+    let limits = store.transport;
+    sandbox_http::serve(
+        listener,
+        app(store),
+        limits,
+        Duration::from_secs(5),
+        shutdown,
+    )
+    .await
+    .map(|_| ())
 }
 
 fn reply(status: StatusCode, body: serde_json::Value) -> Response {

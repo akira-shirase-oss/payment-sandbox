@@ -66,6 +66,7 @@ impl TestSim {
             faults: faults.clone(),
             lost_reply_hold,
             access: Arc::new(access),
+            transport: sandbox_sim::SIM_LIMITS,
         };
         let listener = bind_retrying(addr).await;
         let url = format!("http://{}", listener.local_addr().unwrap());

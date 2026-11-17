@@ -52,7 +52,15 @@ async fn main() -> anyhow::Result<()> {
     }
     let store = DevStore::open(&path, config)
         .map_err(|e| anyhow::anyhow!("{e}"))?
-        .with_control(control);
+        .with_control(control)
+        .with_transport(
+            sandbox_http::Limits::from_lookup(
+                "PS_STORE_",
+                |name| std::env::var(name).ok(),
+                sandbox_dev_store::STORE_LIMITS,
+            )
+            .map_err(|problems| anyhow::anyhow!("{}", problems.join("; ")))?,
+        );
     let listener = tokio::net::TcpListener::bind(listen)
         .await
         .context("binding")?;

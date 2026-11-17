@@ -81,6 +81,10 @@ pub struct Config {
     pub reconcile_network_max_pages: usize,
     /// Report budgets and concurrency (D-047).
     pub reports: ReportSettings,
+    /// Connection cap and transport deadlines of the listener (D-054): `PS_MAX_CONNECTIONS`,
+    /// `PS_READ_TIMEOUT_MS`, `PS_WRITE_TIMEOUT_MS`, `PS_MAX_REQUESTS_PER_CONNECTION`,
+    /// `PS_MAX_CONNECTION_AGE_MS`.
+    pub transport: sandbox_http::Limits,
     /// The reconciler's fairness, concurrency, backoff and alert (D-048).
     pub reconcile: ReconcileTuning,
     /// Key that encrypts webhook signing secrets (64 hex); webhooks are off without it.
@@ -120,6 +124,9 @@ pub struct ReconcileTuning {
     /// (`PS_RECONCILE_ALERT_AGE_MS`).
     pub alert_age: Duration,
 }
+
+/// The server listener's default transport limits (chosen, not measured; D-054).
+pub const SERVER_LIMITS: sandbox_http::Limits = sandbox_http::Limits::with_connections(512);
 
 /// Every configuration problem found, reported together.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -173,6 +180,7 @@ impl Config {
             parse.value("PS_RECONCILE_NETWORK_MAX_PAGES", Some(1_000));
         let delivery_poll = parse.millis("PS_DELIVERY_POLL_MS", 250);
         let reports = parse.reports();
+        let transport = parse.transport();
         let reconcile = parse.reconcile_tuning(reconcile_batch);
         let secret_key = lookup("PS_SECRET_KEY");
         if let Some(key) = &secret_key
@@ -221,6 +229,7 @@ impl Config {
             reconcile_network_max_pages: reconcile_network_max_pages.clamp(1, 100_000),
             secret_key: secret_key.map(Secret::new),
             reports,
+            transport,
             reconcile,
             delivery_poll,
         };
@@ -344,6 +353,14 @@ impl<F: Fn(&str) -> Option<String>> Parser<'_, F> {
             backoff_max: self.millis("PS_RECONCILE_BACKOFF_MAX_MS", 300_000),
             alert_age: self.millis("PS_RECONCILE_ALERT_AGE_MS", 600_000),
         }
+    }
+
+    fn transport(&mut self) -> sandbox_http::Limits {
+        let lookup = self.lookup;
+        sandbox_http::Limits::from_lookup("PS_", lookup, SERVER_LIMITS).unwrap_or_else(|problems| {
+            self.errors.extend(problems);
+            SERVER_LIMITS
+        })
     }
 
     fn reports(&mut self) -> ReportSettings {

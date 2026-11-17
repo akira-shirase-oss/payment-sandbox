@@ -57,7 +57,13 @@ pub struct SimState {
     pub lost_reply_hold: Duration,
     /// Credentials.
     pub access: Arc<Access>,
+    /// Connection cap and transport deadlines (D-054).
+    pub transport: sandbox_http::Limits,
 }
+
+/// The network listener's default transport limits (chosen, not measured; D-054): more
+/// connections than the server's, since the server's pool keeps many open to it.
+pub const SIM_LIMITS: sandbox_http::Limits = sandbox_http::Limits::with_connections(1_024);
 
 /// Refuses a request without the route group's credential, before its body is read.
 async fn require(
@@ -244,30 +250,16 @@ async fn clear_faults(State(state): State<SimState>) -> Response {
     Json(json!({"cleared": true})).into_response()
 }
 
-/// Serves until `shutdown` resolves, then drains for at most `grace` (held lost replies
-/// would otherwise keep it alive for their whole hold).
+/// Serves until `shutdown` resolves within the transport limits (D-054), then drains for at
+/// most `grace` (held lost replies would otherwise keep it alive for their whole hold).
 pub async fn serve(
     listener: tokio::net::TcpListener,
     state: SimState,
     grace: Duration,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
-    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-    let stop = async move {
-        shutdown.await;
-        let _ = tx.send(());
-    };
-    let server = axum::serve(listener, app(state))
-        .with_graceful_shutdown(stop)
-        .into_future();
-    let deadline = async move {
-        if rx.await.is_err() {
-            std::future::pending::<()>().await;
-        }
-        tokio::time::sleep(grace).await;
-    };
-    tokio::select! {
-        result = server => result,
-        () = deadline => Ok(()),
-    }
+    let limits = state.transport;
+    sandbox_http::serve(listener, app(state), limits, grace, shutdown)
+        .await
+        .map(|_| ())
 }

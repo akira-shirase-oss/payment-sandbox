@@ -83,6 +83,7 @@ async fn serve() -> anyhow::Result<()> {
         .with_context(|| format!("binding {}", config.listen))?;
     let local = listener.local_addr().context("reading the bound address")?;
     let grace = config.shutdown_grace;
+    let transport = config.transport;
     let state = AppState::new(config, db.clone());
     let app = sandbox_server::app(&state);
     // The background tasks run supervised (D-051): a panic is logged and restarted with
@@ -123,7 +124,7 @@ async fn serve() -> anyhow::Result<()> {
     }
     tracing::info!(%local, "listening");
 
-    let outcome = shutdown::serve(listener, app, grace, async move {
+    let outcome = shutdown::serve(listener, app, transport, grace, async move {
         let name = signal.await;
         tracing::info!(signal = name, "shutdown signal received; draining");
     })

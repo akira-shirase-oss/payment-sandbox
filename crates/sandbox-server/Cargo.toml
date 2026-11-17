@@ -21,6 +21,7 @@ name = "drills"
 required-features = ["fault-injection"]
 
 [dependencies]
+sandbox-http.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 chacha20poly1305.workspace = true

@@ -16,6 +16,7 @@ sandbox-domain = { path = "crates/sandbox-domain" }
 sandbox-db = { path = "crates/sandbox-db" }
 sandbox-sim = { path = "crates/sandbox-sim" }
 sandbox-dev-store = { path = "fixtures/dev-store" }
+sandbox-http = { path = "crates/sandbox-http" }
 
 # External crates: versions live here only. Minimal features; one async runtime (Tokio);
 # no TLS stack (everything this sandbox talks to is on loopback, D-023).
@@ -45,6 +46,10 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 uuid = { version = "1.29", features = ["v5", "v7", "serde"] }
 http-body-util = "0.1.5"
+# Bounded serving (sandbox-http): the HTTP/1 connection builder with a timer, so header-read
+# timeouts work; both already in the tree through axum and reqwest.
+hyper = { version = "1.12.0", features = ["http1", "server"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
