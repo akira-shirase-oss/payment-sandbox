@@ -93,9 +93,23 @@ pub enum RoleProblem {
     /// TEMP lets a role shadow tables in the triggers' queries.
     #[error("refusing to run as a role that may create temporary tables ({0})")]
     Temporary(String),
+    /// The journal's protections are not as the migrations left them (review N5, D-058).
+    #[error("refusing to run: the database's protections were weakened: {0}")]
+    Unprotected(String),
 }
 
-/// Checks the pool's role before the server serves anything.
+/// The protection manifest (D-058): one row per problem, none when protected.
+pub const PROTECTIONS: &str = include_str!("../sql/protections.sql");
+
+/// What [`PROTECTIONS`] finds wrong with the database behind `pool` (empty when protected).
+pub async fn protection_problems(pool: &PgPool) -> Result<Vec<String>, DbError> {
+    Ok(sqlx::query_scalar(sqlx::AssertSqlSafe(PROTECTIONS))
+        .fetch_all(pool)
+        .await?)
+}
+
+/// Checks the pool's role, then the journal's protections (D-058), before the server
+/// serves anything.
 pub async fn check_runtime(pool: &PgPool) -> Result<(), RoleCheckError> {
     let (name, superuser, bypass, owner, temp): (String, bool, bool, bool, bool) = sqlx::query_as(
         "SELECT current_user::text, r.rolsuper, r.rolbypassrls,
@@ -118,7 +132,19 @@ pub async fn check_runtime(pool: &PgPool) -> Result<(), RoleCheckError> {
     } else {
         None
     };
-    problem.map_or(Ok(()), |p| Err(RoleCheckError::Refused(p)))
+    if let Some(problem) = problem {
+        return Err(RoleCheckError::Refused(problem));
+    }
+    let problems = protection_problems(pool)
+        .await
+        .map_err(RoleCheckError::Db)?;
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(RoleCheckError::Refused(RoleProblem::Unprotected(
+            problems.join("; "),
+        )))
+    }
 }
 
 /// A failed role check.

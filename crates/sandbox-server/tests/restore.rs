@@ -325,3 +325,64 @@ async fn a_restore_into_another_cluster_explains_the_same_and_keeps_posted_entri
     source.cleanup().await;
     sim.remove().await;
 }
+
+/// Review N5: the rehearsal compared the copy with its source, so a source that had been
+/// weakened (a trigger function's search path reset, an append-only trigger dropped, UPDATE
+/// granted on the journal) produced a "restore ok" copy on which `ps_app` could rewrite
+/// lines. It now checks the protections themselves, on both sides, and that the runtime
+/// role's UPDATE of a journal line is refused.
+#[tokio::test]
+async fn the_rehearsal_fails_when_the_source_itself_was_weakened() {
+    let source = TestDb::new().await;
+    for weakening in [
+        "ALTER FUNCTION journal_lines_check_balance() RESET search_path",
+        "DROP TRIGGER journal_lines_append_only ON journal_lines",
+        "GRANT UPDATE, DELETE ON journal_lines TO ps_runtime",
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(weakening))
+            .execute(&source.pool)
+            .await
+            .unwrap();
+    }
+    let target = format!("{}_weak", source.name());
+    let script = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../scripts/restore-rehearsal.sh"
+    );
+    let rehearsal = std::process::Command::new(script)
+        .arg(source.name())
+        .arg(&target)
+        .output()
+        .unwrap();
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&rehearsal.stdout),
+        String::from_utf8_lossy(&rehearsal.stderr)
+    );
+    // Whatever happened, the copy (if any) goes.
+    {
+        use sqlx::{Connection as _, Executor as _};
+        let mut admin = sqlx::PgConnection::connect(&source.admin_url())
+            .await
+            .unwrap();
+        admin
+            .execute(sqlx::AssertSqlSafe(format!(
+                "DROP DATABASE IF EXISTS {target} WITH (FORCE)"
+            )))
+            .await
+            .unwrap();
+        admin.close().await.ok();
+    }
+    source.cleanup().await;
+    assert!(
+        !rehearsal.status.success(),
+        "a weakened source rehearsed as ok: {said}"
+    );
+    for named in [
+        "journal_lines_append_only",
+        "journal_lines_check_balance",
+        "ps_runtime holds",
+    ] {
+        assert!(said.contains(named), "{named} not reported: {said}");
+    }
+}

@@ -13,9 +13,11 @@
 #    of every journal entry and line, every trigger (enabled) and its function, every
 #    function's pinned search_path and owner, every object's owner, the runtime role's
 #    grants, and every sequence's position;
-# 5. invariants on the copy: every entry balances per currency, no entry lacks lines, no
-#    trigger is disabled, the journal has its triggers, and the runtime role can neither
-#    TRUNCATE nor create temporary tables.
+# 5. the protections themselves, on the source and on the copy (D-058: every trigger
+#    enabled, every function's pinned search path, the runtime role's exact grants, the
+#    owner), so a weakened source fails even though its copy equals it; the runtime role's
+#    UPDATE and DELETE of the journal refused on the copy; and invariants on the copy: every
+#    entry balances per currency, no entry lacks lines.
 #
 # pg_dump, pg_restore and psql run inside the PostgreSQL containers, as their superuser, so
 # their version always matches the server's: PS_PG_CONTAINER holds the source (default the
@@ -53,6 +55,23 @@ sql_target() {
 dump="/tmp/ps-rehearsal-$$-${src}.dump"
 trap 'in_pg rm -f "$dump" >/dev/null 2>&1 || true; in_target rm -f "$dump" >/dev/null 2>&1 || true' EXIT
 
+manifest="$(cd "$(dirname "$0")/.." && pwd)/crates/sandbox-db/sql/protections.sql"
+# The protections themselves (D-058), checked absolutely: a copy that equals a weakened
+# source is not a good copy.
+protected() {
+  local where="$1" db="$2" problems
+  if [ "$where" = source ]; then
+    problems="$(sql "$db" < "$manifest")"
+  else
+    problems="$(sql_target "$db" < "$manifest")"
+  fi
+  if [ -n "$problems" ]; then
+    echo "error: the $where ($db) is not protected:" >&2
+    printf '  %s\n' "$problems" >&2
+    return 1
+  fi
+}
+protected source "$src" || exit 1
 [ "$(sql_target postgres -c "SELECT count(*) FROM pg_roles WHERE rolname IN ('ps_owner', 'ps_runtime', 'ps_app')")" = 3 ] \
   || { echo "error: the target cluster lacks the roles; run sandbox-server setup against it first" >&2; exit 2; }
 in_pg pg_dump -U "$su" --format=custom --file="$dump" "$src"
@@ -136,6 +155,16 @@ SELECT concat_ws(' ',
                      AND tgrelid IN ('public.journal_entries'::regclass, 'public.journal_lines'::regclass)));
 SQL
 )
+protected copy "$dst" || exit 1
+# And as the server would meet it: the runtime role's change of a journal line is refused
+# (by privilege, before any trigger: `WHERE false` touches no row).
+for change in "UPDATE journal_lines SET amount_minor = amount_minor WHERE false" \
+              "DELETE FROM journal_entries WHERE false"; do
+  if sql_target "$dst" -c "SET ROLE ps_app" -c "$change" >/dev/null 2>&1; then
+    echo "error: on the copy, ps_app may run: $change" >&2
+    exit 1
+  fi
+done
 checked="$(sql_target "$dst" -c "$invariants")"
 for zero in unbalanced entries_without_lines disabled_triggers runtime_truncate runtime_temp; do
   if ! grep -qw "${zero}=0" <<<"$checked"; then

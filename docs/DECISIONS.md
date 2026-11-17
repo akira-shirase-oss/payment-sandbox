@@ -669,6 +669,28 @@ review found. Each states the choice, the alternative and the cost.
   Tests: `a_project_with_many_black_holed_endpoints_cannot_hold_the_deliverer`,
   `endpoints_are_capped_per_project_and_listed_in_pages`.
 
+- **D-058 — The journal's protections are one manifest, checked absolutely.**
+  Review N5: the rehearsal proved "the copy equals its source", so a source
+  whose owner had reset a trigger function's search path, dropped an
+  append-only trigger and granted the runtime role UPDATE produced
+  `restore ok`, and `ps_app` then rewrote lines on the copy; the server's
+  startup check looked at its role, not at the protections. Now
+  `crates/sandbox-db/sql/protections.sql` states them once and returns one
+  row per problem: each of the 16 triggers present and enabled, each of the
+  5 functions present and every function in `public` pinning
+  `search_path = pg_catalog, pg_temp`, `ps_runtime`'s exact privileges on
+  every table (no more and no less than the migrations grant), `ps_owner`
+  owning every table, and no `TEMP` or `CREATE` for the runtime role. The
+  server refuses to start on any problem (`check_runtime`,
+  `RoleProblem::Unprotected`); the rehearsal runs it on the source before
+  the dump and on the copy after it, and on the copy also requires that
+  `ps_app`'s `UPDATE` of a journal line and `DELETE` of an entry are
+  refused. A migration that changes any protection must change the
+  manifest in the same commit. (D-055 made the "counter above every
+  restored id" precondition unnecessary, so it is not checked.) Tests:
+  `the_server_refuses_a_database_whose_protections_were_weakened` (five
+  weakenings, each alone), `the_rehearsal_fails_when_the_source_itself_was_weakened`.
+
 ## Open questions (still open)
 
 - **Dashboard authentication** — per-project-owner session login is the

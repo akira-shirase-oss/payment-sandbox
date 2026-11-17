@@ -210,3 +210,35 @@ async fn a_temporary_table_cannot_shadow_the_journal_in_its_triggers() {
     .unwrap();
     db.cleanup().await;
 }
+
+/// Review N5: the startup check looked at the role (superuser, BYPASSRLS, owner, TEMP), not
+/// at the protections themselves, so a database whose owner had dropped a journal trigger,
+/// unpinned a trigger function's search path or granted the runtime role UPDATE served as
+/// if nothing had changed. Each weakening alone is now refused.
+#[tokio::test]
+async fn the_server_refuses_a_database_whose_protections_were_weakened() {
+    use sandbox_db::roles::{RoleCheckError, check_runtime};
+    let weakenings = [
+        "DROP TRIGGER journal_lines_append_only ON journal_lines",
+        "ALTER TABLE journal_entries DISABLE TRIGGER journal_entries_stamp",
+        "ALTER FUNCTION journal_lines_check_balance() RESET search_path",
+        "GRANT UPDATE, DELETE ON journal_lines TO ps_runtime",
+        "GRANT TRUNCATE ON operations TO ps_runtime",
+    ];
+    for weakening in weakenings {
+        let db = TestDb::new().await;
+        let app = sqlx::PgPool::connect(&db.url()).await.unwrap();
+        assert!(check_runtime(&app).await.is_ok(), "fresh database refused");
+        sqlx::query(AssertSqlSafe(weakening))
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let refused = check_runtime(&app).await;
+        app.close().await;
+        db.cleanup().await;
+        assert!(
+            matches!(refused, Err(RoleCheckError::Refused(_))),
+            "served after: {weakening}: {refused:?}"
+        );
+    }
+}
