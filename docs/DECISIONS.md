@@ -1212,6 +1212,24 @@ closes one of its findings, with the test that failed before the fix.
   `without_a_configured_bootstrap_token_nobody_can_create_projects` (both failed before:
   `unauthorized`, "missing or invalid sandbox key").
 
+- **D-078 — The clients' retry bounds, tightened.** Two gaps in D-068's retries. *The
+  deadline:* each attempt had its full 10 s timeout whatever was left of the request's
+  deadline, so `--timeout 5` could wait 10 s; now an attempt gets `min(attempt timeout,
+  deadline − elapsed)` in the CLI and the SDK (tests:
+  `tests/cli.rs::retries_never_overrun_the_overall_deadline`, 10.0 s before the fix for a
+  1 s deadline; the SDK's "never overruns the overall deadline", which timed out before).
+  *Plain POSTs:* a `POST` without an idempotency key (a reset, a key) was re-sent after any
+  `429`/`503` try-again answer, but a `503 deadline_exceeded` or `unavailable` can follow a
+  commit (a reset counts the archived payments after committing). Now it is re-sent only
+  after a refused connection, `429` or `503 overloaded` (the load shedder answers before any
+  handler runs); any other failure after sending is "unreachable: it may or may not have
+  been applied", which `sandbox-cli reset` turns into "run `sandbox-cli status`: epoch N+1
+  means it did" (exit 4) and the SDK documents on `resetDataset`. The attempt's failure is
+  now a typed `NoAnswer` instead of a string prefix (tests:
+  `tests/cli.rs::a_plain_post_is_never_re_sent_after_an_answer_that_may_follow_a_commit`
+  and the SDK's "never re-sends a reset after an answer that may follow a commit"; both
+  re-sent before the fix).
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

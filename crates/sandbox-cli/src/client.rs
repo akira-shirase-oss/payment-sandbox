@@ -248,8 +248,9 @@ impl Client {
     }
 
     /// `POST path` without an idempotency key (not money-moving: keys, resets, sessions).
-    /// Retried only when no attempt can have reached the server, so it is never applied twice
-    /// by the client: connection refused, or `503`/`429` answers.
+    /// Retried only when no attempt can have been applied, so it is never applied twice by
+    /// the client: a refused connection, `429`, or `503 overloaded`. Any other failure after
+    /// the request was sent is [`ClientError::Unreachable`], saying it may have happened.
     pub async fn post(&self, path: &str, body: &Value) -> Result<Answer, ClientError> {
         self.send(reqwest::Method::POST, path, Some(body), None)
             .await
@@ -304,6 +305,25 @@ impl Client {
                     // retried under the same key, never a refusal (D-075).
                     let keyed_server_error = key.is_some() && status >= 500;
                     match refusal(status, &body) {
+                        // A plain POST is re-sent only after an answer given before any
+                        // handler ran; any other try-again answer may follow a commit
+                        // (v1 review L2).
+                        Ok(refusal)
+                            if method == reqwest::Method::POST
+                                && key.is_none()
+                                && retryable(status, refusal.code().unwrap_or_default())
+                                && !shed_before_handling(
+                                    status,
+                                    refusal.code().unwrap_or_default(),
+                                ) =>
+                        {
+                            return Err(ClientError::Unreachable {
+                                url: self.config.api_url.clone(),
+                                cause: format!(
+                                    "{refusal}; the request may or may not have been applied"
+                                ),
+                            });
+                        }
                         Ok(refusal)
                             if keyed_server_error
                                 || retryable(status, refusal.code().unwrap_or_default()) =>
@@ -451,6 +471,12 @@ fn refusal(status: u16, body: &Value) -> Result<ClientError, ClientError> {
         }),
         _ => Err(ClientError::Unreadable { status }),
     }
+}
+
+/// Try-again answers given before any handler ran, so nothing can have been applied: `429`
+/// and `503 overloaded` (the load shedder in front of every route).
+pub fn shed_before_handling(status: u16, code: &str) -> bool {
+    status == 429 || (status == 503 && code == "overloaded")
 }
 
 /// Answers that say "try again": `429` and `503` for load, busy payments and deadlines.

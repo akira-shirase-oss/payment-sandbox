@@ -86,6 +86,24 @@ describe('retries', () => {
 		expect(lost.seen.length).toBe(1);
 	});
 
+	// v1 review L2: a 503 from inside the handler may follow a commit: a POST without a key
+	// is never re-sent after it; only a shed request (503 overloaded) is.
+	it('never re-sends a reset after an answer that may follow a commit', async () => {
+		const done = { status: 200, body: { project: {}, reset: { from_epoch: 1, to_epoch: 2, archived_payments: 0 } } };
+		for (const code of ['deadline_exceeded', 'unavailable']) {
+			const late = fake([{ status: 503, body: { error: { code, message: 'ran out of time' } } }, done]);
+			const sandbox = new Sandbox({ apiKey: KEY, fetch: late.fetch, retry: FAST });
+			const error = await sandbox.resetDataset({ confirm: 'shop', epoch: 1 }).catch((e) => e);
+			expect(error).toBeInstanceOf(UnreachableError);
+			expect(error.message).toContain('may or may not');
+			expect(late.seen.length).toBe(1);
+		}
+		const shed = fake([{ status: 503, body: { error: { code: 'overloaded', message: 'busy' } } }, done]);
+		const sandbox = new Sandbox({ apiKey: KEY, fetch: shed.fetch, retry: FAST });
+		expect((await sandbox.resetDataset({ confirm: 'shop', epoch: 1 })).to_epoch).toBe(2);
+		expect(shed.seen.length).toBe(2);
+	});
+
 	it('stops at once when the answer is not from a sandbox', async () => {
 		const { fetch } = fake([{ status: 200, body: { ok: true }, simulated: false }]);
 		const sandbox = new Sandbox({ apiKey: KEY, fetch, retry: FAST });

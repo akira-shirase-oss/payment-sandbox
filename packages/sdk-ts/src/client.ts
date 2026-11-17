@@ -116,6 +116,11 @@ export function retryable(status: number, code: string): boolean {
 	return status === 503 && ['payment_busy', 'overloaded', 'unavailable', 'deadline_exceeded'].includes(code);
 }
 
+/** Try-again answers given before any handler ran, so nothing can have been applied. */
+export function shedBeforeHandling(status: number, code: string): boolean {
+	return status === 429 || (status === 503 && code === 'overloaded');
+}
+
 /** Full jitter over min(cap, base × 2^(attempts−1)), never below Retry-After (capped). */
 export function backoffMs(policy: RetryPolicy, attempts: number, retryAfterMs: number | null, random = Math.random): number {
 	const exponent = Math.min(Math.max(attempts - 1, 0), 16);
@@ -188,7 +193,8 @@ export class Sandbox {
 	/**
 	 * Opens a new, empty dataset epoch (D-066): needs an admin key, the project's slug as
 	 * `confirm` and the current `epoch`. Nothing is deleted. A repeat of a reset that already
-	 * happened is refused (`epoch_changed`), never applied twice.
+	 * happened is refused (`epoch_changed`), never applied twice. An `UnreachableError` means
+	 * it may or may not have happened: `project()` tells (`dataset_epoch` is `epoch + 1` if it did).
 	 */
 	async resetDataset(input: { confirm: string; epoch: number }): Promise<{ project: Project; from_epoch: number; to_epoch: number; archived_payments: number }> {
 		const body = (await this.#send('POST', '/v1/project/reset', input)).body;
@@ -344,6 +350,11 @@ export class Sandbox {
 						envelope?.request_id ?? null
 					);
 					if (!serverError && !retryable(response.status, refused.code)) throw refused;
+					// A POST without a key is re-sent only after an answer given before any handler
+					// ran (429, 503 overloaded); another 503 may follow a commit (v1 review L2).
+					if (method === 'POST' && !keyed && !shedBeforeHandling(response.status, refused.code)) {
+						throw new UnreachableError(apiUrl, `${refused.message} (HTTP ${response.status}); the request may or may not have been applied`);
+					}
 					const after = Number(response.headers.get('retry-after'));
 					retryAfterMs = Number.isFinite(after) && response.headers.get('retry-after') !== null ? after * 1_000 : null;
 					lastFailure = serverError ? `${refused.message} (HTTP ${response.status})` : refused.message;

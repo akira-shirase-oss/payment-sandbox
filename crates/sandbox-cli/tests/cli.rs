@@ -904,3 +904,36 @@ async fn retries_never_overrun_the_overall_deadline() {
         );
     }
 }
+
+/// Regression (v1 review L2): a plain `POST` (a reset, a key) is re-sent only when no
+/// attempt can have been applied: refused connections, `429`, and `503 overloaded` (shed
+/// before any handler ran). A `503` from inside the handler (a deadline, the database) may
+/// follow a commit, so it is reported as "may or may not have happened", never re-sent.
+#[tokio::test]
+async fn a_plain_post_is_never_re_sent_after_an_answer_that_may_follow_a_commit() {
+    let ok = json!({"reset": {"from_epoch": 1, "to_epoch": 2}, "simulated": true});
+    for code in ["deadline_exceeded", "unavailable"] {
+        let failed =
+            json!({"error": {"code": code, "message": "ran out of time"}, "simulated": true});
+        let (url, keys) = fake(vec![(503, failed, true), (200, ok.clone(), true)]).await;
+        let client = Client::new(Config::new(&url, Some(KEY), false).unwrap(), fast()).unwrap();
+        let error = client
+            .post("/v1/project/reset", &json!({"confirm": "s", "epoch": 1}))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, ClientError::Unreachable { cause, .. } if cause.contains("may or may not")),
+            "{code}: {error:?}"
+        );
+        assert_eq!(keys.lock().unwrap().len(), 1, "{code}: re-sent");
+    }
+    let shed = json!({"error": {"code": "overloaded", "message": "busy"}, "simulated": true});
+    let (url, keys) = fake(vec![(503, shed, true), (200, ok, true)]).await;
+    let client = Client::new(Config::new(&url, Some(KEY), false).unwrap(), fast()).unwrap();
+    let answer = client
+        .post("/v1/project/reset", &json!({"confirm": "s", "epoch": 1}))
+        .await
+        .unwrap();
+    assert_eq!((answer.status, answer.attempts), (200, 2));
+    assert_eq!(keys.lock().unwrap().len(), 2);
+}
