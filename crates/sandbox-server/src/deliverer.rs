@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
-use sandbox_db::webhooks::{self, Attempt, Breaker, Busy, Claimed};
+use sandbox_db::webhooks::{self, Attempt, Breaker, Busy, ClaimLimits, Claimed};
 use sandbox_domain::webhook::{
     self, ATTEMPT_DEADLINE, EVENT_ID_HEADER, EventPayload, MAX_ATTEMPTS, SIGNATURE_HEADER,
 };
@@ -95,6 +95,9 @@ pub struct DeliveryReport {
 pub const CONCURRENCY: usize = 16;
 /// Most attempts in flight to one endpoint at once (one while its circuit is half-open).
 pub const PER_ENDPOINT: i64 = 4;
+/// Most attempts in flight for one project at once, across its endpoints: half the places,
+/// so other projects always have room (review N4, D-057).
+pub const PER_PROJECT: i64 = 8;
 /// The circuit breaker: five failures in a row open an endpoint's circuit for 30 s,
 /// doubling with each opening, at most 10 minutes.
 pub const BREAKER: Breaker = Breaker {
@@ -173,8 +176,11 @@ impl Deliverer {
             &self.db,
             self.clock.now(),
             LEASE,
-            i64::try_from(limit).unwrap_or(i64::MAX),
-            PER_ENDPOINT,
+            ClaimLimits {
+                total: i64::try_from(limit).unwrap_or(i64::MAX),
+                per_endpoint: PER_ENDPOINT,
+                per_project: PER_PROJECT,
+            },
             BREAKER,
             &busy,
         )

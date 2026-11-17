@@ -48,14 +48,33 @@ pub struct Sealed {
     pub nonce: Vec<u8>,
 }
 
-/// Creates an endpoint.
+/// Most active (not disabled) endpoints one project may have (review N4, D-057).
+pub const MAX_ENDPOINTS_PER_PROJECT: i64 = 16;
+
+/// Creates an endpoint, unless the project already has [`MAX_ENDPOINTS_PER_PROJECT`] active
+/// ones (`None`). Creations of one project are serialized by a transaction-scoped advisory
+/// lock, so two at once cannot both take the last place.
 pub async fn create_endpoint(
     pool: &PgPool,
     scope: ProjectScope,
     id: Uuid,
     url: &str,
     secret: &Sealed,
-) -> Result<Endpoint, DbError> {
+) -> Result<Option<Endpoint>, DbError> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 4242002))")
+        .bind(scope.project_id)
+        .execute(&mut *tx)
+        .await?;
+    let active: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM webhook_endpoints WHERE project_id = $1 AND disabled_at IS NULL",
+    )
+    .bind(scope.project_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if active >= MAX_ENDPOINTS_PER_PROJECT {
+        return Ok(None);
+    }
     let row = sqlx::query(
         "INSERT INTO webhook_endpoints (project_id, id, url, secret_ciphertext, secret_nonce)
          VALUES ($1, $2, $3, $4, $5)
@@ -67,19 +86,31 @@ pub async fn create_endpoint(
     .bind(url)
     .bind(&secret.ciphertext)
     .bind(&secret.nonce)
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await?;
-    endpoint_from(&row)
+    let endpoint = endpoint_from(&row)?;
+    tx.commit().await?;
+    Ok(Some(endpoint))
 }
 
-/// The project's endpoints.
-pub async fn list_endpoints(pool: &PgPool, scope: ProjectScope) -> Result<Vec<Endpoint>, DbError> {
+/// A page of the project's endpoints in id (creation) order after `after`, at most `limit`
+/// (1–100).
+pub async fn list_endpoints(
+    pool: &PgPool,
+    scope: ProjectScope,
+    after: Option<Uuid>,
+    limit: i64,
+) -> Result<Vec<Endpoint>, DbError> {
     let rows = sqlx::query(
         "SELECT id, url, previous_ciphertext IS NOT NULL AND previous_expires_at > now() AS rotating,
                 created_at, disabled_at, consecutive_failures, circuit_open_until
-           FROM webhook_endpoints WHERE project_id = $1 ORDER BY created_at LIMIT 100",
+           FROM webhook_endpoints
+          WHERE project_id = $1 AND ($2::uuid IS NULL OR id > $2)
+          ORDER BY id LIMIT $3",
     )
     .bind(scope.project_id)
+    .bind(after)
+    .bind(limit.clamp(1, 100))
     .fetch_all(pool)
     .await?;
     rows.iter().map(endpoint_from).collect()
@@ -168,6 +199,18 @@ pub struct Busy {
     pub in_flight: i32,
 }
 
+/// How much one claim may take (D-049, D-057): in all, per endpoint and per project, each
+/// counting the attempts already in flight in `busy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClaimLimits {
+    /// Deliveries claimed at most.
+    pub total: i64,
+    /// Attempts in flight to one endpoint at most (one while its circuit is half-open).
+    pub per_endpoint: i64,
+    /// Attempts in flight for one project at most, across its endpoints.
+    pub per_project: i64,
+}
+
 /// The circuit breaker (D-049): `threshold` failures in a row open an endpoint's circuit for
 /// `cooldown`, doubling with each opening up to `max_cooldown`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,18 +223,17 @@ pub struct Breaker {
     pub max_cooldown: std::time::Duration,
 }
 
-/// Claims up to `limit` due deliveries under a lease ending `lease` after `now`, **taking
-/// the endpoints in turn** (review finding 12): every endpoint's most overdue delivery,
-/// then every endpoint's second, and so on, never more than `per_endpoint` in flight to
-/// one endpoint counting those in `busy`. Endpoints whose circuit is open are skipped; one
+/// Claims up to `limits.total` due deliveries under a lease ending `lease` after `now`,
+/// **taking the projects in turn, then each project's endpoints in turn** (review 12, N4),
+/// never more than `limits.per_endpoint` in flight to one endpoint nor `limits.per_project`
+/// for one project, counting those in `busy`. Endpoints whose circuit is open are skipped; one
 /// whose circuit is half-open (at or past `breaker.threshold` failures, cooldown over) gets
 /// one attempt at a time. Disabled endpoints get none (review 18).
 pub async fn claim(
     pool: &PgPool,
     now: OffsetDateTime,
     lease: std::time::Duration,
-    limit: i64,
-    per_endpoint: i64,
+    limits: ClaimLimits,
     breaker: Breaker,
     busy: &[Busy],
 ) -> Result<Vec<Claimed>, DbError> {
@@ -202,16 +244,20 @@ pub async fn claim(
     let rows = sqlx::query(
         "WITH busy AS (
              SELECT * FROM unnest($5::uuid[], $6::uuid[], $7::int[]) AS b(project_id, endpoint_id, in_flight)
+         ), project_busy AS (
+             SELECT project_id, sum(in_flight) AS in_flight FROM busy GROUP BY project_id
          ), room AS (
              SELECT w.project_id, w.id AS endpoint_id,
                     (CASE WHEN w.consecutive_failures >= $8 THEN 1 ELSE $4 END)
-                        - coalesce(b.in_flight, 0) AS room
+                        - coalesce(b.in_flight, 0) AS room,
+                    $9 - coalesce(pb.in_flight, 0) AS project_room
                FROM webhook_endpoints w
                LEFT JOIN busy b ON b.project_id = w.project_id AND b.endpoint_id = w.id
+               LEFT JOIN project_busy pb ON pb.project_id = w.project_id
               WHERE w.disabled_at IS NULL
                 AND (w.circuit_open_until IS NULL OR w.circuit_open_until <= $1)
-         ), due AS (
-             SELECT c.project_id, c.event_id, c.endpoint_id
+         ), candidates AS (
+             SELECT c.project_id, c.event_id, c.endpoint_id, c.next_attempt_at, c.turn, r.project_room
                FROM room r
               CROSS JOIN LATERAL (
                   SELECT l.project_id, l.event_id, l.endpoint_id, l.next_attempt_at,
@@ -225,8 +271,16 @@ pub async fn claim(
                            LIMIT $4
                            FOR UPDATE OF d SKIP LOCKED) l
               ) c
-              WHERE r.room > 0 AND c.turn <= r.room
-              ORDER BY c.turn, c.next_attempt_at
+              WHERE r.room > 0 AND r.project_room > 0 AND c.turn <= r.room
+         ), due AS (
+             -- Projects in turn, then each project's endpoints in turn (review N4).
+             SELECT project_id, event_id, endpoint_id
+               FROM (SELECT x.*, row_number() OVER (
+                         PARTITION BY x.project_id ORDER BY x.turn, x.next_attempt_at, x.endpoint_id
+                     ) AS project_turn
+                       FROM candidates x) y
+              WHERE y.project_turn <= y.project_room
+              ORDER BY y.project_turn, y.next_attempt_at
               LIMIT $3
          )
          UPDATE deliveries d
@@ -246,12 +300,13 @@ pub async fn claim(
     )
     .bind(now)
     .bind(lease_ms)
-    .bind(limit.clamp(1, 1_000))
-    .bind(per_endpoint.clamp(1, 1_000))
+    .bind(limits.total.clamp(1, 1_000))
+    .bind(limits.per_endpoint.clamp(1, 1_000))
     .bind(&busy_projects)
     .bind(&busy_endpoints)
     .bind(&busy_counts)
     .bind(breaker.threshold)
+    .bind(limits.per_project.clamp(1, 1_000))
     .fetch_all(pool)
     .await?;
     rows.iter()

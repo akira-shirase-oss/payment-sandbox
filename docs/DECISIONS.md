@@ -653,6 +653,22 @@ review found. Each states the choice, the alternative and the cost.
   Tests: `a_cursor_the_server_did_not_issue_is_refused_before_any_query`,
   `tests/logs.rs` (a card number in a cursor), `cursor::tests`.
 
+- **D-057 — Delivery fairness is per project too, and endpoints are
+  bounded.** Review N4: D-049's caps were per endpoint, and a project could
+  create any number of endpoints, so one project's four black-holed
+  endpoints took all 16 places and another project's first delivery waited
+  3.67 s; the listing showed only the first 100. Now claims take the
+  projects in turn, then each project's endpoints in turn, and one project
+  holds at most 8 of the 16 places (`deliverer::PER_PROJECT`, chosen, not
+  measured), on top of 4 per endpoint and one per half-open endpoint. A
+  project has at most 16 active endpoints
+  (`webhooks::MAX_ENDPOINTS_PER_PROJECT`; creations of one project are
+  serialized by a transaction-scoped advisory lock, so two at once cannot
+  both take the last place; disabling one frees its place), and
+  `GET /v1/webhook_endpoints` pages (`limit` 1–100, `after`, `next_after`).
+  Tests: `a_project_with_many_black_holed_endpoints_cannot_hold_the_deliverer`,
+  `endpoints_are_capped_per_project_and_listed_in_pages`.
+
 ## Open questions (still open)
 
 - **Dashboard authentication** — per-project-owner session login is the

@@ -56,7 +56,13 @@ pub async fn create(
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("{e}")))?;
     let endpoint =
         sandbox_db::webhooks::create_endpoint(&state.db, auth.scope(), id, &body.url, &sealed)
-            .await?;
+            .await?
+            .ok_or_else(|| {
+                ApiError::Conflict(format!(
+                    "a project has at most {} active webhook endpoints; disable one first",
+                    sandbox_db::webhooks::MAX_ENDPOINTS_PER_PROJECT
+                ))
+            })?;
     Ok((
         StatusCode::CREATED,
         Json(json!({"endpoint": endpoint, "secret": secret, "simulated": true})),
@@ -64,11 +70,32 @@ pub async fn create(
         .into_response())
 }
 
-/// Lists endpoints (never their secrets).
-pub async fn list(State(state): State<AppState>, auth: Auth) -> Result<Response, ApiError> {
+/// `GET /v1/webhook_endpoints` query: a page of at most `limit` (1–100, default 100) after
+/// the endpoint `after`, as `next_after` returns it.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListEndpoints {
+    after: Option<Uuid>,
+    limit: Option<i64>,
+}
+
+/// Lists endpoints (never their secrets), a page at a time (review N4).
+pub async fn list(
+    State(state): State<AppState>,
+    auth: Auth,
+    Query(q): Query<ListEndpoints>,
+) -> Result<Response, ApiError> {
     auth.require(Scope::Admin)?;
-    let endpoints = sandbox_db::webhooks::list_endpoints(&state.db, auth.scope()).await?;
-    Ok(Json(json!({"endpoints": endpoints, "simulated": true})).into_response())
+    let limit = q.limit.unwrap_or(100).clamp(1, 100);
+    let endpoints =
+        sandbox_db::webhooks::list_endpoints(&state.db, auth.scope(), q.after, limit).await?;
+    let next_after = (endpoints.len() == usize::try_from(limit).unwrap_or(0))
+        .then(|| endpoints.last().map(|e| e.id))
+        .flatten();
+    Ok(
+        Json(json!({"endpoints": endpoints, "next_after": next_after, "simulated": true}))
+            .into_response(),
+    )
 }
 
 /// Rotates the signing secret; the old one keeps signing for 24 hours.

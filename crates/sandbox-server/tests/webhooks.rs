@@ -815,3 +815,102 @@ async fn a_new_delivery_is_due_at_once_whatever_the_deliverers_clock_says() {
     app.cleanup().await;
     sim.remove().await;
 }
+
+/// Review N4: fairness was per endpoint, and a project may create endpoints at will: one
+/// project's four black-holed endpoints took all sixteen places, and another project's
+/// first delivery waited 3.67 s. Now one project holds at most half the places and claims
+/// take projects in turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_project_with_many_black_holed_endpoints_cannot_hold_the_deliverer() {
+    let sim = TestSim::start().await;
+    let app = TestApp::with_sim(&sim, &[("PS_SECRET_KEY", SECRET_KEY)]).await;
+    let (_, stuck) = app.project("many-holes").await;
+    let (_, healthy) = app.project("healthy").await;
+    let hole = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let hole_url = format!("http://{}", hole.local_addr().unwrap());
+    for path in ["a", "b", "c", "d"] {
+        endpoint(&app, &stuck, &format!("{hole_url}/{path}")).await;
+    }
+    for n in 0..10 {
+        purchase(&app, &stuck, n, 0).await;
+    }
+    let (url, hits) = counting_receiver(Arc::new(std::sync::atomic::AtomicBool::new(true))).await;
+    endpoint(&app, &healthy, &url).await;
+
+    let deliverer = Deliverer::new(&app.state, Arc::new(ShiftedClock::default())).unwrap();
+    let (stop, shutdown) = sandbox_server::reconciler::shutdown_channel();
+    let running = tokio::spawn(deliverer.run(shutdown));
+    // The black holes take every place they may.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    purchase(&app, &healthy, 100, 0).await;
+    let started = std::time::Instant::now();
+    while hits.load(Ordering::SeqCst) == 0 && started.elapsed() < Duration::from_secs(10) {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let waited = started.elapsed();
+    stop.send(true).unwrap();
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    assert!(
+        waited < Duration::from_secs(2),
+        "a healthy project waited {waited:?} behind another project's four black holes"
+    );
+    tokio::time::timeout(Duration::from_secs(20), running)
+        .await
+        .unwrap()
+        .unwrap();
+    drop(hole);
+    app.cleanup().await;
+    sim.remove().await;
+}
+
+/// Review N4: a project could create any number of endpoints, and the listing showed only
+/// the first 100. Now a project has at most 16 active endpoints, and the listing pages.
+#[tokio::test]
+async fn endpoints_are_capped_per_project_and_listed_in_pages() {
+    let (sim, app, key) = setup().await;
+    for n in 0..16 {
+        endpoint(&app, &key, &format!("http://127.0.0.1:9/e{n}")).await;
+    }
+    let (status, body) = app
+        .post(
+            "/v1/webhook_endpoints",
+            &key,
+            None,
+            json!({"url": "http://127.0.0.1:9/one-too-many"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "conflict", "{body}");
+    let (status, page) = app.get("/v1/webhook_endpoints?limit=10", &key).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_eq!(page["endpoints"].as_array().unwrap().len(), 10, "{page}");
+    let after = page["next_after"].as_str().unwrap().to_owned();
+    let (_, rest) = app
+        .get(
+            &format!("/v1/webhook_endpoints?limit=10&after={after}"),
+            &key,
+        )
+        .await;
+    assert_eq!(rest["endpoints"].as_array().unwrap().len(), 6, "{rest}");
+    assert!(rest["next_after"].is_null(), "{rest}");
+    // A disabled endpoint frees its place.
+    let first = page["endpoints"][0]["id"].as_str().unwrap().to_owned();
+    app.post(
+        &format!("/v1/webhook_endpoints/{first}/disable"),
+        &key,
+        None,
+        json!({}),
+    )
+    .await;
+    let (status, body) = app
+        .post(
+            "/v1/webhook_endpoints",
+            &key,
+            None,
+            json!({"url": "http://127.0.0.1:9/after-disable"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    app.cleanup().await;
+    sim.remove().await;
+}
