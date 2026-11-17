@@ -3,7 +3,7 @@
 
 use sandbox_domain::{AccountKind, Currency, JournalEntry, LEDGER_SEMANTICS_VERSION};
 use serde::Serialize;
-use sqlx::{PgConnection, PgPool, Row};
+use sqlx::{PgConnection, PgExecutor, PgPool, Row};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -149,8 +149,8 @@ pub struct StoredEntry {
 }
 
 /// Every entry of a payment, oldest first.
-pub async fn entries_for_payment(
-    pool: &PgPool,
+pub async fn entries_for_payment<'e>(
+    db: impl PgExecutor<'e>,
     scope: ProjectScope,
     payment_id: Uuid,
 ) -> Result<Vec<StoredEntry>, DbError> {
@@ -168,7 +168,7 @@ pub async fn entries_for_payment(
     .bind(scope.project_id)
     .bind(scope.epoch)
     .bind(payment_id)
-    .fetch_all(pool)
+    .fetch_all(db)
     .await?;
     rows.iter().map(stored_entry).collect()
 }

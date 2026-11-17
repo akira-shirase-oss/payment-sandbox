@@ -17,10 +17,13 @@
 		const id = page.params['id'] ?? '';
 		void (async () => {
 			try {
-				const found = await get<{ payment: Payment; operations: Operation[] }>(`/v1/payments/${encodeURIComponent(id)}`);
+				// The payment, its operations and its journal entries from one snapshot (D-076).
+				const found = await get<{ payment: Payment; operations: Operation[]; entries: Entry[] }>(
+					`/v1/payments/${encodeURIComponent(id)}/journal`
+				);
 				payment = found.payment;
 				operations = found.operations;
-				entries = (await get<{ entries: Entry[] }>(`/v1/payments/${encodeURIComponent(id)}/journal`)).entries;
+				entries = found.entries;
 				events = (await get<{ events: EventRecord[] }>(`/v1/events?payment_id=${encodeURIComponent(id)}&limit=200`)).events;
 			} catch (e) {
 				error = e instanceof Error ? e.message : 'Loading failed.';

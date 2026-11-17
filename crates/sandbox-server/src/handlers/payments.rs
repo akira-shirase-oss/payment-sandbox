@@ -145,37 +145,40 @@ pub async fn get(
     PathId(payment_id): PathId,
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Read)?;
-    let Some(payment) =
-        sandbox_db::payments::get_payment(&state.db, auth.scope(), payment_id).await?
+    // One snapshot: the payment and its operations always agree (D-076).
+    let Some(snapshot) =
+        sandbox_db::payments::snapshot(&state.db, auth.scope(), payment_id, false).await?
     else {
         return Err(lifecycle::missing_payment(&state, auth.scope(), payment_id).await);
     };
-    let operations =
-        sandbox_db::payments::operations_for_payment(&state.db, auth.scope(), payment_id).await?;
     Ok(Json(json!({
-        "payment": payment_json(&payment),
-        "operations": operations.iter().map(operation_json).collect::<Vec<_>>(),
+        "payment": payment_json(&snapshot.payment),
+        "operations": snapshot.operations.iter().map(operation_json).collect::<Vec<_>>(),
         "simulated": true,
     }))
     .into_response())
 }
 
-/// A payment's journal entries.
+/// A payment's journal entries, with the payment and its operations from the same snapshot,
+/// so a page that shows all three never mixes two moments (D-076).
 pub async fn journal(
     State(state): State<AppState>,
     auth: Auth,
     PathId(payment_id): PathId,
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Read)?;
-    if sandbox_db::payments::get_payment(&state.db, auth.scope(), payment_id)
-        .await?
-        .is_none()
-    {
+    let Some(snapshot) =
+        sandbox_db::payments::snapshot(&state.db, auth.scope(), payment_id, true).await?
+    else {
         return Err(lifecycle::missing_payment(&state, auth.scope(), payment_id).await);
-    }
-    let entries =
-        sandbox_db::journal::entries_for_payment(&state.db, auth.scope(), payment_id).await?;
-    Ok(Json(json!({"entries": entries, "simulated": true})).into_response())
+    };
+    Ok(Json(json!({
+        "entries": snapshot.entries.unwrap_or_default(),
+        "payment": payment_json(&snapshot.payment),
+        "operations": snapshot.operations.iter().map(operation_json).collect::<Vec<_>>(),
+        "simulated": true,
+    }))
+    .into_response())
 }
 
 /// `GET /v1/payments?limit=&before=` query.

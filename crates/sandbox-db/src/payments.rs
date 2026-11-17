@@ -16,7 +16,7 @@ use sandbox_domain::{
     PaymentSums,
 };
 use serde::Serialize;
-use sqlx::{PgConnection, PgPool, Row, postgres::PgRow};
+use sqlx::{PgConnection, PgExecutor, PgPool, Row, postgres::PgRow};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -529,8 +529,8 @@ fn next_sums(
 }
 
 /// Loads a payment.
-pub async fn get_payment(
-    pool: &PgPool,
+pub async fn get_payment<'e>(
+    db: impl PgExecutor<'e>,
     scope: ProjectScope,
     id: Uuid,
 ) -> Result<Option<Payment>, DbError> {
@@ -542,9 +542,51 @@ pub async fn get_payment(
     .bind(scope.project_id)
     .bind(scope.epoch)
     .bind(id)
-    .fetch_optional(pool)
+    .fetch_optional(db)
     .await?;
     row.as_ref().map(payment_from).transpose()
+}
+
+/// A payment with its operations and, when asked, its journal entries.
+#[derive(Debug, Clone)]
+pub struct PaymentSnapshot {
+    /// The payment.
+    pub payment: Payment,
+    /// Its operations, oldest first.
+    pub operations: Vec<Operation>,
+    /// Its journal entries in posting order, when asked for.
+    pub entries: Option<Vec<journal::StoredEntry>>,
+}
+
+/// A payment, its operations and (with `entries`) its journal entries, read as one
+/// snapshot: a single `REPEATABLE READ, READ ONLY` transaction, so an `apply` that commits
+/// between the reads can never show "operation succeeded, payment still authorizing"
+/// (v1 review M1, D-076).
+pub async fn snapshot(
+    pool: &PgPool,
+    scope: ProjectScope,
+    id: Uuid,
+    entries: bool,
+) -> Result<Option<PaymentSnapshot>, DbError> {
+    let mut tx = pool
+        .begin_with("BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        .await?;
+    // Returning early drops the transaction, which rolls it back (it changed nothing).
+    let Some(payment) = get_payment(&mut *tx, scope, id).await? else {
+        return Ok(None);
+    };
+    let operations = operations_for_payment(&mut *tx, scope, id).await?;
+    let entries = if entries {
+        Some(journal::entries_for_payment(&mut *tx, scope, id).await?)
+    } else {
+        None
+    };
+    tx.commit().await?;
+    Ok(Some(PaymentSnapshot {
+        payment,
+        operations,
+        entries,
+    }))
 }
 
 /// The dataset epoch a payment of `project_id` belongs to, whatever the current one is:
@@ -574,8 +616,8 @@ pub async fn get_operation(
 }
 
 /// A payment's operations, oldest first.
-pub async fn operations_for_payment(
-    pool: &PgPool,
+pub async fn operations_for_payment<'e>(
+    db: impl PgExecutor<'e>,
     scope: ProjectScope,
     payment_id: Uuid,
 ) -> Result<Vec<Operation>, DbError> {
@@ -589,7 +631,7 @@ pub async fn operations_for_payment(
     .bind(scope.project_id)
     .bind(scope.epoch)
     .bind(payment_id)
-    .fetch_all(pool)
+    .fetch_all(db)
     .await?;
     rows.iter().map(operation_from).collect()
 }

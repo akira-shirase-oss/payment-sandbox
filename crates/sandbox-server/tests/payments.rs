@@ -1063,3 +1063,90 @@ async fn card_numbers_as_json_numbers_are_refused_and_schema_errors_never_echo_i
     );
     teardown(sim, app).await;
 }
+
+/// Regression (v1 review M1): `GET /v1/payments/{id}` reads the payment and its operations
+/// as one snapshot. Here a writer resolves the operation and the payment in one transaction
+/// and commits exactly between the reader's statements: it holds `operations`' table lock,
+/// so the reader's read of the operations waits for the commit. The answer must be all
+/// before or all after, never "operation succeeded, payment authorizing, authorized 0"
+/// (which `sandbox-cli payments wait` and `waitForSettlement` would report as settled with
+/// stale totals). The writer stands in for `apply`'s row changes; the journal is not the
+/// point here, so the test does not reconcile.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_payment_and_its_operations_are_read_as_one_snapshot() {
+    let (sim, app, key) = setup().await;
+    sim.fault(json!({"kind": "authorize", "target": null, "action": "unavailable", "count": 1}));
+    let (status, reply) = app
+        .authorize(&key, "torn", 700, "USD", "tok_sim_approve")
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{reply}");
+    let pid = id(&reply);
+    let path = format!("/v1/payments/{pid}");
+    let (_, before) = app.get(&path, &key).await;
+    assert_eq!(
+        (
+            &before["payment"]["status"],
+            &before["operations"][0]["state"]
+        ),
+        (&json!("authorizing"), &json!("uncertain")),
+        "{before}"
+    );
+
+    let mut writer = app.db.pool.begin().await.unwrap();
+    sqlx::query("LOCK TABLE operations IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *writer)
+        .await
+        .unwrap();
+    let app = Arc::new(app);
+    let reader = tokio::spawn({
+        let (app, key, path) = (app.clone(), key.clone(), path.clone());
+        async move { app.get(&path, &key).await }
+    });
+    // Until the reader waits for the operations.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let waiting: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_locks WHERE NOT granted AND relation = 'operations'::regclass",
+        )
+        .fetch_one(&app.db.pool)
+        .await
+        .unwrap();
+        if waiting > 0 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the reader never waited"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    sqlx::query(
+        "UPDATE operations SET state = 'succeeded', resolved_at = now() WHERE payment_id = $1::uuid",
+    )
+    .bind(&pid)
+    .execute(&mut *writer)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE payments SET status = 'authorized', authorized_minor = amount_minor WHERE id = $1::uuid",
+    )
+    .bind(&pid)
+    .execute(&mut *writer)
+    .await
+    .unwrap();
+    writer.commit().await.unwrap();
+
+    let (status, after) = reader.await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{after}");
+    let seen = (
+        after["payment"]["status"].as_str().unwrap(),
+        after["payment"]["authorized"].as_i64().unwrap(),
+        after["operations"][0]["state"].as_str().unwrap(),
+    );
+    assert!(
+        seen == ("authorizing", 0, "uncertain") || seen == ("authorized", 700, "succeeded"),
+        "a torn read: {seen:?}"
+    );
+    let app = Arc::into_inner(app).unwrap();
+    teardown(sim, app).await;
+}

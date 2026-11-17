@@ -1182,6 +1182,22 @@ closes one of its findings, with the test that failed before the fix.
   while it "restarts", then forwards: 3 attempts, `replayed: true`, one payment), and the
   SDK's `client.test.ts` (the same four answers, the read through a `502`).
 
+- **D-076 — A payment is read as one snapshot.** `GET /v1/payments/{id}` read the payment
+  and its operations with two statements on the pool, so a reconciler's `apply` committing
+  between them gave "operation succeeded, payment authorizing, authorized 0", which
+  `sandbox-cli payments wait` and `waitForSettlement` then reported as settled with stale
+  totals (the review saw it in 4 of 6 polling runs). Now `sandbox_db::payments::snapshot`
+  reads the payment, its operations and, when asked, its journal entries in one
+  `REPEATABLE READ, READ ONLY` transaction (two more round trips per read, on loopback).
+  `GET /v1/payments/{id}` and the checkout's view of an attempt use it, and
+  `GET /v1/payments/{id}/journal` now answers the payment and its operations beside the
+  entries from the same snapshot, which the dashboard's payment page uses instead of two
+  requests (the field additions are backward compatible). Test:
+  `tests/payments.rs::a_payment_and_its_operations_are_read_as_one_snapshot` holds
+  `operations`' table lock in a writer, waits until the reader waits on it, commits the
+  operation's and the payment's resolution, and requires all-before or all-after; before
+  the fix it read `("authorizing", 0, "succeeded")`.
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

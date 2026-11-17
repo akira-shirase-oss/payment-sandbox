@@ -45,28 +45,33 @@ async fn recorded(
     attempt: &Attempt,
 ) -> Result<Recorded, ApiError> {
     let scope = session.scope();
-    let authorize =
-        sandbox_db::payments::get_operation(&state.db, scope, attempt.authorize_operation_id)
-            .await?;
-    let Some(authorize) = authorize else {
+    // One snapshot of the payment and its operations (D-076): the page never shows an
+    // approved authorization beside a payment that still says "authorizing".
+    let snapshot =
+        sandbox_db::payments::snapshot(&state.db, scope, attempt.payment_id, false).await?;
+    let authorize = snapshot.as_ref().and_then(|s| {
+        s.operations
+            .iter()
+            .find(|o| o.id == attempt.authorize_operation_id)
+            .cloned()
+    });
+    let (Some(authorize), Some(snapshot)) = (authorize, snapshot) else {
         return Ok(Recorded {
             authorize: None,
             captures: Vec::new(),
             payment: None,
         });
     };
-    let payment = sandbox_db::payments::get_payment(&state.db, scope, attempt.payment_id).await?;
     let prefix = capture_prefix(session, attempt.number);
-    let captures =
-        sandbox_db::payments::operations_for_payment(&state.db, scope, attempt.payment_id)
-            .await?
-            .into_iter()
-            .filter(|o| o.kind == OperationKind::Capture && o.idempotency_key.starts_with(&prefix))
-            .collect();
+    let captures = snapshot
+        .operations
+        .into_iter()
+        .filter(|o| o.kind == OperationKind::Capture && o.idempotency_key.starts_with(&prefix))
+        .collect();
     Ok(Recorded {
         authorize: Some(authorize),
         captures,
-        payment,
+        payment: Some(snapshot.payment),
     })
 }
 
