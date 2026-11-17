@@ -75,14 +75,15 @@
 			<CardContent class="overflow-x-auto">
 				<Table.Root>
 					<Table.Header>
-						<Table.Row><Table.Head>Kind</Table.Head><Table.Head>Amount</Table.Head><Table.Head>State</Table.Head><Table.Head>Key</Table.Head><Table.Head>Calls</Table.Head></Table.Row>
+						<Table.Row><Table.Head>Kind</Table.Head><Table.Head>State</Table.Head><Table.Head>Amount</Table.Head><Table.Head>Key</Table.Head><Table.Head>Calls</Table.Head></Table.Row>
 					</Table.Header>
 					<Table.Body>
 						{#each operations as op (op.id)}
 							<Table.Row>
 								<Table.Cell>{op.kind}</Table.Cell>
-								<Table.Cell class="tabular">{money(op.amount, payment.currency)}</Table.Cell>
+								<!-- The state first: at 360 px the table scrolls sideways, and what happened must be in view. -->
 								<Table.Cell><OutcomeBadge outcome={operationOutcome(op.state)} />{#if op.decline_code}<span class="ml-2 text-xs text-muted-foreground">{op.decline_code}</span>{/if}</Table.Cell>
+								<Table.Cell class="tabular">{money(op.amount, payment.currency)}</Table.Cell>
 								<Table.Cell class="max-w-56 truncate font-mono text-xs" title={op.idempotency_key}>{op.idempotency_key}</Table.Cell>
 								<Table.Cell class="tabular">{op.attempts}</Table.Cell>
 							</Table.Row>

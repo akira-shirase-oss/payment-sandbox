@@ -118,6 +118,11 @@ export async function noSidewaysScroll(page: Page) {
 
 /** Every outcome badge shows its whole word and sits inside the viewport. */
 export async function badgesWhole(page: Page) {
+	// Measure with the web fonts in place: a fallback font is wider, and measuring before the
+	// fonts arrive made this check fail intermittently on a busy machine.
+	await page.evaluate(async () => {
+		await document.fonts.ready;
+	});
 	const clipped = await page.evaluate(() =>
 		[...document.querySelectorAll<HTMLElement>('[data-slot="outcome"]')]
 			.filter((badge) => badge.offsetParent !== null)
