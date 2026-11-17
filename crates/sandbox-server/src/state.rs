@@ -8,6 +8,7 @@ use tokio::sync::Semaphore;
 use crate::config::Config;
 use crate::locks::PaymentLocks;
 use crate::network::Network;
+use crate::reports::ReportGate;
 use crate::secrets::SecretBox;
 
 /// Everything a handler may need.
@@ -25,6 +26,8 @@ pub struct AppState {
     pub payment_locks: Arc<PaymentLocks>,
     /// Webhook secret encryption; `None` disables webhooks.
     pub secrets: Option<Arc<SecretBox>>,
+    /// Report budgets and concurrency (D-047).
+    pub reports: Arc<ReportGate>,
 }
 
 impl AppState {
@@ -51,7 +54,14 @@ impl AppState {
             .as_ref()
             .and_then(|key| SecretBox::from_hex(key.expose()).ok())
             .map(Arc::new);
+        let reports = Arc::new(ReportGate::new(
+            config.reports.burst,
+            config.reports.refill_per_minute,
+            config.reports.per_project,
+            config.reports.concurrency,
+        ));
         Self {
+            reports,
             secrets,
             db,
             config: Arc::new(config),

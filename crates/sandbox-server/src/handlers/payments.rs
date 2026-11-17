@@ -235,6 +235,10 @@ pub async fn reconciliation(
     Query(q): Query<ReconcileQuery>,
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Read)?;
+    let _admitted = state.reports.admit(
+        auth.scope().project_id,
+        crate::reports::reconciliation_cost(q.network),
+    )?;
     let report = sandbox_db::reconcile::run(&state.db, auth.scope()).await?;
     let mut clean = report.is_clean();
     let mut body = json!({"report": report, "simulated": true});
@@ -330,6 +334,9 @@ pub async fn explain(
     Query(q): Query<ExplainQuery>,
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Read)?;
+    let _admitted = state
+        .reports
+        .admit(auth.scope().project_id, crate::reports::EXPLAIN_PAGE)?;
     let currency = Currency::from_code(&currency).map_err(|_| ApiError::NotFound("currency"))?;
     let account = sandbox_domain::AccountKind::from_code(&account)
         .map_err(|_| ApiError::NotFound("account"))?;

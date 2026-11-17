@@ -8,12 +8,21 @@
 //! (conflict, fenced, invalid) writes nothing, so it cannot affect the others in its batch.
 //! Executions are serialized, so "exists?" and "insert" never race.
 //!
+//! Reads that change nothing (listings for reconciliation, the clock, the count) never enter
+//! that queue (D-047, review finding 9): each runs in its own read transaction on a blocking
+//! thread, at most `READERS` at once, over the last committed state. A listing therefore
+//! neither delays any project's executions nor waits behind them.
+//!
 //! Records are immutable: there is no code path that updates or deletes an operation.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, PoisonError, RwLock};
 use std::thread;
+use std::time::Duration;
 
-use redb::{Database, ReadableTable, ReadableTableMetadata, Table, TableDefinition};
+use redb::{
+    Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, Table, TableDefinition,
+};
 use sandbox_domain::network::{
     ExecuteReply, ExecuteRequest, ListedOperation, OperationPage, Outcome, Readback,
     ReadbackStatus, network_ref,
@@ -21,13 +30,17 @@ use sandbox_domain::network::{
 use sandbox_domain::scenario::Scenario;
 use sandbox_domain::{Currency, OperationKind};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Semaphore, mpsc, oneshot};
 use uuid::Uuid;
 
 /// Bound of the command queue.
 pub const QUEUE: usize = 4_096;
 /// Most commands in one transaction.
 pub const BATCH: usize = 128;
+/// Most read transactions at once (listings, clock and count reads).
+pub const READERS: usize = 4;
+/// Longest a read waits for a free reader before it is shed as overloaded.
+pub const READER_WAIT: Duration = Duration::from_secs(2);
 /// The virtual clock's starting point (2026-01-01T00:00:00Z).
 pub const CLOCK_EPOCH: i64 = 1_767_225_600;
 
@@ -106,23 +119,26 @@ enum Command {
         oneshot::Sender<Result<Executed, StoreError>>,
     ),
     Readback(Uuid, bool, oneshot::Sender<Result<Readback, StoreError>>),
-    List(
-        Option<Uuid>,
-        i64,
-        i64,
-        oneshot::Sender<Result<OperationPage, StoreError>>,
-    ),
     Advance(i64, oneshot::Sender<Result<i64, StoreError>>),
-    Now(oneshot::Sender<Result<i64, StoreError>>),
-    Count(oneshot::Sender<Result<i64, StoreError>>),
     Close(oneshot::Sender<()>),
+    /// Test hook: the writer says it is held, then blocks until released (a slow commit).
+    #[cfg(test)]
+    Hold(oneshot::Sender<()>, oneshot::Receiver<()>),
 }
 
-/// The network's store: a handle to the writer thread.
+/// The network's store: a handle to the writer thread and to the readers.
 #[derive(Debug, Clone)]
 pub struct Store {
     commands: mpsc::Sender<Command>,
     path: PathBuf,
+    readers: Arc<Readers>,
+}
+
+/// The read side: the open database (until [`Store::close`]) and the bound on readers.
+#[derive(Debug)]
+struct Readers {
+    db: RwLock<Option<Arc<Database>>>,
+    permits: Arc<Semaphore>,
 }
 
 impl std::fmt::Debug for Command {
@@ -142,7 +158,8 @@ impl Store {
             .name("sim-store".to_owned())
             .spawn(move || match open_database(&thread_path) {
                 Ok(db) => {
-                    let _ = ready_tx.send(Ok(()));
+                    let db = Arc::new(db);
+                    let _ = ready_tx.send(Ok(db.clone()));
                     writer(db, receiver);
                 }
                 Err(e) => {
@@ -150,8 +167,15 @@ impl Store {
                 }
             })
             .map_err(storage)?;
-        ready_rx.await.map_err(|_| StoreError::Closed)??;
-        Ok(Self { commands, path })
+        let db = ready_rx.await.map_err(|_| StoreError::Closed)??;
+        Ok(Self {
+            commands,
+            path,
+            readers: Arc::new(Readers {
+                db: RwLock::new(Some(db)),
+                permits: Arc::new(Semaphore::new(READERS)),
+            }),
+        })
     }
 
     /// The store's file.
@@ -160,8 +184,20 @@ impl Store {
     }
 
     /// Stops the writer after what is already queued (a clean process stop): the file is
-    /// closed, and every later command fails with [`StoreError::Closed`].
+    /// closed, and every later command fails with [`StoreError::Closed`]. Reads in flight
+    /// finish first; later reads fail with `Closed` too.
     pub async fn close(&self) {
+        let all = u32::try_from(READERS).unwrap_or(u32::MAX);
+        if let Ok(permits) = self.readers.permits.acquire_many(all).await {
+            // No read is running, so the writer's handle is the file's last one.
+            self.readers
+                .db
+                .write()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            self.readers.permits.close();
+            drop(permits);
+        }
         let (tx, rx) = oneshot::channel();
         if self.commands.send(Command::Close(tx)).await.is_ok() {
             let _ = rx.await;
@@ -180,6 +216,38 @@ impl Store {
         rx.await.map_err(|_| StoreError::Closed)?
     }
 
+    /// Runs `read` in its own read transaction on a blocking thread, outside the writer.
+    async fn read<T: Send + 'static>(
+        &self,
+        read: impl FnOnce(&Database) -> Result<T, StoreError> + Send + 'static,
+    ) -> Result<T, StoreError> {
+        let permit =
+            match tokio::time::timeout(READER_WAIT, self.readers.permits.clone().acquire_owned())
+                .await
+            {
+                Ok(Ok(permit)) => permit,
+                Ok(Err(_)) => return Err(StoreError::Closed),
+                Err(_) => return Err(StoreError::Overloaded),
+            };
+        let db = self
+            .readers
+            .db
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .ok_or(StoreError::Closed)?;
+        tokio::task::spawn_blocking(move || {
+            let result = read(&db);
+            // The handle goes before the permit: `close` takes every permit to know that no
+            // read still holds the file open.
+            drop(db);
+            drop(permit);
+            result
+        })
+        .await
+        .map_err(|_| StoreError::Closed)?
+    }
+
     /// Executes `request` once under its identity, or replays the recorded result.
     pub async fn execute(&self, request: &ExecuteRequest) -> Result<Executed, StoreError> {
         let request = Box::new(request.clone());
@@ -195,7 +263,8 @@ impl Store {
     /// Lists recorded operations after `after` (allocation order), at most `limit`, of
     /// one project when `project` is given.
     pub async fn list(&self, after: i64, limit: i64) -> Result<OperationPage, StoreError> {
-        self.ask(|tx| Command::List(None, after, limit, tx)).await
+        self.read(move |db| list_committed(db, None, after, limit))
+            .await
     }
 
     /// Lists one project's recorded operations after `after`, at most `limit`.
@@ -205,13 +274,21 @@ impl Store {
         after: i64,
         limit: i64,
     ) -> Result<OperationPage, StoreError> {
-        self.ask(|tx| Command::List(Some(project), after, limit, tx))
+        self.read(move |db| list_committed(db, Some(project), after, limit))
             .await
     }
 
     /// The virtual clock, in Unix seconds.
     pub async fn now(&self) -> Result<i64, StoreError> {
-        self.ask(Command::Now).await
+        self.read(|db| {
+            let txn = db.begin_read().map_err(storage)?;
+            let meta = txn.open_table(META).map_err(storage)?;
+            Ok(meta
+                .get("clock")
+                .map_err(storage)?
+                .map_or(CLOCK_EPOCH, |g| g.value()))
+        })
+        .await
     }
 
     /// Moves the virtual clock by `seconds` (either direction). Recorded results keep the
@@ -222,7 +299,13 @@ impl Store {
 
     /// Number of recorded operations (for drills and tests).
     pub async fn count(&self) -> Result<i64, StoreError> {
-        self.ask(Command::Count).await
+        self.read(|db| {
+            let txn = db.begin_read().map_err(storage)?;
+            let operations = txn.open_table(OPERATIONS).map_err(storage)?;
+            let n = operations.len().map_err(storage)?;
+            Ok(i64::try_from(n).unwrap_or(i64::MAX))
+        })
+        .await
     }
 }
 
@@ -249,7 +332,7 @@ type Reply = Box<dyn FnOnce() + Send>;
 
 /// The writer loop: drain up to `BATCH` commands, run them in one transaction, answer
 /// after the durable commit.
-fn writer(db: Database, mut receiver: mpsc::Receiver<Command>) {
+fn writer(db: Arc<Database>, mut receiver: mpsc::Receiver<Command>) {
     let mut batch: Vec<Command> = Vec::with_capacity(BATCH);
     while let Some(first) = receiver.blocking_recv() {
         batch.push(first);
@@ -321,27 +404,16 @@ fn run_batch(
                     let result = readback(&mut t, id, fence);
                     replies.push(Box::new(move || drop(sender.send(result))));
                 }
-                Command::List(project, after, limit, sender) => {
-                    let result = list(&t, project, after, limit);
-                    replies.push(Box::new(move || drop(sender.send(result))));
-                }
                 Command::Advance(seconds, sender) => {
                     let result = advance(&mut t, seconds);
                     replies.push(Box::new(move || drop(sender.send(result))));
                 }
-                Command::Now(sender) => {
-                    let result = now(&t);
-                    replies.push(Box::new(move || drop(sender.send(result))));
-                }
-                Command::Count(sender) => {
-                    let result = t
-                        .operations
-                        .len()
-                        .map_err(storage)
-                        .map(|n| i64::try_from(n).unwrap_or(i64::MAX));
-                    replies.push(Box::new(move || drop(sender.send(result))));
-                }
                 Command::Close(done) => drop(done),
+                #[cfg(test)]
+                Command::Hold(held, release) => {
+                    let _ = held.send(());
+                    let _ = release.blocking_recv();
+                }
             }
         }
     }
@@ -379,7 +451,14 @@ fn load<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, StoreError> {
 }
 
 fn get_stored(t: &Tables<'_>, id: Uuid) -> Result<Option<Stored>, StoreError> {
-    match t.operations.get(id.as_u128()).map_err(storage)? {
+    stored_in(&t.operations, id)
+}
+
+fn stored_in<T: ReadableTable<u128, &'static [u8]>>(
+    operations: &T,
+    id: Uuid,
+) -> Result<Option<Stored>, StoreError> {
+    match operations.get(id.as_u128()).map_err(storage)? {
         Some(guard) => Ok(Some(load(guard.value())?)),
         None => Ok(None),
     }
@@ -562,8 +641,24 @@ fn readback(t: &mut Tables<'_>, id: Uuid, fence: bool) -> Result<Readback, Store
     })
 }
 
+/// A listing over the last committed state, in its own read transaction.
+fn list_committed(
+    db: &Database,
+    project: Option<Uuid>,
+    after: i64,
+    limit: i64,
+) -> Result<OperationPage, StoreError> {
+    let txn = db.begin_read().map_err(storage)?;
+    let operations = txn.open_table(OPERATIONS).map_err(storage)?;
+    let by_seq = txn.open_table(BY_SEQ).map_err(storage)?;
+    let by_project = txn.open_table(BY_PROJECT).map_err(storage)?;
+    list(&operations, &by_seq, &by_project, project, after, limit)
+}
+
 fn list(
-    t: &Tables<'_>,
+    operations_table: &impl ReadableTable<u128, &'static [u8]>,
+    by_seq: &impl ReadableTable<u64, u128>,
+    by_project: &impl ReadableTable<(u128, u64), u128>,
     project: Option<Uuid>,
     after: i64,
     limit: i64,
@@ -574,8 +669,7 @@ fn list(
     match project {
         Some(project) => {
             let p = project.as_u128();
-            for entry in t
-                .by_project
+            for entry in by_project
                 .range((p, start)..=(p, u64::MAX))
                 .map_err(storage)?
             {
@@ -587,7 +681,7 @@ fn list(
             }
         }
         None => {
-            for entry in t.by_seq.range(start..).map_err(storage)? {
+            for entry in by_seq.range(start..).map_err(storage)? {
                 if keys.len() == limit {
                     break;
                 }
@@ -599,7 +693,8 @@ fn list(
     let mut operations = Vec::with_capacity(keys.len());
     for (seq, key) in keys {
         let id = Uuid::from_u128(key);
-        let stored = get_stored(t, id)?.ok_or(StoreError::Invalid("index without record"))?;
+        let stored =
+            stored_in(operations_table, id)?.ok_or(StoreError::Invalid("index without record"))?;
         operations.push(ListedOperation {
             seq: i64::try_from(seq).unwrap_or(i64::MAX),
             id,
@@ -621,4 +716,70 @@ fn list(
         operations,
         next_after,
     })
+}
+
+#[cfg(test)]
+impl Store {
+    /// Blocks the writer thread until the returned sender is dropped (tests only).
+    async fn hold_writer(&self) -> oneshot::Sender<()> {
+        let (release, released) = oneshot::channel();
+        let (held, is_held) = oneshot::channel();
+        assert!(
+            self.commands
+                .send(Command::Hold(held, released))
+                .await
+                .is_ok()
+        );
+        assert!(is_held.await.is_ok());
+        release
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    /// Review finding 9: a listing (and a clock read) ran inside the single writer's
+    /// batch, so every report delayed every project's executions, and a busy writer
+    /// delayed every report. Reads now use their own read transactions.
+    #[tokio::test]
+    async fn listings_and_the_clock_are_served_while_the_writer_is_busy() {
+        let path =
+            std::env::temp_dir().join(format!("ps-sim-unit-{}.redb", Uuid::now_v7().simple()));
+        let store = Store::open(&path).await.unwrap();
+        let project = Uuid::now_v7();
+        store
+            .execute(&ExecuteRequest {
+                id: Uuid::now_v7(),
+                project_id: project,
+                kind: OperationKind::Authorize,
+                parent_id: None,
+                amount_minor: 500,
+                currency: Currency::Usd,
+                token: Some("tok_sim_approve".to_owned()),
+            })
+            .await
+            .unwrap();
+        let release = store.hold_writer().await;
+        let page =
+            tokio::time::timeout(Duration::from_secs(5), store.list_project(project, 0, 10)).await;
+        let all = tokio::time::timeout(Duration::from_secs(5), store.list(0, 10)).await;
+        let now = tokio::time::timeout(Duration::from_secs(5), store.now()).await;
+        let count = tokio::time::timeout(Duration::from_secs(5), store.count()).await;
+        drop(release);
+        assert!(
+            matches!(&page, Ok(Ok(p)) if p.operations.len() == 1),
+            "a project listing waited for the writer: {page:?}"
+        );
+        assert!(
+            matches!(&all, Ok(Ok(p)) if p.operations.len() == 1),
+            "{all:?}"
+        );
+        assert!(matches!(now, Ok(Ok(CLOCK_EPOCH))), "{now:?}");
+        assert!(matches!(count, Ok(Ok(1))), "{count:?}");
+        store.close().await;
+        let _ = std::fs::remove_file(path);
+    }
 }

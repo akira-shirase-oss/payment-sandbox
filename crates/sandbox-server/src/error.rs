@@ -59,6 +59,8 @@ pub enum ErrorCode {
     Conflict,
     /// Too many requests in flight.
     Overloaded,
+    /// This project spent its report budget (D-047); retry after `Retry-After` seconds.
+    RateLimited,
     /// Too many requests queued for one payment; retry with the same key.
     PaymentBusy,
     /// The request deadline elapsed.
@@ -169,6 +171,12 @@ pub enum ApiError {
     /// Shed.
     #[error("too many requests in flight; retry shortly")]
     Overloaded,
+    /// A project's report budget is spent (D-047).
+    #[error("this project's report budget is spent; retry after the Retry-After seconds")]
+    RateLimited {
+        /// Seconds until the budget covers the request.
+        retry_after: u64,
+    },
     /// One payment's queue is too long.
     #[error(
         "this payment is busy with other requests; retry shortly with the same Idempotency-Key"
@@ -216,6 +224,7 @@ impl ApiError {
             | Self::Conflict(_) => StatusCode::CONFLICT,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
+            Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             Self::RouteNotFound | Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Overloaded
             | Self::PaymentBusy
@@ -246,6 +255,7 @@ impl ApiError {
             Self::InvalidState(_) => ErrorCode::InvalidState,
             Self::Conflict(_) => ErrorCode::Conflict,
             Self::Overloaded => ErrorCode::Overloaded,
+            Self::RateLimited { .. } => ErrorCode::RateLimited,
             Self::PaymentBusy => ErrorCode::PaymentBusy,
             Self::Unavailable(_) => ErrorCode::Unavailable,
             Self::DatabaseTimeout(_) => ErrorCode::DeadlineExceeded,
@@ -274,6 +284,7 @@ impl ApiError {
                 tracing::warn!(?code, %cause, "dependency failure");
             }
             Self::Overloaded | Self::PaymentBusy => tracing::warn!(?code, "request shed"),
+            Self::RateLimited { .. } => tracing::info!(?code, "report refused: budget spent"),
             // The message of these is fixed text; the rejected value is never logged.
             Self::RawCardData => tracing::warn!(?code, "request with card data rejected"),
             _ => tracing::debug!(?code, "request rejected"),
@@ -296,7 +307,11 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         self.log();
         let mut response = render(self.status(), &self.public(), None);
-        if matches!(
+        if let Self::RateLimited { retry_after } = &self {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from(*retry_after));
+        } else if matches!(
             self,
             Self::Overloaded | Self::PaymentBusy | Self::Unavailable(_) | Self::DatabaseTimeout(_)
         ) {

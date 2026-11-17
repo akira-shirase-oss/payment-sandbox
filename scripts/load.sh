@@ -60,6 +60,12 @@ PS_STORE_LISTEN="127.0.0.1:${store_port}" PS_STORE_DB="target/perf/store-${scena
 store=$!
 # A fresh operator token per run: scenarios create their own projects with it.
 bootstrap="load-$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
+# Load runs measure each route's own cost: the per-project report budget (D-047), which
+# would turn a one-project explain scenario into a measurement of the limiter, is lifted
+# unless the caller sets it. The limiter itself is tested in tests/reports.rs.
+PS_REPORT_BURST="${PS_REPORT_BURST:-1000000000}" \
+PS_REPORT_REFILL_PER_MINUTE="${PS_REPORT_REFILL_PER_MINUTE:-1000000000}" \
+PS_REPORT_PER_PROJECT="${PS_REPORT_PER_PROJECT:-4096}" PS_REPORT_CONCURRENCY="${PS_REPORT_CONCURRENCY:-256}" \
 PS_SIM_URL="http://127.0.0.1:${sim_port}" PS_SIM_TOKEN="$sim_token" PS_RECONCILE_INTERVAL_MS=2000 \
 PS_SECRET_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
 PS_BOOTSTRAP_TOKEN="$bootstrap" PS_LISTEN="127.0.0.1:${port}" PS_LOG=warn PS_LOG_FORMAT=json \

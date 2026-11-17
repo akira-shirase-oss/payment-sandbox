@@ -434,6 +434,31 @@ review found. Each states the choice, the alternative and the cost.
   (the real binaries), `another_projects_authorization_cannot_be_captured_voided_or_refunded`,
   `access::tests`.
 
+- **D-047 — Reports are admitted by budget; the network's reads leave its
+  writer.** Review finding: any `read` key could run unbounded-cost reports
+  (`/v1/reconciliation` holds a repeatable-read scan; `?network=true` pages
+  the network's listing), and every listing ran inside the simulator's
+  single writer batch, so one project's report delayed every project's
+  executions and readbacks. Now each project has a report budget, a token
+  bucket of `PS_REPORT_BURST` units (default 600) refilled at
+  `PS_REPORT_REFILL_PER_MINUTE` (default 600): an explain page costs 1, a
+  reconciliation 10, one with network agreement 50; past it the answer is
+  `429 rate_limited` with `Retry-After`. A project runs at most
+  `PS_REPORT_PER_PROJECT` reports at once (default 2) and the server at
+  most `PS_REPORT_CONCURRENCY` (default 8, `503 overloaded` past it), apart
+  from the hot path's `/v1` gate. The project map is bounded (65,536); idle
+  full buckets are evicted first, since a new bucket starts full. Hot-path
+  routes never spend the budget. In the simulator, listings, clock reads
+  and counts run in their own redb read transactions on blocking threads
+  (at most 4 at once, a 2 s wait before `overloaded`), over the last
+  committed state; they never enter the writer's queue. Load runs lift the
+  report budget (`scripts/load.sh`), so a one-project explain scenario
+  measures explain rather than the limiter. Tests:
+  `tests/reports.rs` (`reports_are_rate_limited_per_project`),
+  `reports::tests`, and the simulator's
+  `listings_and_the_clock_are_served_while_the_writer_is_busy` (a test hook
+  holds the writer; the listing used to wait behind it).
+
 ## Open questions (still open)
 
 - **Dashboard authentication** — per-project-owner session login is the

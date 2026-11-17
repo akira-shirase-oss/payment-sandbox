@@ -16,6 +16,7 @@ pub mod locks;
 pub mod middleware;
 pub mod network;
 pub mod reconciler;
+pub mod reports;
 pub mod routes;
 pub mod secrets;
 pub mod shutdown;

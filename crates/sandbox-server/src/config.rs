@@ -79,6 +79,8 @@ pub struct Config {
     /// Most pages of 1,000 a network-agreement report reads before it reports itself
     /// incomplete.
     pub reconcile_network_max_pages: usize,
+    /// Report budgets and concurrency (D-047).
+    pub reports: ReportSettings,
     /// Key that encrypts webhook signing secrets (64 hex); webhooks are off without it.
     pub secret_key: Option<Secret>,
     /// How often the deliverer looks for due deliveries when idle.
@@ -86,6 +88,19 @@ pub struct Config {
     /// Deadline of one call to the simulated network. A call that misses it is `unknown`,
     /// and the operation stays `uncertain` until readback.
     pub sim_timeout: Duration,
+}
+
+/// Report budgets and concurrency (D-047).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReportSettings {
+    /// Units in each project's budget (`PS_REPORT_BURST`).
+    pub burst: u64,
+    /// Units refilled per minute (`PS_REPORT_REFILL_PER_MINUTE`).
+    pub refill_per_minute: u64,
+    /// Most reports one project may run at once (`PS_REPORT_PER_PROJECT`).
+    pub per_project: u32,
+    /// Most reports the server runs at once (`PS_REPORT_CONCURRENCY`).
+    pub concurrency: usize,
 }
 
 /// Every configuration problem found, reported together.
@@ -139,6 +154,7 @@ impl Config {
         let reconcile_network_max_pages: usize =
             parse.value("PS_RECONCILE_NETWORK_MAX_PAGES", Some(1_000));
         let delivery_poll = parse.millis("PS_DELIVERY_POLL_MS", 250);
+        let reports = parse.reports();
         let secret_key = lookup("PS_SECRET_KEY");
         if let Some(key) = &secret_key
             && crate::secrets::SecretBox::from_hex(key).is_err()
@@ -192,6 +208,7 @@ impl Config {
             reconcile_batch: reconcile_batch.clamp(1, 10_000),
             reconcile_network_max_pages: reconcile_network_max_pages.clamp(1, 100_000),
             secret_key: secret_key.map(Secret::new),
+            reports,
             delivery_poll,
         };
         // Every problem at once: parse errors and cross-field rules together.
@@ -225,6 +242,20 @@ impl Config {
         }
         if !(1_024..=1_048_576).contains(&max_body_bytes) {
             errors.push("PS_MAX_BODY_BYTES must be between 1024 and 1048576".to_owned());
+        }
+        if self.reports.burst < crate::reports::NETWORK_AGREEMENT {
+            errors.push(format!(
+                "PS_REPORT_BURST must be at least {}, the cost of the largest report",
+                crate::reports::NETWORK_AGREEMENT
+            ));
+        }
+        if self.reports.refill_per_minute == 0 {
+            errors.push("PS_REPORT_REFILL_PER_MINUTE must be at least 1".to_owned());
+        }
+        if self.reports.per_project == 0 || self.reports.concurrency == 0 {
+            errors.push(
+                "PS_REPORT_PER_PROJECT and PS_REPORT_CONCURRENCY must be at least 1".to_owned(),
+            );
         }
         if max_in_flight == 0 {
             errors.push("PS_MAX_IN_FLIGHT must be at least 1".to_owned());
@@ -277,6 +308,15 @@ impl<F: Fn(&str) -> Option<String>> Parser<'_, F> {
                 T::default()
             }),
             None => default.unwrap_or_default(),
+        }
+    }
+
+    fn reports(&mut self) -> ReportSettings {
+        ReportSettings {
+            burst: self.value("PS_REPORT_BURST", Some(600)),
+            refill_per_minute: self.value("PS_REPORT_REFILL_PER_MINUTE", Some(600)),
+            per_project: self.value("PS_REPORT_PER_PROJECT", Some(2)),
+            concurrency: self.value("PS_REPORT_CONCURRENCY", Some(8)),
         }
     }
 
