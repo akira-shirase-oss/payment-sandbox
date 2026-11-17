@@ -7,22 +7,31 @@
 //! at most 10 minutes; the 12th failure is `dead`. Delivery is at-least-once: a receiver
 //! must deduplicate by event id (the reference store in `fixtures/dev-store` does).
 //!
+//! One endpoint cannot hold the deliverer (D-049, review finding 12): at most
+//! [`PER_ENDPOINT`] attempts are in flight to one endpoint, claims take the endpoints in
+//! turn, and completions stream (a new attempt starts as soon as one ends, with no batch
+//! barrier). After [`BREAKER`]'s threshold of failures in a row an endpoint's circuit opens:
+//! nothing is sent to it, and none of its deliveries' attempts are spent, until a cooldown
+//! that doubles with each opening; then one probe at a time, and a success closes it.
+//!
 //! The clock is injected, so drill (b)'s wall-clock half can jump it.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
-use sandbox_db::webhooks::{self, Attempt, Claimed};
+use sandbox_db::webhooks::{self, Attempt, Breaker, Busy, Claimed};
 use sandbox_domain::webhook::{
     self, ATTEMPT_DEADLINE, EVENT_ID_HEADER, EventPayload, MAX_ATTEMPTS, SIGNATURE_HEADER,
 };
 use serde::Serialize;
 use sqlx::PgPool;
 use time::OffsetDateTime;
-use tokio::sync::{Semaphore, watch};
-use tokio::task::JoinSet;
+use tokio::sync::watch;
+use tokio::task::{Id, JoinError, JoinSet};
+use uuid::Uuid;
 
 use crate::secrets::SecretBox;
 use crate::state::AppState;
@@ -78,12 +87,24 @@ pub struct DeliveryReport {
     pub stale: usize,
 }
 
-/// Most deliveries claimed per pass.
-pub const BATCH: i64 = 32;
-/// Most attempts in flight at once.
+/// Most attempts in flight at once (and so most deliveries one pass claims).
 pub const CONCURRENCY: usize = 16;
+/// Most attempts in flight to one endpoint at once (one while its circuit is half-open).
+pub const PER_ENDPOINT: i64 = 4;
+/// The circuit breaker: five failures in a row open an endpoint's circuit for 30 s,
+/// doubling with each opening, at most 10 minutes.
+pub const BREAKER: Breaker = Breaker {
+    threshold: 5,
+    cooldown: Duration::from_secs(30),
+    max_cooldown: Duration::from_secs(600),
+};
 /// Lease length: well beyond one attempt's deadline.
 pub const LEASE: Duration = Duration::from_secs(30);
+
+/// An endpoint: its project and id.
+type EndpointKey = (Uuid, Uuid);
+/// What one attempt task returns.
+type Finished = (EndpointKey, Attempt, Result<bool, sandbox_db::DbError>);
 
 /// The deliverer.
 #[derive(Clone)]
@@ -92,7 +113,6 @@ pub struct Deliverer {
     secrets: Arc<SecretBox>,
     clock: Arc<dyn Clock>,
     http: reqwest::Client,
-    permits: Arc<Semaphore>,
     poll: Duration,
 }
 
@@ -119,69 +139,151 @@ impl Deliverer {
             secrets,
             clock,
             http,
-            permits: Arc::new(Semaphore::new(CONCURRENCY)),
             poll: state.config.delivery_poll,
         })
     }
 
-    /// Claims and attempts one batch of due deliveries.
+    /// Claims up to `limit` due deliveries, fairly across endpoints, counting the attempts
+    /// already `in_flight` against each endpoint's cap.
+    async fn claim(
+        &self,
+        limit: usize,
+        in_flight: &HashMap<EndpointKey, i32>,
+    ) -> Result<Vec<Claimed>, sandbox_db::DbError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let busy: Vec<Busy> = in_flight
+            .iter()
+            .map(|(&(project_id, endpoint_id), &n)| Busy {
+                project_id,
+                endpoint_id,
+                in_flight: n,
+            })
+            .collect();
+        webhooks::claim(
+            &self.db,
+            self.clock.now(),
+            LEASE,
+            i64::try_from(limit).unwrap_or(i64::MAX),
+            PER_ENDPOINT,
+            BREAKER,
+            &busy,
+        )
+        .await
+    }
+
+    /// Starts one attempt; it records its own result (and the endpoint's breaker).
+    fn start(&self, tasks: &mut JoinSet<Finished>, delivery: Claimed) -> Id {
+        let this = self.clone();
+        tasks
+            .spawn(async move {
+                let key = (delivery.project_id, delivery.endpoint_id);
+                let attempt = this.attempt(&delivery).await;
+                let recorded =
+                    webhooks::complete(&this.db, &delivery, &attempt, this.clock.now(), BREAKER)
+                        .await;
+                (key, attempt, recorded)
+            })
+            .id()
+    }
+
+    fn tally(report: &mut DeliveryReport, joined: &Result<(Id, Finished), JoinError>) {
+        match joined {
+            Ok((_, (_, _, Ok(false)))) => report.stale += 1,
+            Ok((_, (_, Attempt::Delivered { .. }, Ok(true)))) => report.delivered += 1,
+            Ok((_, (_, Attempt::Retry { .. }, Ok(true)))) => report.retried += 1,
+            Ok((_, (_, Attempt::Dead { .. }, Ok(true)))) => report.dead += 1,
+            Ok((_, (_, _, Err(error)))) => {
+                tracing::warn!(%error, "recording a delivery attempt failed; its lease will expire");
+            }
+            Err(error) => tracing::error!(%error, "a delivery task failed"),
+        }
+    }
+
+    /// Claims what is due (at most [`CONCURRENCY`], fairly) and waits for those attempts.
     pub async fn run_once(&self) -> Result<DeliveryReport, sandbox_db::DbError> {
-        let claimed = webhooks::claim(&self.db, self.clock.now(), LEASE, BATCH).await?;
+        let claimed = self.claim(CONCURRENCY, &HashMap::new()).await?;
         let mut report = DeliveryReport {
             claimed: claimed.len(),
             ..DeliveryReport::default()
         };
         let mut tasks = JoinSet::new();
         for delivery in claimed {
-            let this = self.clone();
-            let Ok(permit) = self.permits.clone().acquire_owned().await else {
-                break;
-            };
-            tasks.spawn(async move {
-                let attempt = this.attempt(&delivery).await;
-                let recorded =
-                    webhooks::complete(&this.db, &delivery, &attempt, this.clock.now()).await;
-                drop(permit);
-                (attempt, recorded)
-            });
+            self.start(&mut tasks, delivery);
         }
-        while let Some(joined) = tasks.join_next().await {
-            match joined {
-                Ok((_, Ok(false))) => report.stale += 1,
-                Ok((Attempt::Delivered { .. }, Ok(true))) => report.delivered += 1,
-                Ok((Attempt::Retry { .. }, Ok(true))) => report.retried += 1,
-                Ok((Attempt::Dead { .. }, Ok(true))) => report.dead += 1,
-                Ok((_, Err(error))) => {
-                    tracing::warn!(%error, "recording a delivery attempt failed; its lease will expire");
-                }
-                Err(error) => tracing::error!(%error, "a delivery task failed"),
-            }
+        while let Some(joined) = tasks.join_next_with_id().await {
+            Self::tally(&mut report, &joined);
         }
         Ok(report)
     }
 
-    /// Delivers until `shutdown` turns true.
+    /// Delivers until `shutdown` turns true, keeping up to [`CONCURRENCY`] attempts in
+    /// flight: a free place is filled as soon as an attempt ends, never after a whole batch.
+    /// On shutdown it claims nothing more and waits for the attempts in flight, each
+    /// bounded by its own deadline.
     pub async fn run(self, mut shutdown: watch::Receiver<bool>) {
-        loop {
-            let busy = match self.run_once().await {
-                Ok(report) => report.claimed > 0,
+        let mut tasks: JoinSet<Finished> = JoinSet::new();
+        let mut endpoints: HashMap<Id, EndpointKey> = HashMap::new();
+        let mut in_flight: HashMap<EndpointKey, i32> = HashMap::new();
+        let mut report = DeliveryReport::default();
+        let finish = |joined: Result<(Id, Finished), JoinError>,
+                      endpoints: &mut HashMap<Id, EndpointKey>,
+                      in_flight: &mut HashMap<EndpointKey, i32>,
+                      report: &mut DeliveryReport| {
+            let id = match &joined {
+                Ok((id, _)) => *id,
+                Err(error) => error.id(),
+            };
+            Self::tally(report, &joined);
+            if let Some(key) = endpoints.remove(&id)
+                && let Some(n) = in_flight.get_mut(&key)
+            {
+                *n = n.saturating_sub(1);
+                if *n == 0 {
+                    in_flight.remove(&key);
+                }
+            }
+        };
+        while !*shutdown.borrow() {
+            while let Some(joined) = tasks.try_join_next_with_id() {
+                finish(joined, &mut endpoints, &mut in_flight, &mut report);
+            }
+            let free = CONCURRENCY.saturating_sub(tasks.len());
+            let claimed = match self.claim(free, &in_flight).await {
+                Ok(claimed) => claimed,
                 Err(error) => {
                     tracing::warn!(%error, "claiming deliveries failed");
-                    false
+                    Vec::new()
                 }
             };
-            if busy {
+            let more = !claimed.is_empty() && tasks.len() + claimed.len() < CONCURRENCY;
+            for delivery in claimed {
+                let key = (delivery.project_id, delivery.endpoint_id);
+                *in_flight.entry(key).or_default() += 1;
+                let id = self.start(&mut tasks, delivery);
+                endpoints.insert(id, key);
+            }
+            if more {
+                // Places are left and something was due: look again at once.
                 continue;
             }
             tokio::select! {
+                Some(joined) = tasks.join_next_with_id(), if !tasks.is_empty() => {
+                    finish(joined, &mut endpoints, &mut in_flight, &mut report);
+                }
                 () = tokio::time::sleep(self.poll) => {}
                 changed = shutdown.changed() => {
-                    if changed.is_err() || *shutdown.borrow() {
-                        return;
+                    if changed.is_err() {
+                        break;
                     }
                 }
             }
         }
+        while let Some(joined) = tasks.join_next_with_id().await {
+            finish(joined, &mut endpoints, &mut in_flight, &mut report);
+        }
+        tracing::info!(?report, "the deliverer stopped");
     }
 
     fn failure(&self, delivery: &Claimed, status: Option<u16>, error: &str) -> Attempt {

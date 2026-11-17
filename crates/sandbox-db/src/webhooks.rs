@@ -27,6 +27,11 @@ pub struct Endpoint {
     /// Disabled, if it is.
     #[serde(with = "time::serde::rfc3339::option")]
     pub disabled_at: Option<OffsetDateTime>,
+    /// Failed attempts since the last success (D-049).
+    pub consecutive_failures: i32,
+    /// While set and in the future, nothing is sent to this endpoint (its circuit is open).
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub circuit_open_until: Option<OffsetDateTime>,
 }
 
 /// An encrypted secret.
@@ -49,7 +54,8 @@ pub async fn create_endpoint(
     let row = sqlx::query(
         "INSERT INTO webhook_endpoints (project_id, id, url, secret_ciphertext, secret_nonce)
          VALUES ($1, $2, $3, $4, $5)
-         RETURNING id, url, previous_ciphertext IS NOT NULL AS rotating, created_at, disabled_at",
+         RETURNING id, url, previous_ciphertext IS NOT NULL AS rotating, created_at, disabled_at,
+                   consecutive_failures, circuit_open_until",
     )
     .bind(scope.project_id)
     .bind(id)
@@ -65,7 +71,7 @@ pub async fn create_endpoint(
 pub async fn list_endpoints(pool: &PgPool, scope: ProjectScope) -> Result<Vec<Endpoint>, DbError> {
     let rows = sqlx::query(
         "SELECT id, url, previous_ciphertext IS NOT NULL AND previous_expires_at > now() AS rotating,
-                created_at, disabled_at
+                created_at, disabled_at, consecutive_failures, circuit_open_until
            FROM webhook_endpoints WHERE project_id = $1 ORDER BY created_at LIMIT 100",
     )
     .bind(scope.project_id)
@@ -146,25 +152,77 @@ pub struct Claimed {
     pub created_at: i64,
 }
 
-/// Claims up to `limit` due deliveries under a lease ending `lease` after `now`.
+/// Attempts already in flight to one endpoint, in this process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Busy {
+    /// The endpoint's project.
+    pub project_id: Uuid,
+    /// The endpoint.
+    pub endpoint_id: Uuid,
+    /// Attempts in flight.
+    pub in_flight: i32,
+}
+
+/// The circuit breaker (D-049): `threshold` failures in a row open an endpoint's circuit for
+/// `cooldown`, doubling with each opening up to `max_cooldown`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Breaker {
+    /// Consecutive failures that open the circuit.
+    pub threshold: i32,
+    /// First cooldown.
+    pub cooldown: std::time::Duration,
+    /// Longest cooldown.
+    pub max_cooldown: std::time::Duration,
+}
+
+/// Claims up to `limit` due deliveries under a lease ending `lease` after `now`, **taking
+/// the endpoints in turn** (review finding 12): every endpoint's most overdue delivery,
+/// then every endpoint's second, and so on, never more than `per_endpoint` in flight to
+/// one endpoint counting those in `busy`. Endpoints whose circuit is open are skipped; one
+/// whose circuit is half-open (at or past `breaker.threshold` failures, cooldown over) gets
+/// one attempt at a time. Disabled endpoints get none (review 18).
 pub async fn claim(
     pool: &PgPool,
     now: OffsetDateTime,
     lease: std::time::Duration,
     limit: i64,
+    per_endpoint: i64,
+    breaker: Breaker,
+    busy: &[Busy],
 ) -> Result<Vec<Claimed>, DbError> {
     let lease_ms = i64::try_from(lease.as_millis()).unwrap_or(i64::MAX);
+    let busy_projects: Vec<Uuid> = busy.iter().map(|b| b.project_id).collect();
+    let busy_endpoints: Vec<Uuid> = busy.iter().map(|b| b.endpoint_id).collect();
+    let busy_counts: Vec<i32> = busy.iter().map(|b| b.in_flight).collect();
     let rows = sqlx::query(
-        "WITH due AS (
-             SELECT d.project_id, d.event_id, d.endpoint_id FROM deliveries d
-               JOIN webhook_endpoints w ON w.project_id = d.project_id AND w.id = d.endpoint_id
-              WHERE d.state = 'pending' AND d.next_attempt_at <= $1
-                AND (d.lease_until IS NULL OR d.lease_until <= $1)
-                -- A disabled endpoint gets no more attempts (review 18).
-                AND w.disabled_at IS NULL
-              ORDER BY d.next_attempt_at
+        "WITH busy AS (
+             SELECT * FROM unnest($5::uuid[], $6::uuid[], $7::int[]) AS b(project_id, endpoint_id, in_flight)
+         ), room AS (
+             SELECT w.project_id, w.id AS endpoint_id,
+                    (CASE WHEN w.consecutive_failures >= $8 THEN 1 ELSE $4 END)
+                        - coalesce(b.in_flight, 0) AS room
+               FROM webhook_endpoints w
+               LEFT JOIN busy b ON b.project_id = w.project_id AND b.endpoint_id = w.id
+              WHERE w.disabled_at IS NULL
+                AND (w.circuit_open_until IS NULL OR w.circuit_open_until <= $1)
+         ), due AS (
+             SELECT c.project_id, c.event_id, c.endpoint_id
+               FROM room r
+              CROSS JOIN LATERAL (
+                  SELECT l.project_id, l.event_id, l.endpoint_id, l.next_attempt_at,
+                         row_number() OVER (ORDER BY l.next_attempt_at, l.event_id) AS turn
+                    FROM (SELECT d.project_id, d.event_id, d.endpoint_id, d.next_attempt_at
+                            FROM deliveries d
+                           WHERE d.project_id = r.project_id AND d.endpoint_id = r.endpoint_id
+                             AND d.state = 'pending' AND d.next_attempt_at <= $1
+                             AND (d.lease_until IS NULL OR d.lease_until <= $1)
+                           ORDER BY d.next_attempt_at, d.event_id
+                           LIMIT $4
+                           FOR UPDATE OF d SKIP LOCKED) l
+              ) c
+              WHERE r.room > 0 AND c.turn <= r.room
+              ORDER BY c.turn, c.next_attempt_at
               LIMIT $3
-              FOR UPDATE OF d SKIP LOCKED
          )
          UPDATE deliveries d
             SET lease_until = $1 + make_interval(secs => $2::float8 / 1000.0),
@@ -183,6 +241,11 @@ pub async fn claim(
     .bind(now)
     .bind(lease_ms)
     .bind(limit.clamp(1, 1_000))
+    .bind(per_endpoint.clamp(1, 1_000))
+    .bind(&busy_projects)
+    .bind(&busy_endpoints)
+    .bind(&busy_counts)
+    .bind(breaker.threshold)
     .fetch_all(pool)
     .await?;
     rows.iter()
@@ -239,13 +302,17 @@ pub enum Attempt {
     },
 }
 
-/// Records an attempt, only if `lease_token` is still the current one. Returns false for a
-/// stale worker, whose result is discarded.
+/// Records an attempt, only if `lease_token` is still the current one, and in the same
+/// statement the endpoint's breaker: a success closes its circuit; a failure counts, and the
+/// failure that reaches `breaker.threshold` opens the circuit (unless it is already open)
+/// for the next cooldown. Returns false for a stale worker, whose result is discarded and
+/// counts for nothing.
 pub async fn complete(
     pool: &PgPool,
     claimed: &Claimed,
     attempt: &Attempt,
     now: OffsetDateTime,
+    breaker: Breaker,
 ) -> Result<bool, DbError> {
     let (state, next_at, status, error) = match attempt {
         Attempt::Delivered { status } => ("delivered", now, Some(i32::from(*status)), None),
@@ -263,13 +330,40 @@ pub async fn complete(
             ("dead", now, status.map(i32::from), Some(error.as_str()))
         }
     };
-    let updated = sqlx::query(
-        "UPDATE deliveries
-            SET state = $5, attempts = attempts + 1, next_attempt_at = $6, lease_until = NULL,
-                last_status = $7, last_error = left($8, 300),
-                delivered_at = CASE WHEN $5 = 'delivered' THEN $9 ELSE delivered_at END
-          WHERE project_id = $1 AND event_id = $2 AND endpoint_id = $3 AND lease_token = $4
-            AND state = 'pending'",
+    let cooldown_ms = i64::try_from(breaker.cooldown.as_millis()).unwrap_or(i64::MAX);
+    let max_ms = i64::try_from(breaker.max_cooldown.as_millis()).unwrap_or(i64::MAX);
+    let recorded = sqlx::query(
+        "WITH done AS (
+             UPDATE deliveries
+                SET state = $5, attempts = attempts + 1, next_attempt_at = $6, lease_until = NULL,
+                    last_status = $7, last_error = left($8, 300),
+                    delivered_at = CASE WHEN $5 = 'delivered' THEN $9 ELSE delivered_at END
+              WHERE project_id = $1 AND event_id = $2 AND endpoint_id = $3 AND lease_token = $4
+                AND state = 'pending'
+             RETURNING project_id, endpoint_id
+         )
+         -- Computed from the endpoint row itself, which a concurrent completion's update
+         -- makes PostgreSQL re-read: two failures crossing the threshold together open the
+         -- circuit once.
+         UPDATE webhook_endpoints w
+            SET consecutive_failures = CASE WHEN $5 = 'delivered' THEN 0
+                                            ELSE w.consecutive_failures + 1 END,
+                circuit_opens = CASE
+                    WHEN $5 = 'delivered' THEN 0
+                    WHEN w.consecutive_failures + 1 >= $10
+                         AND (w.circuit_open_until IS NULL OR w.circuit_open_until <= $9)
+                    THEN w.circuit_opens + 1
+                    ELSE w.circuit_opens END,
+                circuit_open_until = CASE
+                    WHEN $5 = 'delivered' THEN NULL
+                    WHEN w.consecutive_failures + 1 >= $10
+                         AND (w.circuit_open_until IS NULL OR w.circuit_open_until <= $9)
+                    THEN $9 + make_interval(secs => least(
+                        $11::float8 * power(2, least(w.circuit_opens, 20)), $12::float8) / 1000.0)
+                    ELSE w.circuit_open_until END
+           FROM done
+          WHERE w.project_id = done.project_id AND w.id = done.endpoint_id
+         RETURNING w.id",
     )
     .bind(claimed.project_id)
     .bind(claimed.event_id)
@@ -280,10 +374,12 @@ pub async fn complete(
     .bind(status)
     .bind(error)
     .bind(now)
-    .execute(pool)
-    .await?
-    .rows_affected();
-    Ok(updated == 1)
+    .bind(breaker.threshold)
+    .bind(cooldown_ms)
+    .bind(max_ms)
+    .fetch_optional(pool)
+    .await?;
+    Ok(recorded.is_some())
 }
 
 /// An event with its delivery states, for inspection.
@@ -361,5 +457,7 @@ fn endpoint_from(row: &sqlx::postgres::PgRow) -> Result<Endpoint, DbError> {
         rotating: row.try_get::<Option<bool>, _>("rotating")?.unwrap_or(false),
         created_at: row.try_get("created_at")?,
         disabled_at: row.try_get("disabled_at")?,
+        consecutive_failures: row.try_get("consecutive_failures")?,
+        circuit_open_until: row.try_get("circuit_open_until")?,
     })
 }

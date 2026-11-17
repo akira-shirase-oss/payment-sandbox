@@ -210,8 +210,20 @@ async fn a_receiver_that_is_down_gets_retries_and_then_every_event() {
     let pid = purchase(&app, &key, 1, 1_000).await;
     let clock = Arc::new(ShiftedClock::default());
     let deliverer = Deliverer::new(&app.state, clock.clone()).unwrap();
-    let report = deliver_all(&deliverer).await;
-    assert_eq!((report.delivered, report.retried), (0, 2), "{report:?}");
+    let report = deliverer.run_once().await.unwrap();
+    assert_eq!(
+        (report.claimed, report.delivered, report.retried),
+        (2, 0, 2),
+        "{report:?}"
+    );
+    // Both back off. The deliverer's clock is moved back a minute, so no retry (due within
+    // a second, with jitter) falls due merely because a busy machine was slow to look again.
+    clock.jump(-60_000);
+    assert_eq!(
+        deliver_all(&deliverer).await.claimed,
+        0,
+        "nothing is due yet"
+    );
     let (_, events) = app.get(&format!("/v1/events?payment_id={pid}"), &key).await;
     assert!(
         events["events"]
@@ -230,7 +242,7 @@ async fn a_receiver_that_is_down_gets_retries_and_then_every_event() {
         })
         .await;
     let _running = start_store(&addr, store.clone()).await;
-    clock.jump(5_000);
+    clock.jump(65_000);
     let report = deliver_all(&deliverer).await;
     assert_eq!(report.delivered, 2, "{report:?}");
     assert_eq!(store.fulfillments().await.unwrap().len(), 1);
@@ -635,6 +647,147 @@ async fn a_disabled_endpoint_gets_no_more_attempts() {
         report.claimed, 0,
         "a disabled endpoint's delivery was attempted: {report:?}"
     );
+    app.cleanup().await;
+    sim.remove().await;
+}
+
+/// A receiver that answers 200 while `healthy`, 500 otherwise, and counts 2xx answers.
+async fn counting_receiver(
+    healthy: Arc<std::sync::atomic::AtomicBool>,
+) -> (String, Arc<AtomicUsize>) {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counted = hits.clone();
+    let router = axum::Router::new().route(
+        "/hook",
+        axum::routing::post(move || {
+            let (healthy, counted) = (healthy.clone(), counted.clone());
+            async move {
+                if healthy.load(Ordering::SeqCst) {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    StatusCode::OK
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/hook", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    (url, hits)
+}
+
+/// Review finding 12: one global claim order and a batch barrier let one project's
+/// black-holed endpoint hold every delivery slot for its 5 s deadline, so every other
+/// project waited behind it. Now each endpoint has at most a few attempts in flight, claims
+/// take the endpoints in turn, and completions stream instead of waiting for a batch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_black_holed_endpoint_cannot_hold_the_deliverers_capacity() {
+    let sim = TestSim::start().await;
+    let app = TestApp::with_sim(&sim, &[("PS_SECRET_KEY", SECRET_KEY)]).await;
+    let (_, stuck) = app.project("black-hole").await;
+    let (_, healthy) = app.project("healthy").await;
+    // Accepts connections (the kernel does) and never answers.
+    let hole = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    endpoint(
+        &app,
+        &stuck,
+        &format!("http://{}/webhooks", hole.local_addr().unwrap()),
+    )
+    .await;
+    let (url, hits) = counting_receiver(Arc::new(std::sync::atomic::AtomicBool::new(true))).await;
+    endpoint(&app, &healthy, &url).await;
+    for n in 0..40 {
+        purchase(&app, &stuck, n, 0).await;
+    }
+    purchase(&app, &healthy, 100, 0).await;
+
+    let deliverer = Deliverer::new(&app.state, Arc::new(ShiftedClock::default())).unwrap();
+    let (stop, shutdown) = sandbox_server::reconciler::shutdown_channel();
+    let running = tokio::spawn(deliverer.run(shutdown));
+    let started = std::time::Instant::now();
+    while hits.load(Ordering::SeqCst) == 0 && started.elapsed() < Duration::from_secs(15) {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let waited = started.elapsed();
+    stop.send(true).unwrap();
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    assert!(
+        waited < Duration::from_secs(3),
+        "the healthy project's delivery waited {waited:?} behind another project's black hole"
+    );
+    // Attempts in flight end within their deadline; then the deliverer stops.
+    tokio::time::timeout(Duration::from_secs(20), running)
+        .await
+        .unwrap()
+        .unwrap();
+    drop(hole);
+    app.cleanup().await;
+    sim.remove().await;
+}
+
+/// Review finding 12: an endpoint that keeps failing keeps getting attempts that hold
+/// capacity. Now five failures in a row open its circuit: nothing is sent to it until a
+/// cooldown (30 s, doubling) ends, then one probe; a success closes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_endpoint_that_keeps_failing_opens_its_circuit_and_is_probed_once() {
+    let (sim, app, key) = setup().await;
+    let up = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (url, hits) = counting_receiver(up.clone()).await;
+    let (id, _) = endpoint(&app, &key, &url).await;
+    for n in 0..8 {
+        purchase(&app, &key, n, 0).await;
+    }
+    let clock = Arc::new(ShiftedClock::default());
+    let deliverer = Deliverer::new(&app.state, clock.clone()).unwrap();
+
+    let first = deliverer.run_once().await.unwrap();
+    assert_eq!(
+        (first.claimed, first.retried),
+        (4, 4),
+        "at most four attempts in flight to one endpoint: {first:?}"
+    );
+    let second = deliverer.run_once().await.unwrap();
+    assert_eq!((second.claimed, second.retried), (4, 4), "{second:?}");
+
+    // Every retry is due again, but the circuit is open: nothing is sent.
+    clock.jump(20_000);
+    let open = deliverer.run_once().await.unwrap();
+    assert_eq!(open.claimed, 0, "{open:?}");
+    let (_, listed) = app.get("/v1/webhook_endpoints", &key).await;
+    let listed = listed["endpoints"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == id.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(listed["consecutive_failures"], 8, "{listed}");
+    assert!(listed["circuit_open_until"].is_string(), "{listed}");
+
+    // After the cooldown: one probe. It fails, so the circuit opens again, for 60 s.
+    clock.jump(15_000);
+    let probe = deliverer.run_once().await.unwrap();
+    assert_eq!((probe.claimed, probe.retried), (1, 1), "{probe:?}");
+    clock.jump(35_000);
+    assert_eq!(deliverer.run_once().await.unwrap().claimed, 0);
+
+    // The receiver recovers: the next probe succeeds and closes the circuit.
+    up.store(true, Ordering::SeqCst);
+    clock.jump(30_000);
+    let probe = deliverer.run_once().await.unwrap();
+    assert_eq!((probe.claimed, probe.delivered), (1, 1), "{probe:?}");
+    let rest = deliver_all(&deliverer).await;
+    assert_eq!(rest.delivered, 7, "{rest:?}");
+    assert_eq!(hits.load(Ordering::SeqCst), 8);
+    let (_, listed) = app.get("/v1/webhook_endpoints", &key).await;
+    assert_eq!(
+        listed["endpoints"][0]["consecutive_failures"], 0,
+        "{listed}"
+    );
+    assert!(listed["endpoints"][0]["circuit_open_until"].is_null());
     app.cleanup().await;
     sim.remove().await;
 }

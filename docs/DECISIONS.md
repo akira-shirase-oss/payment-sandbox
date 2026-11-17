@@ -476,6 +476,28 @@ review found. Each states the choice, the alternative and the cost.
   logging WARN past `PS_RECONCILE_ALERT_AGE_MS` (default 10 min). Tests:
   `tests/reconciler.rs`.
 
+- **D-049 — One endpoint cannot hold the deliverer: per-endpoint caps, fair
+  claims, streamed completions and a circuit breaker.** Review finding: one
+  global claim order and a batch barrier (`run_once` waited for its whole
+  batch) let one project's black-holed endpoint hold all 16 places for its
+  5 s deadline, so every project dropped to about three deliveries a
+  second. Now at most 4 attempts are in flight to one endpoint
+  (`deliverer::PER_ENDPOINT`), claims take the endpoints in turn (every
+  endpoint's most overdue delivery, then every endpoint's second, ...), and
+  the running deliverer refills a place as soon as an attempt ends. Five
+  failures in a row open an endpoint's circuit (`webhook_endpoints.
+  consecutive_failures`, `circuit_opens`, `circuit_open_until`, migration
+  0008): its deliveries are not claimed, and no attempts are spent, for
+  30 s doubling with each opening up to 10 minutes; then one probe at a
+  time; a success closes it. The breaker is updated in the same statement
+  that records the attempt, only by the current lease holder, and from the
+  endpoint row itself, so concurrent failures open it once. The caps count
+  one deliverer process's attempts (one server in the local/CI mode,
+  D-023). `GET /v1/webhook_endpoints` shows `consecutive_failures` and
+  `circuit_open_until`. Tests:
+  `a_black_holed_endpoint_cannot_hold_the_deliverers_capacity`,
+  `an_endpoint_that_keeps_failing_opens_its_circuit_and_is_probed_once`.
+
 ## Open questions (still open)
 
 - **Dashboard authentication** — per-project-owner session login is the
