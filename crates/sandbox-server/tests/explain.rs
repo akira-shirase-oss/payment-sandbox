@@ -88,13 +88,7 @@ async fn every_balance_is_explained_line_by_line_across_pages() {
             pages += 1;
             let next = &page["explanation"]["next"];
             if next.is_object() {
-                cursor = format!(
-                    "&generation={}&as_of={}&after_seq={}&running={}",
-                    next["generation"].as_str().unwrap(),
-                    next["as_of"].as_str().unwrap(),
-                    next["after_seq"],
-                    next["running"]
-                );
+                cursor = format!("&cursor={}", next["cursor"].as_str().unwrap());
             } else {
                 assert_eq!(page["explanation"]["line_count"].as_i64().unwrap(), lines);
                 break;
@@ -214,12 +208,9 @@ async fn explain_pages_stay_consistent_while_entries_commit_out_of_order() {
     for _ in 0..100 {
         let path = if cursor.is_object() {
             format!(
-                "/v1/balances/USD/merchant_pending/explain?limit={}&generation={}&as_of={}&after_seq={}&running={}",
+                "/v1/balances/USD/merchant_pending/explain?limit={}&cursor={}",
                 committed + 1,
-                cursor["generation"].as_str().unwrap(),
-                cursor["as_of"].as_str().unwrap(),
-                cursor["after_seq"],
-                cursor["running"]
+                cursor["cursor"].as_str().unwrap()
             )
         } else {
             break;
@@ -303,4 +294,32 @@ async fn an_explanation_cursor_from_before_a_restore_is_refused() {
     restored.cleanup().await;
     live.cleanup().await;
     sim.remove().await;
+}
+
+/// Review N3: the cursor's `as_of` went straight into a `::pg_snapshot` cast, so a card
+/// number there became a 500 whose message (with the number) reached the ERROR log and the
+/// database's log, and `running` was whatever the client said. Cursors are now issued
+/// opaque and sealed by the server and checked before any query; card numbers anywhere in
+/// a query string are refused like everywhere else.
+#[tokio::test]
+async fn a_cursor_the_server_did_not_issue_is_refused_before_any_query() {
+    let app = TestApp::new(&[]).await;
+    let (_, key) = app.project("store").await;
+    let base = "/v1/balances/USD/payer_held/explain";
+    let (status, body) = app.get(&format!("{base}?cursor=abcdef"), &key).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "invalid_cursor", "{body}");
+    let (status, body) = app
+        .get(
+            &format!("{base}?generation=1.1.1&as_of=4242424242424242&after_seq=0&running=0"),
+            &key,
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "raw_card_data_rejected", "{body}");
+    let (status, body) = app
+        .get("/v1/payments?description=4242%204242%204242%204242", &key)
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    app.cleanup().await;
 }

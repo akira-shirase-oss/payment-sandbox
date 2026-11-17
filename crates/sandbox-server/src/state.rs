@@ -31,6 +31,8 @@ pub struct AppState {
     pub reports: Arc<ReportGate>,
     /// Supervised background tasks, for readiness (D-051).
     pub tasks: Arc<Tasks>,
+    /// Seals explanation cursors (D-056).
+    pub cursors: Arc<crate::cursor::CursorKey>,
 }
 
 impl AppState {
@@ -63,7 +65,14 @@ impl AppState {
             config.reports.per_project,
             config.reports.concurrency,
         ));
+        let cursors = Arc::new(crate::cursor::CursorKey::new(
+            config
+                .secret_key
+                .as_ref()
+                .map(crate::config::Secret::expose),
+        ));
         Self {
+            cursors,
             tasks: Arc::new(Tasks::default()),
             reports,
             secrets,

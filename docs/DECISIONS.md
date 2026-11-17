@@ -634,6 +634,25 @@ review found. Each states the choice, the alternative and the cost.
   each, `ps_app` tries to add a balanced pair of lines to that entry:
   refused.
 
+- **D-056 — Explanation cursors are sealed by the server; query strings are
+  card-guarded.** Review N3: the cursor's `as_of` went straight into a
+  `::pg_snapshot` cast, so a card number there became a 500 whose message
+  quoted it in the server's ERROR log and in the database's log, and
+  `running` was whatever the client sent. Now `next` is `{"cursor": …}`:
+  the fields (generation, snapshot, sequence, running total) and an
+  HMAC-SHA256 tag (128 bits) over them, written with the letters `a`–`p`, so
+  a cursor has no digits for the card guard to mistake. The server opens it
+  before any query: shape, every field's exact grammar (the snapshot as
+  `xmin:xmax:xip,…` with ascending ids inside the range), then the tag; a
+  forged or garbled cursor is `400 invalid_cursor`, one of another restore
+  generation `409 stale_cursor` (D-050), and any other query field is
+  refused. The key is derived from `PS_SECRET_KEY` when set (cursors
+  outlive a restart), otherwise random per process. Every query string is
+  percent-decoded and card-guarded (`422 raw_card_data_rejected`), and a
+  logged error cause that quotes anything card-like is withheld whole.
+  Tests: `a_cursor_the_server_did_not_issue_is_refused_before_any_query`,
+  `tests/logs.rs` (a card number in a cursor), `cursor::tests`.
+
 ## Open questions (still open)
 
 - **Dashboard authentication** — per-project-owner session login is the

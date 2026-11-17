@@ -75,7 +75,7 @@ export function teardown(data) {
       for (const line of body.explanation.lines) sum += line.amount_minor;
       const next = body.explanation.next;
       if (next === null) break;
-      cursor = `&generation=${next.generation}&as_of=${encodeURIComponent(next.as_of)}&after_seq=${next.after_seq}&running=${next.running}`;
+      cursor = `&cursor=${next.cursor}`;
     }
     console.log(`explain ${account}: balance=${balance} lines sum=${sum}`);
     check(sum, { 'the explanation sums to the balance': (s) => s === signedBalance }, { phase: 'gate' });

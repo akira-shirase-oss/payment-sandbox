@@ -57,6 +57,8 @@ pub enum ErrorCode {
     InvalidState,
     /// A cursor from before a restore of the database (D-050); start again.
     StaleCursor,
+    /// A cursor this server did not issue, or a malformed one (D-056); start again.
+    InvalidCursor,
     /// A unique name is already taken.
     Conflict,
     /// Too many requests in flight.
@@ -173,6 +175,9 @@ pub enum ApiError {
     /// A cursor from another restore generation (D-050).
     #[error("the database was restored since this cursor was issued; start the explanation again")]
     StaleCursor,
+    /// A cursor this server did not issue (D-056).
+    #[error("this cursor was not issued by this server; start the explanation again")]
+    InvalidCursor,
     /// Shed.
     #[error("too many requests in flight; retry shortly")]
     Overloaded,
@@ -217,6 +222,7 @@ impl ApiError {
             Self::MalformedJson(_)
             | Self::BadRequest(_)
             | Self::IdempotencyKeyRequired
+            | Self::InvalidCursor
             | Self::InvalidIdempotencyKey(_) => StatusCode::BAD_REQUEST,
             Self::InvalidBody(_) | Self::RawCardData | Self::InvalidPaymentToken(_) => {
                 StatusCode::UNPROCESSABLE_ENTITY
@@ -261,6 +267,7 @@ impl ApiError {
             Self::InvalidState(_) => ErrorCode::InvalidState,
             Self::Conflict(_) => ErrorCode::Conflict,
             Self::StaleCursor => ErrorCode::StaleCursor,
+            Self::InvalidCursor => ErrorCode::InvalidCursor,
             Self::Overloaded => ErrorCode::Overloaded,
             Self::RateLimited { .. } => ErrorCode::RateLimited,
             Self::PaymentBusy => ErrorCode::PaymentBusy,
@@ -283,11 +290,11 @@ impl ApiError {
         let code = self.code();
         match self {
             Self::Internal(cause) => {
-                let cause = format!("{cause:#}");
+                let cause = loggable(&format!("{cause:#}"));
                 tracing::error!(?code, %cause, "request failed");
             }
             Self::Unavailable(cause) | Self::DatabaseTimeout(cause) => {
-                let cause = format!("{cause:#}");
+                let cause = loggable(&format!("{cause:#}"));
                 tracing::warn!(?code, %cause, "dependency failure");
             }
             Self::Overloaded | Self::PaymentBusy => tracing::warn!(?code, "request shed"),
@@ -296,6 +303,16 @@ impl ApiError {
             Self::RawCardData => tracing::warn!(?code, "request with card data rejected"),
             _ => tracing::debug!(?code, "request rejected"),
         }
+    }
+}
+
+/// A cause as it may be logged: a database error can quote a value a client sent, so one
+/// carrying anything card-like is withheld whole (review N3, D-056).
+fn loggable(cause: &str) -> String {
+    if sandbox_domain::card_guard::contains_pan_like(cause) {
+        "<withheld: the cause quotes card-like input>".to_owned()
+    } else {
+        truncate(cause, 2_000)
     }
 }
 

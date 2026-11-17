@@ -37,6 +37,10 @@ impl Write for Capture {
 /// Fails if any secret shape reaches the logs at any level: keys, the bootstrap token,
 /// card numbers (gap pattern "no secrets in logs needs a test, not a sentence").
 #[tokio::test(flavor = "current_thread")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one capture, every leak path driven through it, read top to bottom"
+)]
 async fn no_secret_ever_reaches_the_logs() {
     let capture = Capture::default();
     let writer = capture.clone();
@@ -107,6 +111,24 @@ async fn no_secret_ever_reaches_the_logs() {
         response.headers()["x-request-id"],
         "4111111111111111",
         "a card-like request id was echoed"
+    );
+
+    // Review N3: a card number in an explanation cursor reached the ERROR log (and the
+    // database's own log) through the snapshot cast's error message.
+    let (_, first) = app.get("/v1/balances/USD/payer_held/explain", &admin).await;
+    let generation = first["explanation"]["generation"].as_str().unwrap_or("0");
+    let (status, _) = app
+        .get(
+            &format!(
+                "/v1/balances/USD/payer_held/explain?generation={generation}&as_of=4242424242424242&after_seq=0&running=0"
+            ),
+            &admin,
+        )
+        .await;
+    assert_ne!(
+        status.as_u16(),
+        500,
+        "a card number in a cursor became an internal error"
     );
 
     // Canary: proves the capture sees events from the code under test's thread.

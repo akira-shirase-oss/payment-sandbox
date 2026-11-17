@@ -315,15 +315,13 @@ pub fn operation_json(o: &Operation) -> Value {
     })
 }
 
-/// `GET /v1/balances/{currency}/{account}/explain` query: a first page has none of the
-/// cursor fields; later pages pass back `generation`, `as_of`, `after_seq` and `running`
-/// from `next`.
+/// `GET /v1/balances/{currency}/{account}/explain` query: a first page has no cursor; a
+/// later page passes back `next.cursor`, which the server sealed (D-056). Any other field is
+/// refused.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExplainQuery {
-    generation: Option<String>,
-    as_of: Option<String>,
-    after_seq: Option<i64>,
-    running: Option<i64>,
+    cursor: Option<String>,
     limit: Option<i64>,
 }
 
@@ -342,29 +340,21 @@ pub async fn explain(
     let currency = Currency::from_code(&currency).map_err(|_| ApiError::NotFound("currency"))?;
     let account = sandbox_domain::AccountKind::from_code(&account)
         .map_err(|_| ApiError::NotFound("account"))?;
-    let cursor = match (q.generation, q.as_of, q.after_seq, q.running) {
-        (Some(generation), Some(as_of), Some(after_seq), Some(running))
-            if as_of.len() <= 16_384
-                && as_of
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || b == b':' || b == b',')
-                && generation.len() <= 64
-                && generation.bytes().all(|b| b.is_ascii_digit() || b == b'.') =>
-        {
-            Some(sandbox_db::reconcile::ExplainCursor {
-                generation,
-                as_of,
-                after_seq,
-                running,
-            })
+    // Opened, and every field checked, before anything reaches the database.
+    let cursor = match q.cursor.as_deref().map(|c| state.cursors.open(c)) {
+        None => None,
+        Some(Ok(crate::cursor::Opened::Authentic(cursor))) => Some(cursor),
+        Some(Ok(crate::cursor::Opened::Unverified { generation })) => {
+            // Not sealed by this process: a cursor of another restore generation is stale,
+            // anything else is not ours.
+            let now = sandbox_db::reconcile::generation(&state.db).await?;
+            return Err(if generation == now {
+                ApiError::InvalidCursor
+            } else {
+                ApiError::StaleCursor
+            });
         }
-        (None, None, None, None) => None,
-        _ => {
-            return Err(ApiError::BadRequest(
-                "pass generation, as_of, after_seq and running together, as returned in `next`"
-                    .to_owned(),
-            ));
-        }
+        Some(Err(crate::cursor::InvalidCursor)) => return Err(ApiError::InvalidCursor),
     };
     let explanation = sandbox_db::reconcile::explain(
         &state.db,
@@ -376,13 +366,19 @@ pub async fn explain(
     )
     .await?;
     let presented = account.presented(explanation.balance_minor);
+    let next = explanation
+        .next
+        .as_ref()
+        .map(|c| json!({"cursor": state.cursors.seal(c)}));
+    let mut body = json!(explanation);
+    body["next"] = next.unwrap_or(Value::Null);
     Ok(Json(json!({
         "currency": currency,
         "account": account,
         "normal_side": account.normal_side(),
         "balance_minor": presented,
         "balance": format_minor(presented, currency),
-        "explanation": explanation,
+        "explanation": body,
         "simulated": true,
     }))
     .into_response())

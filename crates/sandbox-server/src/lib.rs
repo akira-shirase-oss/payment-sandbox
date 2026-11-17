@@ -6,6 +6,7 @@
 
 pub mod auth;
 pub mod config;
+pub mod cursor;
 pub mod deliverer;
 pub mod error;
 pub mod extract;

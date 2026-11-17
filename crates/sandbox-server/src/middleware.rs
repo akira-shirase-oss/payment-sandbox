@@ -111,6 +111,42 @@ async fn error_envelope(request: Request, next: Next) -> Response {
     Response::from_parts(parts, body)
 }
 
+/// Refuses a request whose query string, percent-decoded, carries a card number (review N3,
+/// D-056): bodies, keys, paths and request ids were guarded, query strings were not.
+async fn refuse_card_query(request: Request, next: Next) -> Response {
+    if let Some(query) = request.uri().query()
+        && sandbox_domain::card_guard::contains_pan_like(&percent_decode(query))
+    {
+        return ApiError::RawCardData.into_response();
+    }
+    next.run(request).await
+}
+
+/// `%XX` and `+` decoded (invalid escapes kept as they are), as text.
+fn percent_decode(query: &str) -> String {
+    let bytes = query.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => out.push(b' '),
+            b'%' if i + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+                match hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                    Some(b) => {
+                        out.push(b);
+                        i += 2;
+                    }
+                    None => out.push(b'%'),
+                }
+            }
+            b => out.push(b),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// A caught panic becomes a 500 envelope; the payload is logged, never returned.
 fn panic_response(payload: Box<dyn Any + Send + 'static>) -> Response {
     let message = match payload.downcast::<String>() {
@@ -180,6 +216,8 @@ pub fn apply_with_timeout(router: Router, config: &Config, timeout: std::time::D
         .layer(axum_mw::from_fn(error_envelope))
         // 7. Panics become 500 envelopes.
         .layer(CatchPanicLayer::custom(panic_response))
+        // 7b. Card numbers in query strings are refused like everywhere else.
+        .layer(axum_mw::from_fn(refuse_card_query))
         // 8. Deadline for response headers.
         .layer(TimeoutLayer::with_status_code(TIMEOUT_STATUS, timeout))
         // 9–10. Body limits, by Content-Length up front and while streaming.
@@ -205,6 +243,15 @@ mod tests {
         ] {
             assert_eq!(is_acceptable_request_id(input), expected, "{input:?}");
         }
+    }
+
+    #[test]
+    fn queries_are_percent_decoded_before_the_card_guard() {
+        assert_eq!(percent_decode("a=4242%204242+42%2"), "a=4242 4242 42%2");
+        assert_eq!(percent_decode("%zz%41"), "%zzA");
+        assert!(sandbox_domain::card_guard::contains_pan_like(
+            &percent_decode("d=4242%2E4242%2E4242%2E4242")
+        ));
     }
 
     #[test]
