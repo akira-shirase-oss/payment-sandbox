@@ -191,10 +191,10 @@ async fn explain_pages_stay_consistent_while_entries_commit_out_of_order() {
         .await;
     assert_eq!(status, StatusCode::CREATED);
 
-    let first = format!(
-        "/v1/balances/USD/merchant_pending/explain?limit={}",
-        committed + 1
-    );
+    // Pages of two lines: the explanation must page several times across the late commit
+    // (review N12: with one page this test passed even without D-042's fix).
+    let page_size = 2;
+    let first = format!("/v1/balances/USD/merchant_pending/explain?limit={page_size}");
     let (_, page) = app.get(&first, &key).await;
     held.commit().await.unwrap();
     let balance = page["explanation"]["balance_minor"].as_i64().unwrap();
@@ -205,16 +205,17 @@ async fn explain_pages_stay_consistent_while_entries_commit_out_of_order() {
         .map(|l| l["amount_minor"].as_i64().unwrap())
         .sum();
     let mut cursor = page["explanation"]["next"].clone();
+    let mut pages = 1;
     for _ in 0..100 {
         let path = if cursor.is_object() {
             format!(
-                "/v1/balances/USD/merchant_pending/explain?limit={}&cursor={}",
-                committed + 1,
+                "/v1/balances/USD/merchant_pending/explain?limit={page_size}&cursor={}",
                 cursor["cursor"].as_str().unwrap()
             )
         } else {
             break;
         };
+        pages += 1;
         let (_, page) = app.get(&path, &key).await;
         assert_eq!(
             page["explanation"]["balance_minor"].as_i64().unwrap(),
@@ -229,6 +230,14 @@ async fn explain_pages_stay_consistent_while_entries_commit_out_of_order() {
             .sum::<i64>();
         cursor = page["explanation"]["next"].clone();
     }
+    assert!(
+        i64::from(pages) * page_size > committed,
+        "only {pages} page(s) of {page_size} were read for {committed} lines"
+    );
+    assert!(
+        pages >= 2,
+        "a pager that never reads a second page proves nothing"
+    );
     assert_eq!(
         sum, balance,
         "the pages' lines must sum to the balance they report"

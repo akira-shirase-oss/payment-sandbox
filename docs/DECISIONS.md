@@ -727,6 +727,16 @@ review found. Each states the choice, the alternative and the cost.
     1–1,000, `after`, `next_after`) and `/stats` counts the table instead
     of reading it (it read about 100 MB per call after a million
     deliveries). Test: `fulfillments_are_listed_in_pages`.
+  - *N12:* `explain_pages_stay_consistent_while_entries_commit_out_of_order`
+    pages by two lines and requires at least two pages (with one page it
+    passed even without D-042's fix; with the snapshot filter removed it
+    now fails, "the balance moved between pages"). A `TestDb` dropped
+    without `cleanup` (a failing test) drops its database from a thread of
+    its own, and the first test database of each process sweeps what
+    killed processes leaked: `ps_test_*` databases older than two hours
+    and `ps_shadow_*` roles older than one, by the UUIDv7 time in their
+    names. Tests: `a_test_database_is_dropped_even_when_its_test_never_cleans_up`,
+    `stale_test_databases_and_roles_are_swept`.
 
 ## Open questions (still open)
 

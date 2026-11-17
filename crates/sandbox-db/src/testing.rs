@@ -19,13 +19,98 @@ use uuid::Uuid;
 /// The variable naming the admin connection.
 pub const ENV: &str = "PS_TEST_DATABASE_URL";
 
-/// A freshly created and migrated database, dropped by [`TestDb::cleanup`].
+/// A freshly created and migrated database, dropped by [`TestDb::cleanup`], or when the
+/// handle is dropped without it (a failing test, review N12).
 #[derive(Debug)]
 pub struct TestDb {
     /// A pool on the new database.
     pub pool: PgPool,
     admin_url: String,
     name: String,
+    cleaned: bool,
+}
+
+impl Drop for TestDb {
+    fn drop(&mut self) {
+        if self.cleaned {
+            return;
+        }
+        // Possibly inside an async runtime, possibly while a panic unwinds: drop the
+        // database from a thread of its own, on a runtime of its own.
+        let (admin_url, name) = (self.admin_url.clone(), self.name.clone());
+        let _ = std::thread::spawn(move || {
+            if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                runtime.block_on(drop_database(&admin_url, &name));
+            }
+        })
+        .join();
+    }
+}
+
+async fn drop_database(admin_url: &str, name: &str) {
+    if let Ok(options) = PgConnectOptions::from_str(admin_url)
+        && let Ok(mut admin) = options.connect().await
+    {
+        let _ = admin
+            .execute(AssertSqlSafe(format!(
+                "DROP DATABASE IF EXISTS {name} WITH (FORCE)"
+            )))
+            .await;
+        admin.close().await.ok();
+    }
+}
+
+/// Milliseconds since the Unix epoch in the UUIDv7 that `name` carries after `prefix`.
+fn v7_millis(name: &str, prefix: &str) -> Option<u64> {
+    let hex = name.strip_prefix(prefix)?.get(..12)?;
+    u64::from_str_radix(hex, 16).ok()
+}
+
+/// Drops what earlier test processes leaked (a killed process runs no destructor): test
+/// databases older than two hours, shadow roles older than one (review N12). Once per
+/// process, before its first test database.
+async fn sweep_stale(admin: &mut sqlx::PgConnection) {
+    static SWEPT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if SWEPT.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+    let older = |born: Option<u64>, hours: u64| {
+        born.is_some_and(|b| now.saturating_sub(b) > hours * 3_600_000)
+    };
+    let databases: Vec<String> = sqlx::query_scalar(
+        "SELECT datname::text FROM pg_database WHERE datname ~ '^ps_test_[0-9a-f]{32}'",
+    )
+    .fetch_all(&mut *admin)
+    .await
+    .unwrap_or_default();
+    for name in databases {
+        if older(v7_millis(&name, "ps_test_"), 2) {
+            let _ = admin
+                .execute(AssertSqlSafe(format!(
+                    "DROP DATABASE IF EXISTS {name} WITH (FORCE)"
+                )))
+                .await;
+        }
+    }
+    let roles: Vec<String> = sqlx::query_scalar(
+        "SELECT rolname::text FROM pg_roles WHERE rolname ~ '^ps_shadow_[0-9a-f]{32}$'",
+    )
+    .fetch_all(&mut *admin)
+    .await
+    .unwrap_or_default();
+    for name in roles {
+        if older(v7_millis(&name, "ps_shadow_"), 1) {
+            let _ = admin
+                .execute(AssertSqlSafe(format!("DROP ROLE IF EXISTS {name}")))
+                .await;
+        }
+    }
 }
 
 impl TestDb {
@@ -48,6 +133,7 @@ impl TestDb {
         crate::roles::bootstrap(&mut admin)
             .await
             .expect("creating the database roles");
+        sweep_stale(&mut admin).await;
         crate::roles::create_database(&mut admin, &name)
             .await
             .expect("creating the test database");
@@ -73,6 +159,7 @@ impl TestDb {
             pool,
             admin_url,
             name,
+            cleaned: false,
         }
     }
 
@@ -179,6 +266,7 @@ impl TestDb {
             pool,
             admin_url: self.admin_url.clone(),
             name,
+            cleaned: false,
         }
     }
 
@@ -195,6 +283,7 @@ impl TestDb {
             pool: Self::pool_for(&owner).await,
             admin_url: admin_url.to_owned(),
             name: name.to_owned(),
+            cleaned: false,
         }
     }
 
@@ -211,6 +300,7 @@ impl TestDb {
             pool: Self::pool_for(&owner).await,
             admin_url: self.admin_url.clone(),
             name: name.to_owned(),
+            cleaned: false,
         }
     }
 
@@ -225,22 +315,11 @@ impl TestDb {
     }
 
     /// Drops the database (forcing out any connection a test left behind).
-    pub async fn cleanup(self) {
+    pub async fn cleanup(mut self) {
         // close() waits for every checked-out connection; a test that still holds one
         // must not hang the suite, and the FORCE drop below cuts it off anyway.
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), self.pool.close()).await;
-        if let Ok(mut admin) = PgConnectOptions::from_str(&self.admin_url)
-            .expect("invariant: PS_TEST_DATABASE_URL parses")
-            .connect()
-            .await
-        {
-            let _ = admin
-                .execute(AssertSqlSafe(format!(
-                    "DROP DATABASE IF EXISTS {} WITH (FORCE)",
-                    self.name
-                )))
-                .await;
-            admin.close().await.ok();
-        }
+        drop_database(&self.admin_url, &self.name).await;
+        self.cleaned = true;
     }
 }
