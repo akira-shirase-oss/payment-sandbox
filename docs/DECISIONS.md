@@ -373,6 +373,17 @@ review found. Each states the choice, the alternative and the cost.
   re-sums earlier lines (review 15). A newer explanation sees what committed since. Test:
   `explain_pages_stay_consistent_while_entries_commit_out_of_order`.
 
+- **D-043 — The card guard normalizes before it looks.** Review finding:
+  only ASCII digits joined by one space or dash, in six groupings, were
+  detected. `4242.4242.4242.4242`, double spaces, NBSP, full-width digits,
+  one-digit groups, `/`, `_` and a stray-space Amex number were all stored.
+  Now digits (ASCII or full-width) are joined across separators of at most
+  two non-alphanumeric characters, and every 13–19 digit window of a run is
+  Luhn-checked. Letters, longer gaps and canonical UUIDs end a run, so UUID
+  keys and ordinary dates pass. This refines D-019's detection rule; the
+  check applies to every JSON string and key and to the `Idempotency-Key`.
+  Test: `every_common_card_number_shape_is_refused_and_never_stored`.
+
 ## Open questions (still open)
 
 - **Dashboard authentication** — per-project-owner session login is the

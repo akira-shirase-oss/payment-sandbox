@@ -951,3 +951,62 @@ async fn recording_an_approval_survives_a_transient_lock_timeout() {
     let app = Arc::into_inner(app).unwrap();
     teardown(sim, app).await;
 }
+
+/// Review finding 6 (experiment G1): the card shapes the first guard missed. Every one is
+/// refused, as a description and as an Idempotency-Key, and none is stored or echoed.
+#[tokio::test]
+async fn every_common_card_number_shape_is_refused_and_never_stored() {
+    let (sim, app, key) = setup().await;
+    let shapes = [
+        "4242.4242.4242.4242",
+        "4242 4242  4242 4242",
+        "4242\u{a0}4242\u{a0}4242\u{a0}4242",
+        "\u{ff14}\u{ff12}\u{ff14}\u{ff12}\u{ff14}\u{ff12}\u{ff14}\u{ff12}\u{ff14}\u{ff12}\u{ff14}\u{ff12}\u{ff14}\u{ff12}\u{ff14}\u{ff12}",
+        "4 2 4 2 4 2 4 2 4 2 4 2 4 2 4 2",
+        "4242/4242/4242/4242",
+        "4242_4242_4242_4242",
+        "37828224631000 5",
+    ];
+    for (n, shape) in shapes.iter().enumerate() {
+        let body = json!({"amount": 100, "currency": "USD", "token": "tok_sim_approve", "description": format!("card {shape}")});
+        let (status, reply) = app
+            .post("/v1/payments", &key, Some(&format!("g{n}")), body)
+            .await;
+        assert_eq!(
+            (status, reply["error"]["code"].as_str()),
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Some("raw_card_data_rejected")
+            ),
+            "{shape:?}: {reply}"
+        );
+    }
+    let (status, reply) = app
+        .post(
+            "/v1/payments",
+            &key,
+            Some("4242.4242.4242.4242"),
+            json!({"amount": 100, "currency": "USD", "token": "tok_sim_approve"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{reply}");
+    // UUIDs, dates and ordinary numbers still pass.
+    let (status, reply) = app
+        .post(
+            "/v1/payments",
+            &key,
+            Some("018f2f0e-3c1a-7cc0-9e1e-3f1f6b7f9a01"),
+            json!({"amount": 100, "currency": "USD", "token": "tok_sim_approve", "description": "order 1234 of 2026-11-16, ref 018f2f0e-3c1a-7cc0-9e1e-3f1f6b7f9a01"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{reply}");
+    let stored: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM (SELECT description AS t FROM payments UNION ALL SELECT idempotency_key FROM operations) x
+          WHERE t LIKE '%4242%' OR t LIKE '%3782%' OR t LIKE '%\u{ff14}%'",
+    )
+    .fetch_one(&app.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(stored, 0);
+    teardown(sim, app).await;
+}
