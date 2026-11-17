@@ -723,6 +723,10 @@ review found. Each states the choice, the alternative and the cost.
     neither, no target is accepted. (This refines D-046, which relied on the
     credentials alone.) `scripts/load.sh` lists the store's port. Test:
     `webhooks_may_not_target_the_sandboxs_own_ports_or_unlisted_ones`.
+  - *N11:* the development store's `GET /fulfillments` pages (`limit`
+    1–1,000, `after`, `next_after`) and `/stats` counts the table instead
+    of reading it (it read about 100 MB per call after a million
+    deliveries). Test: `fulfillments_are_listed_in_pages`.
 
 ## Open questions (still open)
 

@@ -24,7 +24,7 @@ use std::time::Duration;
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{DefaultBodyLimit, State},
+    extract::{DefaultBodyLimit, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post, put},
@@ -151,6 +151,45 @@ impl DevStore {
                 out.push(serde_json::from_slice(value.value()).map_err(err)?);
             }
             Ok(out)
+        })
+        .await
+        .map_err(err)?
+    }
+
+    /// At most `limit` fulfillments in payment-id order after `after` (review N11).
+    pub async fn fulfillments_page(
+        &self,
+        after: Option<Uuid>,
+        limit: usize,
+    ) -> Result<Vec<Fulfillment>, StoreError> {
+        let db = self.db.clone();
+        tokio::task::spawn_blocking(move || {
+            let txn = db.begin_read().map_err(err)?;
+            let table = txn.open_table(FULFILLMENTS).map_err(err)?;
+            let start = after.map_or(0, |a| a.as_u128().saturating_add(1));
+            let mut out = Vec::with_capacity(limit);
+            for entry in table.range(start..).map_err(err)? {
+                if out.len() == limit {
+                    break;
+                }
+                let (_, value) = entry.map_err(err)?;
+                out.push(serde_json::from_slice(value.value()).map_err(err)?);
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(err)?
+    }
+
+    /// Number of fulfillments, without reading them.
+    pub async fn fulfillments_len(&self) -> Result<u64, StoreError> {
+        let db = self.db.clone();
+        tokio::task::spawn_blocking(move || {
+            let txn = db.begin_read().map_err(err)?;
+            txn.open_table(FULFILLMENTS)
+                .map_err(err)?
+                .len()
+                .map_err(err)
         })
         .await
         .map_err(err)?
@@ -367,12 +406,26 @@ fn record(db: &Database, event: &EventPayload, captured: i64) -> Result<Recorded
     Ok(Recorded::New { fulfilled })
 }
 
-async fn list(State(store): State<DevStore>) -> Response {
-    match store.fulfillments().await {
-        Ok(f) => reply(
-            StatusCode::OK,
-            json!({"fulfillments": f, "simulated": true}),
-        ),
+/// `GET /fulfillments` query: at most `limit` (1–1,000, default 1,000) after `after`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Page {
+    after: Option<Uuid>,
+    limit: Option<usize>,
+}
+
+async fn list(State(store): State<DevStore>, Query(page): Query<Page>) -> Response {
+    let limit = page.limit.unwrap_or(1_000).clamp(1, 1_000);
+    match store.fulfillments_page(page.after, limit).await {
+        Ok(f) => {
+            let next_after = (f.len() == limit)
+                .then(|| f.last().map(|x: &Fulfillment| x.payment_id))
+                .flatten();
+            reply(
+                StatusCode::OK,
+                json!({"fulfillments": f, "next_after": next_after, "simulated": true}),
+            )
+        }
         Err(e) => reply(
             StatusCode::SERVICE_UNAVAILABLE,
             json!({"error": e.to_string()}),
@@ -381,7 +434,7 @@ async fn list(State(store): State<DevStore>) -> Response {
 }
 
 async fn stats(State(store): State<DevStore>) -> Response {
-    let fulfillments = store.fulfillments().await.map_or(0, |f| f.len());
+    let fulfillments = store.fulfillments_len().await.unwrap_or(0);
     let inbox = store.inbox_len().await.unwrap_or(0);
     reply(
         StatusCode::OK,
@@ -414,4 +467,71 @@ async fn configure(State(store): State<DevStore>, headers: HeaderMap, body: Byte
     };
     store.configure(config).await;
     reply(StatusCode::OK, json!({"configured": true}))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "tests: a panic is the failure report")]
+
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt as _;
+    use tower::ServiceExt as _;
+
+    use super::*;
+
+    async fn get(store: &DevStore, path: &str) -> serde_json::Value {
+        let response = app(store.clone())
+            .oneshot(Request::get(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// Review N11: `/fulfillments` read the whole table into one answer (about 100 MB
+    /// after a million-delivery run) and `/stats` read it all to count it. It now pages.
+    #[tokio::test]
+    async fn fulfillments_are_listed_in_pages() {
+        let path =
+            std::env::temp_dir().join(format!("ps-store-page-{}.redb", Uuid::now_v7().simple()));
+        let store = DevStore::open(&path, StoreConfig::default()).unwrap();
+        for n in 0..5 {
+            let event = EventPayload {
+                id: Uuid::now_v7(),
+                kind: "capture.succeeded".to_owned(),
+                project_id: Uuid::from_u128(1),
+                payment_id: Uuid::from_u128(100 + n),
+                operation_id: Uuid::now_v7(),
+                sequence: 1,
+                created_at: 0,
+                simulated: true,
+            };
+            record(&store.db, &event, 10).unwrap();
+        }
+        let first = get(&store, "/fulfillments?limit=2").await;
+        assert_eq!(
+            first["fulfillments"].as_array().unwrap().len(),
+            2,
+            "{first}"
+        );
+        let after = first["next_after"].as_str().unwrap().to_owned();
+        let second = get(&store, &format!("/fulfillments?limit=2&after={after}")).await;
+        let third = get(
+            &store,
+            &format!(
+                "/fulfillments?limit=2&after={}",
+                second["next_after"].as_str().unwrap()
+            ),
+        )
+        .await;
+        assert_eq!(
+            third["fulfillments"].as_array().unwrap().len(),
+            1,
+            "{third}"
+        );
+        assert!(third["next_after"].is_null(), "{third}");
+        assert_eq!(get(&store, "/stats").await["fulfillments"], 5);
+        let _ = std::fs::remove_file(path);
+    }
 }
