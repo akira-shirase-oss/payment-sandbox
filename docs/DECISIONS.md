@@ -1389,6 +1389,25 @@ closes one of its findings, with the test that failed before the fix.
   admission under contention, not volume. Actions are pinned by commit SHA and the token
   is `contents: read`, as in `ci.yml`.
 
+- **D-090 — Every load result says where the CPU went; misses are classified before they
+  are explained.** The first GitHub-hosted full runs (D-089) gave five misses but no way to
+  tell the runner's limits from the product's: the load generator, the server, the network
+  and PostgreSQL share 4 vCPUs. `scripts/load.sh` now records, on Linux, the machine's busy
+  share of all cores every 5 s over the run (mean, p50, p90 and the share of samples at
+  95% or more) and the CPU seconds of the server, the network and PostgreSQL's container;
+  what they do not account for is mostly k6. Each miss is classified: a harness error (the
+  run did not measure the product) is fixed and that scenario re-run; a threshold miss is
+  kept as it came out, and the CPU record decides whether the runner was saturated (the
+  rate is not sized for the machine) or the server spent its time somewhere worth
+  profiling; a threshold is never lowered to pass, and a budget set without a measurement
+  is said to be one. Two harness errors were found in the first run: `m3-uncertain`'s
+  `teardown()` waits up to 150 s per project for the reconciler but had a 180 s limit for
+  two projects (it timed out before checking its gate), now 330 s; and every scenario tagged
+  requests by their full URL, so k6 kept one metric series per payment (6.4 million in the
+  m3 run), costing the generator memory and CPU beside the server; the URL's ids now fold
+  into the `name` tag (`/v1/payments/{id}/captures`). The workflow takes a comma-separated
+  list of scenarios, so the misses re-run together.
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

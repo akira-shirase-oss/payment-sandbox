@@ -90,11 +90,57 @@ for _ in $(seq 1 100); do
 done
 curl -fsS "http://127.0.0.1:${port}/readyz" >/dev/null
 
+# Where the CPU went (Linux: /proc), so a miss can be told apart as the machine's or the
+# product's (D-090): the whole machine's busy share every 5 s, and the CPU seconds of the
+# server, the network and PostgreSQL's container over the run; the rest is mostly k6.
+cpu_samples="$(mktemp)"
+proc_cpu() { # utime+stime of a pid, in clock ticks
+  [ -r "/proc/$1/stat" ] && awk '{print $14 + $15}' "/proc/$1/stat" || echo 0
+}
+pg_cpu_usec() {
+  docker compose -f deploy/compose.yaml exec -T postgres sh -c 'grep usage_usec /sys/fs/cgroup/cpu.stat' 2>/dev/null \
+    | awk '{print $2}' || true
+}
+sampler=""
+if [ -r /proc/stat ]; then
+  ( while :; do grep '^cpu ' /proc/stat >>"$cpu_samples"; sleep 5; done ) &
+  sampler=$!
+  server_ticks0="$(proc_cpu "$server")" sim_ticks0="$(proc_cpu "$sim")" pg_usec0="$(pg_cpu_usec)"
+fi
+run_started=$SECONDS
 set +e
 STORE_URL="http://127.0.0.1:${store_port}" STORE_TOKEN="$store_control" CHECKOUT_URL="$checkout_url" \
 BOOTSTRAP="$bootstrap" BASE_URL="http://127.0.0.1:${port}" MODE="$mode" k6 run --quiet \
   --summary-export "$summary" "$script"
 k6_status=$?
+run_seconds=$((SECONDS - run_started))
+cpu_use='{"note": "not measured (no /proc on this machine)"}'
+if [ -n "$sampler" ]; then
+  kill "$sampler" 2>/dev/null || true
+  wait "$sampler" 2>/dev/null || true
+  hz="$(getconf CLK_TCK)"
+  server_s="$(( ($(proc_cpu "$server") - server_ticks0) / hz ))"
+  sim_s="$(( ($(proc_cpu "$sim") - sim_ticks0) / hz ))"
+  pg_usec1="$(pg_cpu_usec)"
+  pg_s=null
+  [ -n "$pg_usec0" ] && [ -n "$pg_usec1" ] && pg_s="$(( (pg_usec1 - pg_usec0) / 1000000 ))"
+  # Per 5 s interval: busy share of all cores (user+nice+system+irq+softirq+steal over all).
+  awk '{ busy = $2 + $3 + $4 + $7 + $8 + $9; total = busy + $5 + $6
+         if (NR > 1 && total > ptotal) printf "%.4f\n", (busy - pbusy) / (total - ptotal)
+         pbusy = busy; ptotal = total }' "$cpu_samples" | sort -n >"$cpu_samples.busy"
+  cpu_use="$(awk -v cores="$(nproc)" -v secs="$run_seconds" -v server="$server_s" -v sim="$sim_s" -v pg="$pg_s" '
+    { v[NR] = $1; sum += $1; if ($1 >= 0.95) sat++ }
+    END {
+      if (NR == 0) { print "{\"note\": \"no samples\"}"; exit }
+      i50 = int(NR * 0.5); if (i50 < 1) i50 = 1; i90 = int(NR * 0.9); if (i90 < 1) i90 = 1
+      printf "{\"cores\": %d, \"run_seconds\": %d, \"samples_5s\": %d, \"busy_mean\": %.3f, \"busy_p50\": %.3f, \"busy_p90\": %.3f, \"saturated_share\": %.3f, \"server_cpu_seconds\": %s, \"network_cpu_seconds\": %s, \"postgres_cpu_seconds\": %s, \"note\": \"busy share of all cores per 5 s sample; saturated = at least 95%% busy; what the three processes do not account for is mostly k6, the load generator, on the same machine\"}\n",
+        cores, secs, NR, sum / NR, v[i50], v[i90], (sat + 0) / NR, server, sim, pg
+    }' "$cpu_samples.busy")"
+  rm -f "$cpu_samples.busy"
+  # Never lose a run's result to its own bookkeeping.
+  jq -e . <<<"$cpu_use" >/dev/null 2>&1 || cpu_use='{"note": "the CPU record could not be read"}'
+fi
+rm -f "$cpu_samples"
 set -e
 load_after="$(uptime | sed 's/.*load averages*: *//')"
 lock_waits=null
@@ -122,6 +168,7 @@ jq -n \
   --arg cpu "$cpu" --arg cores "$cores" --arg mem_gb "$mem_gb" --arg os "$os" \
   --arg load_before "$load_before" --arg load_after "$load_after" \
   --arg rss_kb "$rss_kb" --argjson k6_status "$k6_status" --argjson lock_waits "$lock_waits" \
+  --argjson cpu_use "$cpu_use" \
   --slurpfile summary "$summary" '
   {
     scenario: $scenario, mode: $mode, started_utc: $stamp,
@@ -130,6 +177,7 @@ jq -n \
               load_average_before: $load_before, load_average_after: $load_after,
               note: "same-machine load generator: a development observation, not capacity"},
     server_rss_kb_at_end: ($rss_kb|tonumber),
+    cpu: $cpu_use,
     postgres_lock_waits_over_50ms: $lock_waits,
     thresholds_passed: ($k6_status == 0),
     k6_exit_status: $k6_status,

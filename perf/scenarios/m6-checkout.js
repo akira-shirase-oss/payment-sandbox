@@ -56,7 +56,8 @@ function payer(method, path, secret, body, idem, op) {
   return http.request(method, `${CHECKOUT}${path}`, body === undefined ? null : JSON.stringify(body), {
     headers,
     responseType: 'text',
-    tags: { op, phase: 'load' },
+    // One series per route, not per session (see lib.js `call`, D-090).
+    tags: { name: `${CHECKOUT}/api/sessions/{id}${path.split('/').length > 4 ? '/' + path.split('/').slice(4).join('/') : ''}`, op, phase: 'load' },
   });
 }
 
@@ -66,7 +67,7 @@ export default function (data) {
     null, { op: 'session', phase: 'load' });
   if (!check(created, { 'session created': (r) => r.status === 201 }, { phase: 'load' })) return;
   const { session, client_secret: secret } = created.json();
-  const page = http.get(`${CHECKOUT}/c/${session.id}`, { tags: { op: 'page', phase: 'load' }, responseType: 'none' });
+  const page = http.get(`${CHECKOUT}/c/${session.id}`, { tags: { name: `${CHECKOUT}/c/{id}`, op: 'page', phase: 'load' }, responseType: 'none' });
   check(page, { 'page served under its policy': (r) => r.status === 200 && (r.headers['Content-Security-Policy'] || '').includes("frame-ancestors 'none'") }, { phase: 'load' });
   const view = payer('GET', `/api/sessions/${session.id}`, secret, undefined, null, 'view');
   check(view, { 'session open': (r) => r.status === 200 && r.json().session.state === 'open' }, { phase: 'load' });

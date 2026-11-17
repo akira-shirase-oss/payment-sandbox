@@ -10,25 +10,15 @@ name: load-full
 # SIMULATED MONEY ONLY: the traffic never leaves the runner.
 #
 #   gh workflow run load-full.yml -f scenario=all
+#   gh workflow run load-full.yml -f scenario=m1-auth,m3-uncertain
 
 on:
   workflow_dispatch:
     inputs:
       scenario:
-        description: "The scenario to run, or all of them"
-        type: choice
+        description: "all, or scenarios separated by commas (m0-probes, m1-auth, m2-lifecycle, m2-refund-race, m3-uncertain, m4-webhooks, m5-explain, m6-checkout, m7-developer)"
+        type: string
         default: all
-        options:
-          - all
-          - m0-probes
-          - m1-auth
-          - m2-lifecycle
-          - m2-refund-race
-          - m3-uncertain
-          - m4-webhooks
-          - m5-explain
-          - m6-checkout
-          - m7-developer
 
 permissions:
   contents: read
@@ -55,9 +45,13 @@ jobs:
           all='["m0-probes","m1-auth","m2-lifecycle","m2-refund-race","m3-uncertain","m4-webhooks","m5-explain","m6-checkout","m7-developer"]'
           if [ "$CHOSEN" = all ]; then
             echo "scenarios=$all" >> "$GITHUB_OUTPUT"
-          else
-            echo "scenarios=[\"$CHOSEN\"]" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          # Only names from the list above, so nothing else reaches a job's name or a path.
+          picked="$(jq -cn --arg chosen "$CHOSEN" --argjson all "$all" \
+            '[$chosen | split(",")[] | gsub("^ +| +$"; "")] | unique as $c
+             | if ($c - $all) == [] and ($c | length) > 0 then $c else error("unknown scenario in \($chosen)") end')"
+          echo "scenarios=$picked" >> "$GITHUB_OUTPUT"
 
   load:
     name: load ${{ matrix.scenario }} (full)

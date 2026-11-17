@@ -9,10 +9,15 @@ export function call(method, path, key, body, idem, tags) {
   const headers = { authorization: `Bearer ${key}` };
   if (body !== undefined) headers['content-type'] = 'application/json';
   if (idem) headers['idempotency-key'] = idem;
+  // The URL's ids are folded into the `name` tag (`/v1/payments/{id}/captures`): k6 keeps one
+  // time series per distinct tag set, and a tag per payment grew to 6.4 million series in
+  // the first full m3 run, costing the load generator the memory and CPU it shares with
+  // the server (D-090).
+  const name = `${BASE}${path.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, '{id}').split('?')[0]}`;
   return http.request(method, `${BASE}${path}`, body === undefined ? null : JSON.stringify(body), {
     headers,
     responseType: 'text',
-    tags,
+    tags: { name, ...tags },
   });
 }
 

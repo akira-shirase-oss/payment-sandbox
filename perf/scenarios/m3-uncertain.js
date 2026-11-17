@@ -19,7 +19,9 @@ const uncertain = new Counter('uncertain_answers');
 
 export const options = {
   setupTimeout: '60s',
-  teardownTimeout: '180s',
+  // The teardown waits up to 150 s per project (two) for the reconciler; its limit must be
+  // above that wait (the first full run hit 180 s before the gate was checked, D-090).
+  teardownTimeout: '330s',
   scenarios: {
     purchases: {
       executor: 'constant-arrival-rate',
