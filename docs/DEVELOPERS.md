@@ -6,7 +6,8 @@
 Payment Sandbox lets a store's code take payments, see them fail in every way a real network
 fails, and prove its books balance, without a payment account. This guide gets you from a
 running sandbox to a store that handles declines, lost replies and duplicate webhooks. Every
-example below is a file in `examples/` that CI runs, as written, against a real sandbox.
+example below is a file in `examples/` that CI runs, as written, against a real sandbox
+(`scripts/e2e.sh`).
 
 ## 1. Run the sandbox
 
@@ -15,8 +16,10 @@ export PATH="$(brew --prefix rustup)/bin:$PATH"   # macOS with rustup: the pinne
 scripts/stack.sh up && eval "$(scripts/stack.sh env)"
 cargo run -p sandbox-server -- setup && cargo run -p sandbox-server -- migrate
 export PS_BOOTSTRAP_TOKEN=$(openssl rand -hex 24) # the operator's token that creates projects
+npm ci && npm run build                           # the checkout, the dashboard and the SDK
 cargo run -p sandbox-sim &                        # the simulated network
-PS_SECRET_KEY=$(openssl rand -hex 32) cargo run -p sandbox-server &   # the key signs webhooks
+PS_SECRET_KEY=$(openssl rand -hex 32) PS_CHECKOUT_DIR=apps/checkout/build \
+  PS_DASHBOARD_DIR=apps/dashboard/build cargo run -p sandbox-server &  # API, checkout, dashboard
 cargo install --path crates/sandbox-cli           # sandbox-cli on your PATH
 ```
 
@@ -84,7 +87,10 @@ API's JSON.
 
 ## 3. The SDK in your store's server
 
-`packages/sdk-ts` (`@sandbox/sdk`, Node 22.17+). Amounts are minor units (4200 = 42.00 USD).
+`packages/sdk-ts` (`@sandbox/sdk`, Node 22.17+), not published to a registry: build it in
+this repository (`npm ci && npm run build --workspace @sandbox/sdk`), then add it to your
+store with `npm install <path to this repository>/packages/sdk-ts`. Amounts are minor
+units (4200 = 42.00 USD).
 
 <!-- example: examples/sdk-purchase.mjs -->
 ```js
@@ -209,19 +215,69 @@ answer is in `docs/API.md`.
 
 ## 5. Webhooks
 
-Register an endpoint (`POST /v1/webhook_endpoints {"url": ...}` with an admin key; in the
-local mode only loopback receivers on allowed ports, D-023 and D-059) and keep the
-`whsec_sim_...` secret it returns. Each delivery is signed; verify the raw body before
-parsing it, and deduplicate by event id: deliveries are at least once, and they can arrive
-out of order.
+Register an endpoint with an admin key (`sandbox.webhookEndpoints.create(url)` or
+`sandbox-cli webhooks create --url ...`): only receivers on this machine's loopback, on a
+port the server allows (`PS_WEBHOOK_PORTS`; any port in the `dev` profile). Keep the
+`whsec_sim_...` secret it returns, shown once. Each delivery is signed: verify the raw body
+before parsing it, deduplicate by event id (deliveries are at least once), and re-read the
+payment (they can arrive out of order):
 
+<!-- example: examples/webhook-receiver.mjs -->
 ```js
-import { verifyWebhook } from '@sandbox/sdk';
+// A webhook receiver from docs/DEVELOPERS.md, run as written by CI against a real sandbox.
+// Needs PS_API_URL, PS_API_KEY (an admin key: it registers its own endpoint) and
+// RECEIVER_PORT, a loopback port the server allows (PS_WEBHOOK_PORTS).
+// SIMULATED MONEY ONLY: no real cards, balances or banking connection.
+import { createServer } from 'node:http';
+import { Sandbox, WebhookVerificationError, verifyWebhook } from '@sandbox/sdk';
 
-const event = verifyWebhook({ body: rawBody, headers: request.headers, secrets: [secret] });
-// event.type is e.g. 'capture.succeeded'; re-read the payment for its current state:
-const { payment } = await sandbox.payments.get(event.payment_id);
+const sandbox = new Sandbox({ apiUrl: process.env.PS_API_URL, apiKey: process.env.PS_API_KEY });
+const port = Number(process.env.RECEIVER_PORT ?? 56100);
+const seen = new Set(); // your store keeps the ids it handled in its database (an inbox)
+
+// Register the endpoint once and keep its secret; it is shown only in this answer.
+const { secret } = await sandbox.webhookEndpoints.create(`http://127.0.0.1:${port}/webhooks`);
+
+let fulfil;
+const captured = new Promise((resolve) => (fulfil = resolve));
+const server = createServer((request, response) => {
+	let body = '';
+	request.setEncoding('utf8');
+	request.on('data', (chunk) => (body += chunk));
+	request.on('end', async () => {
+		let event;
+		try {
+			// Verify the raw body before parsing anything.
+			event = verifyWebhook({ body, headers: request.headers, secrets: [secret] });
+		} catch (error) {
+			if (!(error instanceof WebhookVerificationError)) throw error;
+			response.writeHead(400).end();
+			return;
+		}
+		response.writeHead(200).end(); // acknowledge at once; do the work after
+		if (seen.has(event.id)) return; // deliveries are at least once: a repeat is normal
+		seen.add(event.id);
+		// Deliveries can arrive out of order: re-read the payment for its current state.
+		const { payment } = await sandbox.payments.get(event.payment_id);
+		console.log(`${event.type}: payment ${payment.status}`);
+		if (payment.status === 'captured') fulfil(payment);
+	});
+});
+await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
+
+const hold = await sandbox.payments.create({ amount: 1500, currency: 'USD', description: 'Order 1005' });
+await sandbox.payments.capture(hold.payment.id, 1500);
+const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('no capture event within 30 s')), 30_000).unref());
+const payment = await Promise.race([captured, timeout]);
+console.log(`fulfil order 1005: payment ${payment.id} captured`);
+server.close();
+server.closeAllConnections();
 ```
+
+An endpoint that keeps failing is paused for a while (its circuit opens): `sandbox-cli
+webhooks list` and the dashboard's Webhooks page show it, and deliveries resume on their
+own. `sandbox-cli webhooks rotate <id>` issues a new secret (the old one signs for another
+24 hours); `sandbox-cli events` lists each event's deliveries.
 
 `fixtures/dev-store` is a complete reference consumer: inbox deduplication, the re-read,
 and fulfillment under its own unique key.

@@ -8,9 +8,10 @@
 #                                  examples (examples/) and the SDK's live tests
 #   scripts/e2e.sh -g "keyboard"   extra arguments go to `playwright test` (journeys only)
 #
-# Ports 56460-56466 on 127.0.0.1: API, network, checkout, dashboard (reached on its own
+# Ports 56460-56467 on 127.0.0.1: API, network, checkout, dashboard (reached on its own
 # host name, dashboard.localhost, D-065), store, a merchant page that frames the
-# checkout (e2e/merchant.mjs, reached as localhost), and the SDK test's webhook receiver.
+# checkout (e2e/merchant.mjs, reached as localhost), the SDK test's webhook receiver and
+# the webhook example's receiver.
 # Everything
 # this starts is stopped by PID, and its database and stores are removed, when it exits.
 # PS_E2E_PERF_OUT=<file> also runs the page-load measurement (scripts/web-perf.sh uses it).
@@ -20,7 +21,7 @@ cd "$(dirname "$0")/.."
 base_port="${PS_E2E_PORT:-56460}"
 api_port="$base_port" sim_port="$((base_port + 1))" checkout_port="$((base_port + 2))"
 dashboard_port="$((base_port + 3))" store_port="$((base_port + 4))" merchant_port="$((base_port + 5))"
-sdk_hook_port="$((base_port + 6))"
+sdk_hook_port="$((base_port + 6))" example_hook_port="$((base_port + 7))"
 
 if [ -z "${PS_ADMIN_DATABASE_URL:-}" ]; then
   scripts/stack.sh up >/dev/null
@@ -73,7 +74,7 @@ pids+=($!)
 PS_PROFILE=dev PS_DATABASE_URL="postgres://ps_app:ps-app-dev@${host_port}/${db}" \
 PS_LISTEN="127.0.0.1:${api_port}" PS_SIM_URL="http://127.0.0.1:${sim_port}" PS_SIM_TOKEN="$sim_token" \
 PS_SIM_TIMEOUT_MS=1000 PS_RECONCILE_INTERVAL_MS=300 PS_DELIVERY_POLL_MS=100 \
-PS_WEBHOOK_PORTS="$store_port,$sdk_hook_port" PS_SECRET_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
+PS_WEBHOOK_PORTS="$store_port,$sdk_hook_port,$example_hook_port" PS_SECRET_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
 PS_BOOTSTRAP_TOKEN="$bootstrap" PS_LOG=warn \
 PS_CHECKOUT_DIR=apps/checkout/build PS_CHECKOUT_LISTEN="127.0.0.1:${checkout_port}" \
 PS_DASHBOARD_DIR=apps/dashboard/build PS_DASHBOARD_LISTEN="127.0.0.1:${dashboard_port}" \
@@ -123,7 +124,12 @@ if [ "$#" -eq 0 ]; then
   node e2e/payer.mjs "$link" >"$work/payer.log" 2>&1 || { cat "$work/payer.log"; exit 1; }
   wait "$example" || { cat "$work/checkout-example.log"; exit 1; }
   grep -q '^checkout paid' "$work/checkout-example.log" || { cat "$work/checkout-example.log"; exit 1; }
-  echo "examples ok: examples/cli-quickstart.sh, examples/sdk-purchase.mjs and examples/checkout.mjs"
+  # The webhook receiver example: it registers its endpoint, pays, and fulfils on the
+  # verified, deduplicated capture event.
+  PS_API_URL="http://127.0.0.1:${api_port}" PS_API_KEY="$(new_key webhook-example)" RECEIVER_PORT="$example_hook_port" \
+    node examples/webhook-receiver.mjs >"$work/webhook-example.log" 2>&1 || { cat "$work/webhook-example.log"; exit 1; }
+  grep -q '^fulfil order 1005' "$work/webhook-example.log" || { cat "$work/webhook-example.log"; exit 1; }
+  echo "examples ok: examples/cli-quickstart.sh, sdk-purchase.mjs, checkout.mjs and webhook-receiver.mjs"
   # The SDK against the real server (packages/sdk-ts/test/live).
   E2E_API="http://127.0.0.1:${api_port}" E2E_BOOTSTRAP="$bootstrap" E2E_SDK_WEBHOOK_PORT="$sdk_hook_port" \
     npm run test:live --workspace @sandbox/sdk
