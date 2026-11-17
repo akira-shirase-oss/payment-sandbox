@@ -511,3 +511,272 @@ async fn a_panicking_reconciler_is_restarted_and_still_resolves_uncertain_operat
     db.cleanup().await;
     sim.remove().await;
 }
+
+/// A checkout origin's call: the payer's page, with its session secret.
+async fn checkout_call(
+    base: &str,
+    path: &str,
+    secret: &str,
+    idem: Option<&str>,
+    body: Option<Value>,
+) -> Result<(u16, Value), reqwest::Error> {
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .unwrap();
+    let mut request = match &body {
+        Some(_) => http.post(format!("{base}{path}")).header("origin", base),
+        None => http.get(format!("{base}{path}")),
+    }
+    .bearer_auth(secret);
+    if let Some(idem) = idem {
+        request = request.header("idempotency-key", idem);
+    }
+    if let Some(body) = body {
+        request = request.json(&body);
+    }
+    let response = request.send().await?;
+    let status = response.status().as_u16();
+    Ok((
+        status,
+        response.json::<Value>().await.unwrap_or(Value::Null),
+    ))
+}
+
+async fn checkout_until(base: &str, id: &str, secret: &str, want: (&str, Option<&str>)) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let (_, view) = checkout_call(base, &format!("/api/sessions/{id}"), secret, None, None)
+            .await
+            .unwrap();
+        let seen = (
+            view["session"]["state"].as_str().unwrap_or(""),
+            view["session"]["next_action"].as_str(),
+        );
+        if seen == want {
+            return view;
+        }
+        assert_ne!(seen.0, "paid", "paid before the drill expected it: {view}");
+        assert!(
+            Instant::now() < deadline,
+            "the session never reached {want:?}: {view}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// The M3 kill drill through the checkout path (ROADMAP M6): the payer's "Pay" reaches the
+/// network, which approves, and the server dies before it stores the answer. The restarted
+/// server's reconciler applies the network's record; the page continues; the capture runs
+/// once. One payment, one authorization and one capture at the network, nothing twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(clippy::too_many_lines, reason = "one drill, start to finish")]
+async fn drill_a_through_the_checkout_a_payer_whose_server_died_mid_payment_is_charged_once() {
+    let sim = TestSim::start().await;
+    let db = TestDb::new().await;
+    let (site_dir, _) = common::test_site();
+    let (port, checkout_port) = (free_port(), free_port());
+    let site = [
+        ("PS_CHECKOUT_DIR", site_dir.to_str().unwrap().to_owned()),
+        ("PS_CHECKOUT_LISTEN", format!("127.0.0.1:{checkout_port}")),
+    ];
+    let with = |extra: &[(&'static str, &'static str)]| {
+        let mut vars: Vec<(&str, &str)> = site.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        vars.extend_from_slice(extra);
+        vars
+    };
+    let checkout = format!("http://127.0.0.1:{checkout_port}");
+    let mut server = Server::start(
+        &db,
+        &sim.url,
+        port,
+        &with(&[
+            ("PS_FAULT", "after_network"),
+            ("PS_FAULT_KIND", "authorize"),
+        ]),
+    )
+    .await;
+    let key = project(&server.base).await;
+    let (status, created) = call(
+        &server.base,
+        reqwest::Method::POST,
+        "/v1/checkout_sessions",
+        &key,
+        None,
+        Some(json!({"amount": 2_500, "currency": "USD", "description": "drill order"})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(status, 201, "{created}");
+    let id = created["session"]["id"].as_str().unwrap().to_owned();
+    let secret = created["client_secret"].as_str().unwrap().to_owned();
+    assert!(created["url"].as_str().unwrap().starts_with(&checkout));
+
+    let pay_key = "8b1e6c8a-7f42-4c1e-9d3a-5be1f00d0001";
+    let crashed = checkout_call(
+        &checkout,
+        &format!("/api/sessions/{id}/attempts"),
+        &secret,
+        Some(pay_key),
+        Some(json!({"token": "tok_sim_approve"})),
+    )
+    .await;
+    assert!(
+        crashed.is_err(),
+        "the payer's request dies with the server: {crashed:?}"
+    );
+    server.wait_for_crash();
+    assert_eq!(
+        sim.store.count().await.unwrap(),
+        1,
+        "the network approved the hold"
+    );
+
+    let server = Server::start(&db, &sim.url, port, &with(&[])).await;
+    // The reconciler applies the network's record; the page is told to continue.
+    checkout_until(&checkout, &id, &secret, ("authorized", Some("continue"))).await;
+    // The payer's retry with the same key (or the page's continue) captures once.
+    let (status, paid) = checkout_call(
+        &checkout,
+        &format!("/api/sessions/{id}/attempts"),
+        &secret,
+        Some(pay_key),
+        Some(json!({"token": "tok_sim_approve"})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        (status, paid["session"]["state"].as_str()),
+        (200, Some("paid")),
+        "{paid}"
+    );
+    let (_, again) = checkout_call(
+        &checkout,
+        &format!("/api/sessions/{id}/continue"),
+        &secret,
+        None,
+        Some(json!({})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(again["session"]["state"], "paid");
+    assert_eq!(
+        sim.store.count().await.unwrap(),
+        2,
+        "one authorization, one capture"
+    );
+    let (_, merchant) = call(
+        &server.base,
+        reqwest::Method::GET,
+        &format!("/v1/checkout_sessions/{id}"),
+        &key,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        merchant["attempts"].as_array().unwrap().len(),
+        1,
+        "{merchant}"
+    );
+    let payment_id = merchant["attempts"][0]["payment_id"].as_str().unwrap();
+    let (_, journal) = call(
+        &server.base,
+        reqwest::Method::GET,
+        &format!("/v1/payments/{payment_id}/journal"),
+        &key,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        journal["entries"].as_array().unwrap().len(),
+        2,
+        "authorize and capture, once each"
+    );
+    assert_clean(&server.base, &key).await;
+    server.kill();
+    let _ = std::fs::remove_dir_all(site_dir);
+    db.cleanup().await;
+    sim.remove().await;
+}
+
+/// The same drill at the capture: the network captured, the server died before storing
+/// it; the reconciler records the capture and the page shows paid with no second capture.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn drill_a_through_the_checkout_a_capture_lost_to_a_crash_is_recorded_once() {
+    let sim = TestSim::start().await;
+    let db = TestDb::new().await;
+    let (site_dir, _) = common::test_site();
+    let (port, checkout_port) = (free_port(), free_port());
+    let dir = site_dir.to_str().unwrap().to_owned();
+    let listen = format!("127.0.0.1:{checkout_port}");
+    let checkout = format!("http://{listen}");
+    let mut server = Server::start(
+        &db,
+        &sim.url,
+        port,
+        &[
+            ("PS_CHECKOUT_DIR", &dir),
+            ("PS_CHECKOUT_LISTEN", &listen),
+            ("PS_FAULT", "after_network"),
+            ("PS_FAULT_KIND", "capture"),
+        ],
+    )
+    .await;
+    let key = project(&server.base).await;
+    let (_, created) = call(
+        &server.base,
+        reqwest::Method::POST,
+        "/v1/checkout_sessions",
+        &key,
+        None,
+        Some(json!({"amount": 800, "currency": "EUR"})),
+    )
+    .await
+    .unwrap();
+    let id = created["session"]["id"].as_str().unwrap().to_owned();
+    let secret = created["client_secret"].as_str().unwrap().to_owned();
+    let crashed = checkout_call(
+        &checkout,
+        &format!("/api/sessions/{id}/attempts"),
+        &secret,
+        Some("9b1e6c8a-7f42-4c1e-9d3a-5be1f00d0001"),
+        Some(json!({"token": "tok_sim_approve"})),
+    )
+    .await;
+    assert!(crashed.is_err(), "{crashed:?}");
+    server.wait_for_crash();
+    assert_eq!(
+        sim.store.count().await.unwrap(),
+        2,
+        "authorized and captured at the network"
+    );
+
+    let server = Server::start(
+        &db,
+        &sim.url,
+        port,
+        &[("PS_CHECKOUT_DIR", &dir), ("PS_CHECKOUT_LISTEN", &listen)],
+    )
+    .await;
+    checkout_until(&checkout, &id, &secret, ("paid", None)).await;
+    let (_, again) = checkout_call(
+        &checkout,
+        &format!("/api/sessions/{id}/continue"),
+        &secret,
+        None,
+        Some(json!({})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(again["session"]["state"], "paid");
+    assert_eq!(sim.store.count().await.unwrap(), 2, "no second capture");
+    assert_clean(&server.base, &key).await;
+    server.kill();
+    let _ = std::fs::remove_dir_all(site_dir);
+    db.cleanup().await;
+    sim.remove().await;
+}

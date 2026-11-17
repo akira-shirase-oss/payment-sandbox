@@ -40,6 +40,8 @@ WITH expected_triggers (tbl, name, digest) AS (
     VALUES ('accounts', 'INSERT,SELECT'),
            ('api_keys', 'INSERT,SELECT,UPDATE'),
            ('audit_events', 'INSERT,SELECT'),
+           ('checkout_attempts', 'INSERT,SELECT'),
+           ('checkout_sessions', 'INSERT,SELECT,UPDATE'),
            ('deliveries', 'INSERT,SELECT,UPDATE'),
            ('events', 'INSERT,SELECT'),
            ('journal_entries', 'INSERT,SELECT'),

@@ -19,16 +19,20 @@
 //! - [`network`]: the `sim/v1` wire protocol to the simulated network.
 //! - [`webhook`]: event payloads, signatures (D-020), retry schedule (D-032), egress policy (D-023).
 //! - [`access`]: credentials and the test control plane of the local processes (D-046).
+//! - [`checkout`]: checkout sessions, attempts and the payer-facing state (D-060).
+//! - [`letters`]: bytes written as the letters `a`–`p`, so handed-out values carry no digits.
 // Money code may not use unchecked arithmetic; tests may (overflow panics there and fails the test).
 #![cfg_attr(not(test), warn(clippy::arithmetic_side_effects))]
 
 pub mod access;
 pub mod account;
 pub mod card_guard;
+pub mod checkout;
 pub mod currency;
 pub mod identity;
 pub mod journal;
 pub mod keys;
+pub mod letters;
 pub mod money;
 pub mod network;
 pub mod operation;

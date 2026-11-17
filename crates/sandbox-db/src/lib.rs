@@ -7,6 +7,7 @@
 //! Queries use runtime-checked `sqlx::query` with explicit binds, so building needs no
 //! database; the integration tests in `tests/` prove them against a real PostgreSQL.
 
+pub mod checkout;
 pub mod error;
 pub mod journal;
 pub mod keys;

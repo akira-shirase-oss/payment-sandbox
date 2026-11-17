@@ -307,3 +307,49 @@ impl TestApp {
         self.db.cleanup().await;
     }
 }
+
+/// A built-site stand-in on disk: an `index.html` with one inline script (as the `SvelteKit`
+/// bootstrap is) and one hashed asset. Returns the directory and the loaded site.
+pub fn test_site() -> (PathBuf, Arc<sandbox_server::web::site::Site>) {
+    let dir = std::env::temp_dir().join(format!("ps-test-site-{}", uuid::Uuid::now_v7().simple()));
+    std::fs::create_dir_all(dir.join("_app/immutable")).unwrap();
+    std::fs::write(
+        dir.join("index.html"),
+        "<!doctype html><html><head><script>start()</script>\
+         <script type=\"module\" src=\"/_app/immutable/start.js\"></script></head><body></body></html>",
+    )
+    .unwrap();
+    std::fs::write(dir.join("_app/immutable/start.js"), "export {};").unwrap();
+    let site = sandbox_server::web::site::Site::load(&dir).unwrap();
+    (dir, Arc::new(site))
+}
+
+/// One raw request to `router`; returns status, headers and the body (JSON or `Null`).
+pub async fn raw(
+    router: &Router,
+    method: Method,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: Option<Value>,
+) -> (StatusCode, axum::http::HeaderMap, Value) {
+    let mut builder = Request::builder().method(method).uri(path);
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    let request = match body {
+        Some(body) => builder
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap(),
+        None => builder.body(Body::empty()).unwrap(),
+    };
+    let response = router.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        headers,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}

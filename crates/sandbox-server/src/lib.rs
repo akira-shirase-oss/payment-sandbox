@@ -5,6 +5,7 @@
 //! in-process and the drills can run the real binary.
 
 pub mod auth;
+pub mod checkout;
 pub mod config;
 pub mod cursor;
 pub mod deliverer;
@@ -24,6 +25,7 @@ pub mod shutdown;
 pub mod state;
 pub mod supervisor;
 pub mod telemetry;
+pub mod web;
 
 pub use config::Config;
 pub use routes::app;

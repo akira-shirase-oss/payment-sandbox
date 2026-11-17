@@ -772,10 +772,103 @@ review found. Each states the choice, the alternative and the cost.
     a quiescent source (D-053 and the script said the server "may keep
     running", but the source's fingerprint is taken after the restore).
 
+## M6: the checkout and the dashboard (2026-11-17)
+
+M6's row names a checkout (scenario picker, no card field) and an inspection dashboard
+on separate origins, and its gate the first useful release end to end. These fix the
+smallest version that meets that gate.
+
+- **D-060 — Checkout sessions: the merchant fixes the price, the payer picks only a
+  scenario, and a session can never charge twice.** A merchant (`payments:write`) creates
+  `POST /v1/checkout_sessions {amount, currency, description?, capture_method?
+  (automatic | manual), embed_origins?, return_url?, expires_in?}`; the answer carries the
+  session, its client secret (`cs_sim_` + 64 letters `a`–`p` from 32 random bytes, shown
+  once, only its SHA-256 stored, no digits for the card guard to mistake) and the payer's
+  URL `{PS_CHECKOUT_ORIGIN}/c/{id}#{secret}`: the secret rides in the fragment, which
+  browsers never send, log or put in a `Referer`. Descriptions refuse control,
+  bidirectional and invisible characters; embed origins are exact loopback origins (at
+  most 4, D-023); a return URL is http(s) on a loopback host; a session lives 60 s–24 h
+  (default 1 h) and allows at most 10 attempts. Every "Pay" is an attempt committed under
+  the session's row lock *before* any payment work, with the payer's `Idempotency-Key`
+  (one UUID per attempt, kept in the tab) and the scenario; its authorize key
+  (`checkout.<session letters>.<n>`) and so its operation and payment ids (D-015) are
+  derived, so the identity exists before the click reaches the network. A new attempt is
+  admitted only when there is none or the latest ended declined or never executed; while
+  one is pending, uncertain or succeeded another key gets `409 checkout_attempt_open`, so a
+  double click, a reload or a retry with a fresh key cannot start a second charge. The same
+  key re-drives its own attempt (another scenario under it is `409
+  idempotency_key_conflict`). With automatic capture the attempt's capture (key
+  `…<n>.capture.<try>`) runs once the authorization succeeded; a try the network never
+  executed is retried under the next try's key, at most 3. `POST …/continue` re-drives the
+  latest attempt without the tab's key, so a page finishes after the reconciler resolved
+  an uncertain answer or after a server crash. What the payer is told is derived from the
+  recorded operations and the payment's journal-backed sums
+  (`sandbox_domain::checkout::derive`): `open`, `processing`, `uncertain`, `declined`,
+  `not_executed`, `authorized`, `paid` — `paid` only when the whole amount was captured,
+  never from an uncertain answer. Cost: an abandoned tab's capture waits for the merchant
+  (nothing captures in the background); the merchant can capture or void through the API.
+  Tests: `tests/checkout.rs` (9), `checkout::tests` in the domain (8), and the kill drill
+  through the checkout (`drill_a_through_the_checkout_*`, the real binary).
+
+- **D-061 — Two more listeners; their pages served from memory under hash-pinned
+  policies.** The server binds the checkout (`PS_CHECKOUT_LISTEN`, default
+  127.0.0.1:56083) and the dashboard (`PS_DASHBOARD_LISTEN`, 56084) when their builds are
+  configured (`PS_CHECKOUT_DIR`, `PS_DASHBOARD_DIR`); each is its own origin
+  (`PS_*_ORIGIN`, loopback, the two must differ) with its own router, the same transport
+  limits (D-054) and the `/v1` shedding gate; neither serves `/v1`, and webhooks may not
+  target either port. A build is read into memory at startup (at most 512 files and 16
+  MiB, no symbolic links, a missing `index.html` fails startup), so no request touches the
+  file system. The SHA-256 of every inline script of `index.html` goes into the page
+  policy: `default-src 'none'; script-src 'self' 'sha256-…'; style-src 'self'; img-src
+  'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none';
+  form-action 'none'; object-src 'none'; frame-ancestors …` — no `'unsafe-inline'` for
+  scripts or styles. The dashboard is never framed (`frame-ancestors 'none'`,
+  `X-Frame-Options: DENY`). The checkout is embeddable only where its session says:
+  `frame-ancestors` lists the session's `embed_origins` and is `'none'` (with
+  `X-Frame-Options: DENY`) otherwise; an embedded page tells its parent the outcome with
+  `postMessage` addressed to each allowed origin, never `*`. Every response also carries
+  `nosniff`, `Referrer-Policy: no-referrer`, `Cross-Origin-Opener-Policy` and
+  `Cross-Origin-Resource-Policy: same-origin`, a `Permissions-Policy` that turns off
+  camera, microphone, geolocation, payment and USB, `Cache-Control: no-store` (hashed
+  assets: a year, immutable) and `Sandbox-Simulated: true`. Tests:
+  `the_page_is_framed_only_by_its_sessions_origins_under_a_hashed_policy`,
+  `the_dashboard_is_never_framed_and_its_scripts_are_pinned_by_hash`, `site::tests`.
+
+- **D-062 — Dashboard sign-in: a sandbox key exchanged for a host-only session; CSRF by
+  origin and a session token.** Closes the open question "Dashboard authentication". A
+  person signs in by presenting a project's `sk_sim_` key (`POST /api/session`, as
+  `Authorization: Bearer`; any scope, since the dashboard only reads money). The server
+  keeps the session in memory (at most 4,096; 30 minutes idle, 12 hours at most; expired
+  ones are swept when the table is full, then `503`), holding only the key's hash, which it
+  re-resolves on every request, so a revoked key ends its sessions at once. The cookie is
+  `__Host-ps_dashboard` (32 random bytes as letters; `Secure; HttpOnly; SameSite=Strict;
+  Path=/`, no `Domain`), which Chromium keeps on `http://127.0.0.1` because loopback
+  counts as secure (checked with Chromium 156; Safari does not, so it cannot sign in over
+  plain HTTP). Cookies are not isolated by port, so the checkout origin on the same host
+  would send this cookie and could plant one. Hence: a sign-in ends any session the
+  browser presented (no fixation); a doubled cookie is trusted by neither copy; every
+  dashboard API request a browser says another origin started (`Sec-Fetch-Site` other than
+  `same-origin`) is refused, so a sibling origin cannot even make it run a query; and every
+  state change (sign-in, sign-out, simulator controls) needs `Origin` equal to the
+  dashboard's own and, once signed in, `X-CSRF-Token` equal to the session's (constant-time
+  compared). The reads are the API's own handlers mounted read-only under `/api/v1`: the
+  session hands them its identity in the request's extensions and the request's own
+  `Authorization` is dropped, so a key is no credential on this origin. The checkout keeps
+  no cookie at all; its POSTs need the same `Origin` and fetch-metadata checks. A restart
+  signs everyone out. Tests: `tests/dashboard.rs` (5) and `dashboard::tests` (3).
+
+- **D-063 — Simulator controls in the dashboard: the dev profile only, the operator's own
+  credential, forwarded and never kept.** The dashboard's fault rules and virtual clock
+  exist only when the server runs with `PS_PROFILE=dev` (in `ci` and `shared` the routes
+  are not mounted). Each request carries the operator credential the person typed
+  (`X-Operator-Token`, held in the tab's memory only) plus the session's CSRF token; the
+  server forwards the credential to the network's control plane as its `Authorization`
+  over a client with no credential of its own (2 s deadline, 64 KiB answers), and the
+  network decides (D-046). A dashboard session alone cannot change the network. Test:
+  `simulator_controls_need_the_dev_profile_and_the_operators_own_credential`.
+
 ## Open questions (still open)
 
-- **Dashboard authentication** — per-project-owner session login is the
-  default assumption; decided with the dashboard milestone.
 - **Billing scenario order and definitions** — the default order is
   settlement → fees → payouts → disputes → invoices → recurring, because
   each later scenario reads settled balances; each gets its own contract

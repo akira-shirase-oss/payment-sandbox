@@ -578,20 +578,28 @@ pub async fn operations_for_payment(
     rows.iter().map(operation_from).collect()
 }
 
-/// The project's most recent payments, newest first.
+/// A page of the project's payments, newest first: at most `limit` (1–500) older than the
+/// payment `before` (keyset paging on `(created_at, id)`, served by `payments_recent`). An
+/// unknown `before` gives an empty page.
 pub async fn recent_payments(
     pool: &PgPool,
     scope: ProjectScope,
+    before: Option<Uuid>,
     limit: i64,
 ) -> Result<Vec<Payment>, DbError> {
     let rows = sqlx::query(concat!(
         "SELECT ",
         payment_columns!(),
         " FROM payments
-          WHERE project_id = $1 AND dataset_epoch = $2 ORDER BY created_at DESC, id DESC LIMIT $3"
+          WHERE project_id = $1 AND dataset_epoch = $2
+            AND ($3::uuid IS NULL OR (created_at, id) < (
+                SELECT created_at, id FROM payments
+                 WHERE project_id = $1 AND dataset_epoch = $2 AND id = $3))
+          ORDER BY created_at DESC, id DESC LIMIT $4"
     ))
     .bind(scope.project_id)
     .bind(scope.epoch)
+    .bind(before)
     .bind(limit.clamp(1, 500))
     .fetch_all(pool)
     .await?;

@@ -176,24 +176,31 @@ pub async fn journal(
     Ok(Json(json!({"entries": entries, "simulated": true})).into_response())
 }
 
-/// `GET /v1/payments?limit=` query.
+/// `GET /v1/payments?limit=&before=` query.
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
     limit: Option<i64>,
+    /// The last payment of the previous page (`next_before`).
+    before: Option<uuid::Uuid>,
 }
 
-/// The most recent payments.
+/// The most recent payments, newest first, in pages: `next_before` names the next page
+/// when this one is full.
 pub async fn list(
     State(state): State<AppState>,
     auth: Auth,
     Query(q): Query<ListQuery>,
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Read)?;
+    let limit = q.limit.unwrap_or(50).clamp(1, 500);
     let payments =
-        sandbox_db::payments::recent_payments(&state.db, auth.scope(), q.limit.unwrap_or(50))
-            .await?;
+        sandbox_db::payments::recent_payments(&state.db, auth.scope(), q.before, limit).await?;
+    let next_before = (i64::try_from(payments.len()).unwrap_or(i64::MAX) == limit)
+        .then(|| payments.last().map(|p| p.id))
+        .flatten();
     Ok(Json(json!({
         "payments": payments.iter().map(payment_json).collect::<Vec<_>>(),
+        "next_before": next_before,
         "simulated": true,
     }))
     .into_response())

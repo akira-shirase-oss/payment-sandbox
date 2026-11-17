@@ -71,6 +71,16 @@ pub enum ErrorCode {
     DeadlineExceeded,
     /// A dependency (the database) is unavailable.
     Unavailable,
+    /// A state-changing request that did not come from the page's own origin (D-062).
+    CrossOriginRefused,
+    /// The checkout session's latest attempt may still turn into money (D-060).
+    CheckoutAttemptOpen,
+    /// The checkout session used every attempt.
+    CheckoutAttemptsExhausted,
+    /// The checkout session expired.
+    CheckoutExpired,
+    /// A simulator control without the operator's credential (D-063).
+    OperatorCredentialRequired,
     /// A defect. Details are in the logs only.
     Internal,
 }
@@ -198,6 +208,23 @@ pub enum ApiError {
     /// Statement or lock deadline.
     #[error("the request ran out of time in the database; retry with the same Idempotency-Key")]
     DatabaseTimeout(#[source] anyhow::Error),
+    /// A cross-origin or cross-site state change (D-062).
+    #[error("this request must come from this page's own origin")]
+    CrossOrigin,
+    /// The checkout session's latest attempt is open or succeeded (D-060).
+    #[error(
+        "this checkout's latest attempt is still being processed or has succeeded; it is never charged twice"
+    )]
+    CheckoutAttemptOpen,
+    /// Every attempt used.
+    #[error("this checkout has used all of its attempts")]
+    CheckoutAttemptsExhausted,
+    /// Expired.
+    #[error("this checkout has expired")]
+    CheckoutExpired,
+    /// No operator credential for a simulator control (D-063).
+    #[error("simulator controls need the operator credential (X-Operator-Token)")]
+    OperatorCredentialRequired,
     /// Defect.
     #[error("internal error")]
     Internal(#[source] anyhow::Error),
@@ -234,8 +261,11 @@ impl ApiError {
             | Self::InvalidState(_)
             | Self::Conflict(_)
             | Self::StaleCursor => StatusCode::CONFLICT,
-            Self::Unauthorized => StatusCode::UNAUTHORIZED,
-            Self::Forbidden(_) => StatusCode::FORBIDDEN,
+            Self::Unauthorized | Self::OperatorCredentialRequired => StatusCode::UNAUTHORIZED,
+            Self::Forbidden(_) | Self::CrossOrigin => StatusCode::FORBIDDEN,
+            Self::CheckoutAttemptOpen | Self::CheckoutAttemptsExhausted | Self::CheckoutExpired => {
+                StatusCode::CONFLICT
+            }
             Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             Self::RouteNotFound | Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Overloaded
@@ -273,6 +303,11 @@ impl ApiError {
             Self::PaymentBusy => ErrorCode::PaymentBusy,
             Self::Unavailable(_) => ErrorCode::Unavailable,
             Self::DatabaseTimeout(_) => ErrorCode::DeadlineExceeded,
+            Self::CrossOrigin => ErrorCode::CrossOriginRefused,
+            Self::CheckoutAttemptOpen => ErrorCode::CheckoutAttemptOpen,
+            Self::CheckoutAttemptsExhausted => ErrorCode::CheckoutAttemptsExhausted,
+            Self::CheckoutExpired => ErrorCode::CheckoutExpired,
+            Self::OperatorCredentialRequired => ErrorCode::OperatorCredentialRequired,
             Self::Internal(_) => ErrorCode::Internal,
         }
     }

@@ -18,6 +18,12 @@ use crate::state::AppState;
 #[derive(Debug, Clone)]
 pub struct Auth(pub KeyIdentity);
 
+/// An identity a front door has already authenticated (the dashboard's session, D-062),
+/// placed in the request's extensions by that front door's middleware. Nothing outside the
+/// server can put one there; the API itself never does, so `/v1` always needs a key.
+#[derive(Debug, Clone)]
+pub struct Delegated(pub KeyIdentity);
+
 impl Auth {
     /// The project scope every query of this request must use.
     pub const fn scope(&self) -> ProjectScope {
@@ -55,6 +61,9 @@ impl FromRequestParts<AppState> for Auth {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
+        if let Some(Delegated(identity)) = parts.extensions.get::<Delegated>() {
+            return Ok(Self(identity.clone()));
+        }
         let token = bearer(parts).ok_or(ApiError::Unauthorized)?;
         let hash = keys::hash_presented(token).map_err(|_| ApiError::Unauthorized)?;
         let identity = sandbox_db::keys::resolve(&state.db, &hash)

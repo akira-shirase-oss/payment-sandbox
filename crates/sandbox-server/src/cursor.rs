@@ -92,8 +92,8 @@ impl CursorKey {
             cursor.generation, cursor.as_of, cursor.after_seq, cursor.running
         );
         let tag = self.tag(payload.as_bytes());
-        let mut out = letters(payload.as_bytes());
-        out.push_str(&letters(&tag));
+        let mut out = sandbox_domain::letters::encode(payload.as_bytes());
+        out.push_str(&sandbox_domain::letters::encode(&tag));
         out
     }
 
@@ -105,7 +105,7 @@ impl CursorKey {
         {
             return Err(InvalidCursor);
         }
-        let bytes = from_letters(sealed).ok_or(InvalidCursor)?;
+        let bytes = sandbox_domain::letters::decode(sealed).ok_or(InvalidCursor)?;
         let (payload, tag) = bytes.split_at(bytes.len() - TAG_BYTES);
         let text = std::str::from_utf8(payload).map_err(|_| InvalidCursor)?;
         let (sealed_for, fields) = text.split_once('|').ok_or(InvalidCursor)?;
@@ -132,27 +132,6 @@ impl CursorKey {
 /// What a cursor explains: one account of one project's dataset epoch, in one currency.
 pub fn context(project: uuid::Uuid, epoch: i32, currency: &str, account: &str) -> String {
     format!("{project}/{epoch}/{currency}/{account}")
-}
-
-fn letters(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(char::from(b'a' + (byte >> 4)));
-        out.push(char::from(b'a' + (byte & 0x0f)));
-    }
-    out
-}
-
-fn from_letters(text: &str) -> Option<Vec<u8>> {
-    let nibble = |c: u8| (b'a'..=b'p').contains(&c).then(|| c - b'a');
-    let (pairs, rest) = text.as_bytes().as_chunks::<2>();
-    if !rest.is_empty() {
-        return None;
-    }
-    pairs
-        .iter()
-        .map(|[hi, lo]| Some((nibble(*hi)? << 4) | nibble(*lo)?))
-        .collect()
 }
 
 /// `generation|as_of|after_seq|running`, each in its exact grammar.

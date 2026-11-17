@@ -3,7 +3,10 @@
 
 use std::fmt;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::time::Duration;
+
+use sandbox_domain::access::Profile;
 
 use sandbox_db::PoolSettings;
 
@@ -96,6 +99,28 @@ pub struct Config {
     /// Deadline of one call to the simulated network. A call that misses it is `unknown`,
     /// and the operation stays `uncertain` until readback.
     pub sim_timeout: Duration,
+    /// Where the process runs (`PS_PROFILE`): decides control-plane defaults only (D-046);
+    /// the dashboard's simulator controls exist only in `dev` (D-063).
+    pub profile: Profile,
+    /// The checkout's own listener (D-061), on when `PS_CHECKOUT_DIR` names a built checkout.
+    pub checkout: Option<UiSite>,
+    /// The dashboard's own listener, on when `PS_DASHBOARD_DIR` names a built dashboard.
+    pub dashboard: Option<UiSite>,
+    /// The checkout's public origin, which session URLs name (`PS_CHECKOUT_ORIGIN`, by
+    /// default `http://` and the checkout's listen address).
+    pub checkout_origin: String,
+}
+
+/// A browser-facing site on its own listener, hence its own origin (D-029, D-061).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UiSite {
+    /// Listen address (loopback, D-023).
+    pub listen: SocketAddr,
+    /// The built static app (`index.html` and its assets).
+    pub dir: PathBuf,
+    /// The origin browsers reach it at; state-changing requests must carry exactly this
+    /// `Origin` (D-062).
+    pub origin: String,
 }
 
 /// Report budgets and concurrency (D-047).
@@ -209,7 +234,7 @@ impl Config {
         let reports = parse.reports();
         let transport = parse.transport();
         let sim_url = lookup("PS_SIM_URL").unwrap_or_else(|| "http://127.0.0.1:56081".to_owned());
-        let webhook_ports = parse.webhook_ports(listen, &sim_url, &database_url);
+        let sites = parse.sites(listen, &sim_url, &database_url);
         let reconcile = parse.reconcile_tuning(reconcile_batch);
         let secret_key = lookup("PS_SECRET_KEY");
         if let Some(key) = &secret_key
@@ -262,9 +287,13 @@ impl Config {
             secret_key: secret_key.map(Secret::new),
             reports,
             transport,
-            webhook_ports,
+            webhook_ports: sites.webhook_ports,
             reconcile,
             delivery_poll,
+            profile: sites.profile,
+            checkout: sites.checkout,
+            dashboard: sites.dashboard,
+            checkout_origin: sites.checkout_origin,
         };
         // Every problem at once: parse errors and cross-field rules together.
         errors.extend(config.problems());
@@ -291,6 +320,21 @@ impl Config {
                 "PS_LISTEN must be a loopback address: this sandbox runs in the local/CI mode only (D-023)"
                     .to_owned(),
             );
+        }
+        let mut ports = vec![listen.port()];
+        for (name, site) in [("CHECKOUT", &self.checkout), ("DASHBOARD", &self.dashboard)] {
+            let Some(site) = site else { continue };
+            if !site.listen.ip().is_loopback() {
+                errors.push(format!(
+                    "PS_{name}_LISTEN must be a loopback address (D-023)"
+                ));
+            }
+            if ports.contains(&site.listen.port()) {
+                errors.push(format!(
+                    "PS_{name}_LISTEN must use its own port: every site is its own origin (D-029)"
+                ));
+            }
+            ports.push(site.listen.port());
         }
         if pool.max_connections == 0 {
             errors.push("PS_DB_MAX_CONNECTIONS must be at least 1".to_owned());
@@ -354,6 +398,14 @@ fn is_loopback_http(url: &str) -> bool {
     port.parse::<u16>().is_ok() && matches!(host, "127.0.0.1" | "[::1]" | "localhost")
 }
 
+struct Sites {
+    checkout: Option<UiSite>,
+    checkout_origin: String,
+    dashboard: Option<UiSite>,
+    profile: Profile,
+    webhook_ports: WebhookPorts,
+}
+
 struct Parser<'a, F: Fn(&str) -> Option<String>> {
     lookup: &'a F,
     errors: &'a mut Vec<String>,
@@ -400,22 +452,81 @@ impl<F: Fn(&str) -> Option<String>> Parser<'_, F> {
         }
     }
 
+    /// The two sites, the profile and the webhook ports (which may target neither site).
+    fn sites(&mut self, listen: SocketAddr, sim_url: &str, database_url: &str) -> Sites {
+        let (checkout, checkout_origin) = self.ui_site("CHECKOUT", 56083);
+        let (dashboard, dashboard_origin) = self.ui_site("DASHBOARD", 56084);
+        let profile = self.profile();
+        let own_ports: Vec<u16> = [&checkout, &dashboard]
+            .into_iter()
+            .flatten()
+            .map(|site| site.listen.port())
+            .collect();
+        let webhook_ports = self.webhook_ports(listen, sim_url, database_url, &own_ports, profile);
+        if checkout_origin == dashboard_origin {
+            self.errors.push(
+                "PS_CHECKOUT_ORIGIN and PS_DASHBOARD_ORIGIN must differ: checkout and dashboard are separate origins (D-029)"
+                    .to_owned(),
+            );
+        }
+        Sites {
+            checkout,
+            checkout_origin,
+            dashboard,
+            profile,
+            webhook_ports,
+        }
+    }
+
+    fn profile(&mut self) -> Profile {
+        Profile::parse((self.lookup)("PS_PROFILE").as_deref()).unwrap_or_else(|_| {
+            self.errors
+                .push("PS_PROFILE must be dev, ci or shared".to_owned());
+            Profile::Shared
+        })
+    }
+
+    /// `PS_<name>_DIR` (the site is off without it), `PS_<name>_LISTEN` and
+    /// `PS_<name>_ORIGIN`; the origin is returned even when the site is off (session URLs
+    /// name the checkout's).
+    fn ui_site(&mut self, name: &str, default_port: u16) -> (Option<UiSite>, String) {
+        let default_listen = SocketAddr::from(([127, 0, 0, 1], default_port));
+        let listen = match (self.lookup)(&format!("PS_{name}_LISTEN")) {
+            None => default_listen,
+            Some(raw) => raw.parse().unwrap_or_else(|_| {
+                self.errors
+                    .push(format!("PS_{name}_LISTEN is not a socket address"));
+                default_listen
+            }),
+        };
+        let raw_origin = (self.lookup)(&format!("PS_{name}_ORIGIN"))
+            .unwrap_or_else(|| format!("http://{listen}"));
+        let origin = sandbox_domain::checkout::canonical_origin(&raw_origin).unwrap_or_else(|_| {
+            self.errors.push(format!(
+                "PS_{name}_ORIGIN must be an origin like http://127.0.0.1:{default_port} (loopback, D-023)"
+            ));
+            raw_origin.clone()
+        });
+        let site = (self.lookup)(&format!("PS_{name}_DIR")).map(|dir| UiSite {
+            listen,
+            dir: PathBuf::from(dir),
+            origin: origin.clone(),
+        });
+        (site, origin)
+    }
+
     fn webhook_ports(
         &mut self,
         listen: SocketAddr,
         sim_url: &str,
         database_url: &str,
+        own_ports: &[u16],
+        profile: Profile,
     ) -> WebhookPorts {
         let mut denied = vec![listen.port()];
         denied.extend(url_port(sim_url));
         denied.push(url_port(database_url).unwrap_or(5432));
-        let profile =
-            sandbox_domain::access::Profile::parse((self.lookup)("PS_PROFILE").as_deref())
-                .unwrap_or_else(|_| {
-                    self.errors
-                        .push("PS_PROFILE must be dev, ci or shared".to_owned());
-                    sandbox_domain::access::Profile::Shared
-                });
+        denied.extend_from_slice(own_ports);
         let allowed = match (self.lookup)("PS_WEBHOOK_PORTS") {
             Some(raw) => Some(
                 raw.split(',')
@@ -436,7 +547,7 @@ impl<F: Fn(&str) -> Option<String>> Parser<'_, F> {
                     })
                     .collect(),
             ),
-            None if profile == sandbox_domain::access::Profile::Dev => None,
+            None if profile == Profile::Dev => None,
             None => Some(Vec::new()),
         };
         WebhookPorts { denied, allowed }
@@ -555,6 +666,60 @@ mod tests {
             "PS_REQUEST_TIMEOUT_MS must exceed",
         ] {
             assert!(text.contains(needle), "missing {needle:?} in {text}");
+        }
+    }
+
+    #[test]
+    fn the_sites_are_off_until_built_and_each_is_its_own_loopback_origin() {
+        let base = [
+            ("PS_DATABASE_URL", "postgres://x@127.0.0.1:56432/db"),
+            ("PS_SIM_TOKEN", SIM_TOKEN),
+        ];
+        let c = config(&base).unwrap();
+        assert_eq!((c.checkout.is_none(), c.dashboard.is_none()), (true, true));
+        assert_eq!(c.checkout_origin, "http://127.0.0.1:56083");
+        let mut vars = base.to_vec();
+        vars.extend([
+            ("PS_CHECKOUT_DIR", "apps/checkout/build"),
+            ("PS_DASHBOARD_DIR", "apps/dashboard/build"),
+            ("PS_DASHBOARD_ORIGIN", "http://LOCALHOST:56084"),
+            ("PS_PROFILE", "dev"),
+        ]);
+        let c = config(&vars).unwrap();
+        let checkout = c.checkout.clone().unwrap();
+        assert_eq!(checkout.listen, "127.0.0.1:56083".parse().unwrap());
+        assert_eq!(c.dashboard.unwrap().origin, "http://localhost:56084");
+        assert_eq!(c.profile, Profile::Dev);
+        // Webhooks may never target the sites' ports (D-059 extended).
+        assert!(!c.webhook_ports.permits(56083) && !c.webhook_ports.permits(56084));
+        assert!(c.webhook_ports.permits(56464));
+        for (name, value, needle) in [
+            (
+                "PS_CHECKOUT_LISTEN",
+                "0.0.0.0:56083",
+                "PS_CHECKOUT_LISTEN must be a loopback",
+            ),
+            (
+                "PS_DASHBOARD_LISTEN",
+                "127.0.0.1:56080",
+                "PS_DASHBOARD_LISTEN must use its own port",
+            ),
+            (
+                "PS_CHECKOUT_ORIGIN",
+                "https://example.com:443",
+                "PS_CHECKOUT_ORIGIN must be an origin",
+            ),
+            (
+                "PS_DASHBOARD_ORIGIN",
+                "http://127.0.0.1:56083",
+                "must differ",
+            ),
+        ] {
+            let mut bad = vars.clone();
+            bad.retain(|(k, _)| *k != name);
+            bad.push((name, value));
+            let err = config(&bad).unwrap_err().to_string();
+            assert!(err.contains(needle), "{name}={value}: {err}");
         }
     }
 }

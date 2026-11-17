@@ -82,10 +82,15 @@ async fn serve() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("binding {}", config.listen))?;
     let local = listener.local_addr().context("reading the bound address")?;
+    // The checkout and the dashboard, each on its own listener (D-029, D-061), bound and
+    // loaded before anything is served, so a missing build or a taken port fails startup.
+    let checkout = bind_site(config.checkout.as_ref(), "checkout").await?;
+    let dashboard = bind_site(config.dashboard.as_ref(), "dashboard").await?;
     let grace = config.shutdown_grace;
     let transport = config.transport;
     let state = AppState::new(config, db.clone());
     let app = sandbox_server::app(&state);
+    let sites = site_routers(&state, checkout, dashboard);
     // The background tasks run supervised (D-051): a panic is logged and restarted with
     // backoff, never silently gone, and readiness reports a task that is down or stuck.
     let (stop_reconciler, reconciler_stop) = sandbox_server::reconciler::shutdown_channel();
@@ -124,12 +129,7 @@ async fn serve() -> anyhow::Result<()> {
     }
     tracing::info!(%local, "listening");
 
-    let outcome = shutdown::serve(listener, app, transport, grace, async move {
-        let name = signal.await;
-        tracing::info!(signal = name, "shutdown signal received; draining");
-    })
-    .await
-    .context("serving")?;
+    let outcome = serve_all(listener, app, sites, transport, grace, signal).await?;
     match outcome {
         shutdown::ShutdownOutcome::Graceful => tracing::info!("drained; exiting"),
         shutdown::ShutdownOutcome::DeadlineExceeded => {
@@ -152,6 +152,101 @@ async fn serve() -> anyhow::Result<()> {
     }
     db.close().await;
     Ok(())
+}
+
+/// A bound listener, its loaded site and its origin.
+type BoundSite = (
+    TcpListener,
+    std::sync::Arc<sandbox_server::web::site::Site>,
+    String,
+);
+
+/// The routers of the configured sites.
+fn site_routers(
+    state: &AppState,
+    checkout: Option<BoundSite>,
+    dashboard: Option<BoundSite>,
+) -> Vec<(&'static str, TcpListener, axum::Router)> {
+    let mut sites = Vec::new();
+    if let Some((listener, site, origin)) = checkout {
+        let router = sandbox_server::web::checkout::router(state, site, &origin);
+        sites.push(("checkout", listener, router));
+    }
+    if let Some((listener, site, origin)) = dashboard {
+        let sessions = std::sync::Arc::new(sandbox_server::web::dashboard::Sessions::default());
+        let router = sandbox_server::web::dashboard::router(state, site, &origin, sessions);
+        sites.push(("dashboard", listener, router));
+    }
+    sites
+}
+
+/// Serves the API and every site until `signal`, then drains each within `grace`.
+async fn serve_all(
+    listener: TcpListener,
+    app: axum::Router,
+    sites: Vec<(&'static str, TcpListener, axum::Router)>,
+    transport: sandbox_http::Limits,
+    grace: Duration,
+    signal: impl std::future::Future<Output = &'static str> + Send + 'static,
+) -> anyhow::Result<shutdown::ShutdownOutcome> {
+    // One signal stops every listener.
+    let (stop_serving, stopping) = tokio::sync::watch::channel(false);
+    let watcher = tokio::spawn(async move {
+        let name = signal.await;
+        tracing::info!(signal = name, "shutdown signal received; draining");
+        let _ = stop_serving.send(true);
+    });
+    let stopped = |mut rx: tokio::sync::watch::Receiver<bool>| async move {
+        let _ = rx.wait_for(|stop| *stop).await;
+    };
+    let mut site_tasks = tokio::task::JoinSet::new();
+    for (name, site_listener, router) in sites {
+        let addr = site_listener
+            .local_addr()
+            .context("reading a site's bound address")?;
+        tracing::info!(site = name, %addr, "listening");
+        let rx = stopping.clone();
+        site_tasks.spawn(async move {
+            let served =
+                shutdown::serve(site_listener, router, transport, grace, stopped(rx)).await;
+            (name, served)
+        });
+    }
+    let outcome = shutdown::serve(listener, app, transport, grace, stopped(stopping))
+        .await
+        .context("serving");
+    while let Some(joined) = site_tasks.join_next().await {
+        match joined {
+            Ok((_, Ok(_))) => {}
+            Ok((name, Err(error))) => {
+                tracing::error!(site = name, %error, "a site stopped serving");
+            }
+            Err(error) => tracing::error!(%error, "a site's serving task failed"),
+        }
+    }
+    watcher.abort();
+    outcome
+}
+
+/// Binds a site's listener and loads its build, if the site is configured.
+async fn bind_site(
+    site: Option<&sandbox_server::config::UiSite>,
+    name: &str,
+) -> anyhow::Result<Option<BoundSite>> {
+    let Some(site) = site else { return Ok(None) };
+    let dir = site.dir.clone();
+    let loaded = tokio::task::spawn_blocking(move || sandbox_server::web::site::Site::load(&dir))
+        .await
+        .context("loading a site")?
+        .with_context(|| format!("loading the {name} from {}", site.dir.display()))?;
+    let listener = TcpListener::bind(site.listen)
+        .await
+        .with_context(|| format!("binding the {name} on {}", site.listen))?;
+    Ok(Some((
+        listener,
+        std::sync::Arc::new(loaded),
+        site.origin.clone(),
+    )))
 }
 
 /// Applies migrations, retrying while the database starts, for at most 30 s.

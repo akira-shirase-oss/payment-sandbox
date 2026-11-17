@@ -48,6 +48,8 @@ pub fn app(state: &AppState) -> Router {
             post(handlers::payments::refund),
         )
         .route("/v1/balances", get(handlers::payments::balances))
+        .route("/v1/checkout_sessions", post(handlers::checkout::create))
+        .route("/v1/checkout_sessions/{id}", get(handlers::checkout::get))
         .route(
             "/v1/webhook_endpoints",
             get(handlers::webhooks::list).post(handlers::webhooks::create),
