@@ -480,6 +480,11 @@ fn reply_of(id: Uuid, stored: &Stored, replayed: bool) -> ExecuteReply {
 }
 
 fn execute(t: &mut Tables<'_>, request: &ExecuteRequest) -> Result<Executed, StoreError> {
+    // The network checks amounts itself (review N9): a negative capture used to lower its
+    // record of what was captured. Same range as the server's (D-010).
+    if !(1..=sandbox_domain::MAX_AMOUNT_MINOR).contains(&request.amount_minor) {
+        return Err(StoreError::Invalid("amount out of range"));
+    }
     let key = request.id.as_u128();
     if t.tombstones.get(key).map_err(storage)?.is_some() {
         return Err(StoreError::Fenced);

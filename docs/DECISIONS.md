@@ -710,6 +710,11 @@ review found. Each states the choice, the alternative and the cost.
     by explain, counted in the balance). The stamp trigger now takes the
     sequence's next value whatever the caller wrote (migration 0011).
     Test: `the_runtime_role_cannot_choose_an_entrys_sequence_number`.
+  - *N9:* the network refuses an operation whose amount is outside
+    1..=10^12 (`422`, nothing recorded) before deciding; a capture of −500
+    used to be approved and lower its record of what was captured, after
+    which 1,500 was captured against 1,000 authorized. Test:
+    `amounts_outside_the_valid_range_are_refused_and_move_nothing`.
 
 ## Open questions (still open)
 

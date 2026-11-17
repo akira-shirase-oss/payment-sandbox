@@ -220,3 +220,47 @@ async fn another_projects_authorization_cannot_be_captured_voided_or_refunded() 
         .unwrap();
     assert_eq!(all.reply.outcome, Outcome::Approved);
 }
+
+/// Review N9: the network trusted the sign of amounts. A capture of -500 was approved and
+/// lowered its own record of what was captured, after which a capture of 1500 against an
+/// authorization of 1000 was approved too. Amounts outside 1..=10^12 are not executable.
+#[tokio::test]
+async fn amounts_outside_the_valid_range_are_refused_and_move_nothing() {
+    let store = Store::open(&path()).await.unwrap();
+    let auth = Uuid::now_v7();
+    store
+        .execute(&authorize(auth, 1_000, "tok_sim_approve"))
+        .await
+        .unwrap();
+    for amount in [-500, 0, 1_000_000_000_001] {
+        for kind in [
+            OperationKind::Capture,
+            OperationKind::Void,
+            OperationKind::Refund,
+        ] {
+            assert!(
+                matches!(
+                    store
+                        .execute(&child(Uuid::now_v7(), auth, kind, amount))
+                        .await,
+                    Err(StoreError::Invalid(_))
+                ),
+                "{kind:?} of {amount}"
+            );
+        }
+        assert!(matches!(
+            store
+                .execute(&authorize(Uuid::now_v7(), amount, "tok_sim_approve"))
+                .await,
+            Err(StoreError::Invalid(_))
+        ));
+    }
+    let over = store
+        .execute(&child(Uuid::now_v7(), auth, OperationKind::Capture, 1_500))
+        .await
+        .unwrap();
+    assert_eq!(
+        over.reply.decline_code.as_deref(),
+        Some("amount_exceeds_authorization")
+    );
+}
