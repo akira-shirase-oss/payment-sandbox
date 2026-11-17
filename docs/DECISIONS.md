@@ -976,6 +976,68 @@ refused. These fix the smallest version that meets it.
   none). Screens that existed before M7 and were not touched keep their M6 design; the
   axe check covers them all the same.
 
+- **D-068 — Clients refuse production-looking configuration, retry only under the same
+  key, and never call an uncertain answer done.** One set of rules for `sandbox-cli`
+  (`crates/sandbox-cli`) and the TypeScript SDK (`packages/sdk-ts`). *Configuration:* a key
+  that is not `sk_sim_` followed by 64 hex characters is refused outright (`sk_live_`,
+  `sk_test_` and every other shape; the key is never echoed); a real processor's host
+  (`stripe.com`, `adyen.com`, `paypal.com`, ... and their subdomains: a belt-and-braces list)
+  is refused outright; any other host that is not loopback (`127.0.0.0/8`, `::1`,
+  `localhost`, `*.localhost`) is refused unless the caller says so explicitly
+  (`--allow-non-local` / `PS_ALLOW_NON_LOCAL=1` / `allowNonLocal: true`), for a CI service
+  container or a shared host (D-071); URLs with credentials, a path, a query or a fragment
+  are refused. Every answer must carry `Sandbox-Simulated: true`, or the client stops
+  (`NotASandbox`). *Retries:* every money-moving request carries an `Idempotency-Key` (a
+  fresh `cli_` + 32 letters `a`–`p` when the caller gives none: no digits, so the card
+  guard can never mistake one), and every retry reuses it, so the server replays or
+  re-drives the same identity (D-015, D-016) and a retry can never charge twice. Retried:
+  no answer at all, `429`, and `503` `payment_busy`/`overloaded`/`unavailable`/
+  `deadline_exceeded`; never a `409`, `422` or other refusal. At most 4 attempts, full
+  jitter over 100 ms doubling to 2 s, at least the server's `Retry-After` (capped at 2 s),
+  never past an overall deadline (30 s by default), each attempt bounded (10 s), answers
+  read up to 4 MiB. A request without a key (a reset, a key) is re-sent only when no attempt
+  can have reached the server. *Honest answers:* `202` with a `pending` or `uncertain`
+  operation is returned as such (the CLI exits 4 and says "UNCERTAIN ... not done yet");
+  a money-moving request with no usable answer after its retries is `Unknown`, naming the
+  key to retry with ("never with a new key"), never "failed"; `wait` polls the payment
+  until nothing of it is open and otherwise says what is still open. *The CLI:* `status`,
+  `payments create|get|list|capture|void|refund|wait` (amounts in the currency's units,
+  `42.00`, `500`, `1.250`), `ledger balances|journal|explain` (every page, checking the lines
+  sum to the balance), `reconcile [--network]`, `events`, `scenarios list|show|run`, and
+  `reset` (the slug typed at a prompt, or `--confirm <slug>`; never without it); plain words
+  by default, `--json` for the API's JSON; exit status 0 done, 1 refused, 2 usage or
+  configuration, 3 declined or never executed, 4 uncertain or unknown, 5 unreachable or not
+  a sandbox; the notice first on standard error on every run. Tests: `config::tests`,
+  `client::tests`, `tests/cli.rs` (the binary against a whole in-process sandbox over real
+  sockets; a proxy that loses the first response proves the retry replays one payment; a
+  fake sandbox proves which answers are retried, under one key, and the bound).
+
+- **D-069 — The scenario library is data with committed traces, checked by running each
+  scenario twice and again after a reset.** `fixtures/scenarios/<name>.json` holds eleven
+  scenarios (a purchase; declines for insufficient funds, do-not-honor and an expired
+  method, the last repeated; a lost reply resolved by readback; an unavailable network
+  fenced as never executed; partial capture then void; refunds up to the capacity and one
+  cent past it; idempotent repeats and a conflicting amount; capture over authorization;
+  JPY and KWD) as numbered steps (`authorize` with a `tok_sim_*` scenario, `capture`,
+  `void`, `refund`, `wait`, `repeat`), each step's key `scn_<run>_<scenario>_<step>`. A
+  run's trace is every step's status, outcome, replay flag and payment status, and every
+  payment's operations, events in sequence and journal entries in posting order; ids,
+  keys, network references, attempt counts and times are left out, so two runs compare
+  equal exactly when the sandbox behaved the same. The expected trace of each scenario is
+  committed (`fixtures/scenarios/expected/`), reviewed by hand when first written
+  (`PS_BLESS_SCENARIOS=1` writes them), and compiled into the CLI: a release that changes
+  any scenario's behaviour fails `every_library_scenario_runs_twice_and_after_a_reset_with_the_same_trace`
+  and `sandbox-cli scenarios run --all --check` on any developer's machine; removing or
+  editing a scenario is a breaking change. That test runs every scenario twice in one
+  project (two run ids), resets the dataset, runs each again under the first run's keys
+  (new epoch, new identities), requires all three traces equal to the committed one, and
+  requires the development store, consuming the signed webhooks, to fulfill exactly the
+  payments that captured money, once each, and reconciliation with the network to be
+  clean. Reproducibility relies on the reconciler's grace exceeding the network deadline
+  (its default, D-036): the first harness set the grace to 1 ms, the reconciler resolved a
+  lost reply while its own request still waited, and that request answered `201` instead
+  of `202 uncertain`; the default makes the uncertain answer the same on every run.
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

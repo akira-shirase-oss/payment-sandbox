@@ -1,0 +1,11 @@
+{
+  "name": "idempotent-retry",
+  "summary": "A request repeated under its key replays the first answer; the same key with another amount is a conflict, never a reinterpretation.",
+  "steps": [
+    {"do": "authorize", "payment": "order", "amount": 2000, "currency": "USD", "scenario": "approve"},
+    {"do": "repeat", "step": 1},
+    {"do": "repeat", "step": 1, "amount": 2100},
+    {"do": "capture", "payment": "order", "amount": 2000},
+    {"do": "repeat", "step": 4}
+  ]
+}

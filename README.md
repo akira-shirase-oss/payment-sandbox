@@ -26,7 +26,14 @@ npm ci && npm run build                            # the checkout and the dashbo
 PS_CHECKOUT_DIR=apps/checkout/build PS_DASHBOARD_DIR=apps/dashboard/build \
   cargo run -p sandbox-server                      # ... checkout on 127.0.0.1:56083, dashboard on http://dashboard.localhost:56084
 scripts/e2e.sh                                     # the browser journeys (Chromium, ports 56460-56465)
+cargo run -p sandbox-cli -- --help                 # the CLI: payments, the ledger, scenarios, reset
 ```
+
+With the server running and `PS_API_KEY` set to a project's key, `sandbox-cli scenarios run
+--all --check` replays the seeded scenario library (`fixtures/scenarios/`: declines, lost
+replies, an unavailable network, capacity refusals, idempotent repeats ...) and checks each
+run against the trace committed with it; `sandbox-cli reset` opens a new, empty dataset epoch
+after you type the project's slug (nothing is deleted).
 
 A store creates a checkout session (`POST /v1/checkout_sessions`) and sends the payer to
 the URL it returns; the payer picks what the simulated network does (there is no card

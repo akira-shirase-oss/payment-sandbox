@@ -1,0 +1,109 @@
+{
+  "scenario": "lost-reply",
+  "steps": [
+    {
+      "step": 1,
+      "action": "authorize",
+      "payment": "order",
+      "http": 202,
+      "result": "uncertain",
+      "replayed": false,
+      "payment_status": "authorizing",
+      "operation": {
+        "kind": "authorize",
+        "state": "uncertain",
+        "amount": 3000,
+        "decline_code": null
+      }
+    },
+    {
+      "step": 2,
+      "action": "wait",
+      "payment": "order",
+      "http": null,
+      "result": "settled",
+      "replayed": null,
+      "payment_status": "authorized",
+      "operation": null
+    },
+    {
+      "step": 3,
+      "action": "capture",
+      "payment": "order",
+      "http": 201,
+      "result": "succeeded",
+      "replayed": false,
+      "payment_status": "captured",
+      "operation": {
+        "kind": "capture",
+        "state": "succeeded",
+        "amount": 3000,
+        "decline_code": null
+      }
+    }
+  ],
+  "payments": [
+    {
+      "payment": "order",
+      "status": "captured",
+      "currency": "EUR",
+      "amount": 3000,
+      "authorized": 3000,
+      "captured": 3000,
+      "voided": 0,
+      "refunded": 0,
+      "operations": [
+        {
+          "kind": "authorize",
+          "state": "succeeded",
+          "amount": 3000,
+          "decline_code": null
+        },
+        {
+          "kind": "capture",
+          "state": "succeeded",
+          "amount": 3000,
+          "decline_code": null
+        }
+      ],
+      "events": [
+        {
+          "kind": "authorize.succeeded",
+          "sequence": 1
+        },
+        {
+          "kind": "capture.succeeded",
+          "sequence": 2
+        }
+      ],
+      "journal": [
+        {
+          "recipe": "authorize",
+          "lines": [
+            [
+              "payer_funding",
+              3000
+            ],
+            [
+              "payer_held",
+              -3000
+            ]
+          ]
+        },
+        {
+          "recipe": "capture",
+          "lines": [
+            [
+              "payer_held",
+              3000
+            ],
+            [
+              "merchant_pending",
+              -3000
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

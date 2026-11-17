@@ -1,0 +1,9 @@
+{
+  "name": "lost-reply",
+  "summary": "The network approves but its reply is lost: the authorization stays uncertain until the reconciler reads the record back, then it is captured.",
+  "steps": [
+    {"do": "authorize", "payment": "order", "amount": 3000, "currency": "EUR", "scenario": "lost_reply"},
+    {"do": "wait", "payment": "order"},
+    {"do": "capture", "payment": "order", "amount": 3000}
+  ]
+}

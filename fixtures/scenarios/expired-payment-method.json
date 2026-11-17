@@ -1,0 +1,8 @@
+{
+  "name": "expired-payment-method",
+  "summary": "An expired payment method is declined, and repeating the same request replays the decline instead of trying again.",
+  "steps": [
+    {"do": "authorize", "payment": "order", "amount": 1000, "currency": "USD", "scenario": "decline_expired"},
+    {"do": "repeat", "step": 1}
+  ]
+}

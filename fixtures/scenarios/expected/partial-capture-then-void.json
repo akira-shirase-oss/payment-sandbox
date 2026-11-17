@@ -1,0 +1,175 @@
+{
+  "scenario": "partial-capture-then-void",
+  "steps": [
+    {
+      "step": 1,
+      "action": "authorize",
+      "payment": "order",
+      "http": 201,
+      "result": "succeeded",
+      "replayed": false,
+      "payment_status": "authorized",
+      "operation": {
+        "kind": "authorize",
+        "state": "succeeded",
+        "amount": 10000,
+        "decline_code": null
+      }
+    },
+    {
+      "step": 2,
+      "action": "capture",
+      "payment": "order",
+      "http": 201,
+      "result": "succeeded",
+      "replayed": false,
+      "payment_status": "partially_captured",
+      "operation": {
+        "kind": "capture",
+        "state": "succeeded",
+        "amount": 6000,
+        "decline_code": null
+      }
+    },
+    {
+      "step": 3,
+      "action": "void",
+      "payment": "order",
+      "http": 201,
+      "result": "succeeded",
+      "replayed": false,
+      "payment_status": "captured",
+      "operation": {
+        "kind": "void",
+        "state": "succeeded",
+        "amount": 4000,
+        "decline_code": null
+      }
+    },
+    {
+      "step": 4,
+      "action": "refund",
+      "payment": "order",
+      "http": 201,
+      "result": "succeeded",
+      "replayed": false,
+      "payment_status": "partially_refunded",
+      "operation": {
+        "kind": "refund",
+        "state": "succeeded",
+        "amount": 1000,
+        "decline_code": null
+      }
+    }
+  ],
+  "payments": [
+    {
+      "payment": "order",
+      "status": "partially_refunded",
+      "currency": "USD",
+      "amount": 10000,
+      "authorized": 10000,
+      "captured": 6000,
+      "voided": 4000,
+      "refunded": 1000,
+      "operations": [
+        {
+          "kind": "authorize",
+          "state": "succeeded",
+          "amount": 10000,
+          "decline_code": null
+        },
+        {
+          "kind": "capture",
+          "state": "succeeded",
+          "amount": 6000,
+          "decline_code": null
+        },
+        {
+          "kind": "void",
+          "state": "succeeded",
+          "amount": 4000,
+          "decline_code": null
+        },
+        {
+          "kind": "refund",
+          "state": "succeeded",
+          "amount": 1000,
+          "decline_code": null
+        }
+      ],
+      "events": [
+        {
+          "kind": "authorize.succeeded",
+          "sequence": 1
+        },
+        {
+          "kind": "capture.succeeded",
+          "sequence": 2
+        },
+        {
+          "kind": "void.succeeded",
+          "sequence": 3
+        },
+        {
+          "kind": "refund.succeeded",
+          "sequence": 4
+        }
+      ],
+      "journal": [
+        {
+          "recipe": "authorize",
+          "lines": [
+            [
+              "payer_funding",
+              10000
+            ],
+            [
+              "payer_held",
+              -10000
+            ]
+          ]
+        },
+        {
+          "recipe": "capture",
+          "lines": [
+            [
+              "payer_held",
+              6000
+            ],
+            [
+              "merchant_pending",
+              -6000
+            ]
+          ]
+        },
+        {
+          "recipe": "void",
+          "lines": [
+            [
+              "payer_held",
+              4000
+            ],
+            [
+              "payer_funding",
+              -4000
+            ]
+          ]
+        },
+        {
+          "recipe": "refund",
+          "lines": [
+            [
+              "merchant_pending",
+              1000
+            ],
+            [
+              "payer_funding",
+              -1000
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "name": "network-unavailable",
+  "summary": "The network is unavailable: the authorization stays uncertain until a fenced readback proves it never ran; repeating it replays that, and a new payment goes through.",
+  "steps": [
+    {"do": "authorize", "payment": "first", "amount": 1500, "currency": "USD", "scenario": "unavailable"},
+    {"do": "wait", "payment": "first"},
+    {"do": "repeat", "step": 1},
+    {"do": "authorize", "payment": "second", "amount": 1500, "currency": "USD", "scenario": "approve"},
+    {"do": "capture", "payment": "second", "amount": 1500}
+  ]
+}

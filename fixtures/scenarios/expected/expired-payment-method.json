@@ -1,0 +1,62 @@
+{
+  "scenario": "expired-payment-method",
+  "steps": [
+    {
+      "step": 1,
+      "action": "authorize",
+      "payment": "order",
+      "http": 201,
+      "result": "declined",
+      "replayed": false,
+      "payment_status": "declined",
+      "operation": {
+        "kind": "authorize",
+        "state": "declined",
+        "amount": 1000,
+        "decline_code": "expired_payment_method"
+      }
+    },
+    {
+      "step": 2,
+      "action": "repeat",
+      "payment": "order",
+      "http": 200,
+      "result": "declined",
+      "replayed": true,
+      "payment_status": "declined",
+      "operation": {
+        "kind": "authorize",
+        "state": "declined",
+        "amount": 1000,
+        "decline_code": "expired_payment_method"
+      }
+    }
+  ],
+  "payments": [
+    {
+      "payment": "order",
+      "status": "declined",
+      "currency": "USD",
+      "amount": 1000,
+      "authorized": 0,
+      "captured": 0,
+      "voided": 0,
+      "refunded": 0,
+      "operations": [
+        {
+          "kind": "authorize",
+          "state": "declined",
+          "amount": 1000,
+          "decline_code": "expired_payment_method"
+        }
+      ],
+      "events": [
+        {
+          "kind": "authorize.declined",
+          "sequence": 1
+        }
+      ],
+      "journal": []
+    }
+  ]
+}

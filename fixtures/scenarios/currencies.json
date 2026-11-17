@@ -1,0 +1,12 @@
+{
+  "name": "currencies",
+  "summary": "Zero- and three-decimal currencies post exact minor units: 500 JPY and 1.250 KWD, each captured and partly refunded.",
+  "steps": [
+    {"do": "authorize", "payment": "yen", "amount": 500, "currency": "JPY", "scenario": "approve"},
+    {"do": "capture", "payment": "yen", "amount": 500},
+    {"do": "refund", "payment": "yen", "amount": 125},
+    {"do": "authorize", "payment": "dinar", "amount": 1250, "currency": "KWD", "scenario": "approve"},
+    {"do": "capture", "payment": "dinar", "amount": 1250},
+    {"do": "refund", "payment": "dinar", "amount": 5}
+  ]
+}

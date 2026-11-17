@@ -1,0 +1,164 @@
+{
+  "scenario": "network-unavailable",
+  "steps": [
+    {
+      "step": 1,
+      "action": "authorize",
+      "payment": "first",
+      "http": 202,
+      "result": "uncertain",
+      "replayed": false,
+      "payment_status": "authorizing",
+      "operation": {
+        "kind": "authorize",
+        "state": "uncertain",
+        "amount": 1500,
+        "decline_code": null
+      }
+    },
+    {
+      "step": 2,
+      "action": "wait",
+      "payment": "first",
+      "http": null,
+      "result": "settled",
+      "replayed": null,
+      "payment_status": "failed",
+      "operation": null
+    },
+    {
+      "step": 3,
+      "action": "repeat",
+      "payment": "first",
+      "http": 200,
+      "result": "not_executed",
+      "replayed": true,
+      "payment_status": "failed",
+      "operation": {
+        "kind": "authorize",
+        "state": "not_executed",
+        "amount": 1500,
+        "decline_code": null
+      }
+    },
+    {
+      "step": 4,
+      "action": "authorize",
+      "payment": "second",
+      "http": 201,
+      "result": "succeeded",
+      "replayed": false,
+      "payment_status": "authorized",
+      "operation": {
+        "kind": "authorize",
+        "state": "succeeded",
+        "amount": 1500,
+        "decline_code": null
+      }
+    },
+    {
+      "step": 5,
+      "action": "capture",
+      "payment": "second",
+      "http": 201,
+      "result": "succeeded",
+      "replayed": false,
+      "payment_status": "captured",
+      "operation": {
+        "kind": "capture",
+        "state": "succeeded",
+        "amount": 1500,
+        "decline_code": null
+      }
+    }
+  ],
+  "payments": [
+    {
+      "payment": "first",
+      "status": "failed",
+      "currency": "USD",
+      "amount": 1500,
+      "authorized": 0,
+      "captured": 0,
+      "voided": 0,
+      "refunded": 0,
+      "operations": [
+        {
+          "kind": "authorize",
+          "state": "not_executed",
+          "amount": 1500,
+          "decline_code": null
+        }
+      ],
+      "events": [
+        {
+          "kind": "authorize.not_executed",
+          "sequence": 1
+        }
+      ],
+      "journal": []
+    },
+    {
+      "payment": "second",
+      "status": "captured",
+      "currency": "USD",
+      "amount": 1500,
+      "authorized": 1500,
+      "captured": 1500,
+      "voided": 0,
+      "refunded": 0,
+      "operations": [
+        {
+          "kind": "authorize",
+          "state": "succeeded",
+          "amount": 1500,
+          "decline_code": null
+        },
+        {
+          "kind": "capture",
+          "state": "succeeded",
+          "amount": 1500,
+          "decline_code": null
+        }
+      ],
+      "events": [
+        {
+          "kind": "authorize.succeeded",
+          "sequence": 1
+        },
+        {
+          "kind": "capture.succeeded",
+          "sequence": 2
+        }
+      ],
+      "journal": [
+        {
+          "recipe": "authorize",
+          "lines": [
+            [
+              "payer_funding",
+              1500
+            ],
+            [
+              "payer_held",
+              -1500
+            ]
+          ]
+        },
+        {
+          "recipe": "capture",
+          "lines": [
+            [
+              "payer_held",
+              1500
+            ],
+            [
+              "merchant_pending",
+              -1500
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

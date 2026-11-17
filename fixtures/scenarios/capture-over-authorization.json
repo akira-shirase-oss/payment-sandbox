@@ -1,0 +1,9 @@
+{
+  "name": "capture-over-authorization",
+  "summary": "Capturing more than was authorized is refused; capturing the authorized amount succeeds.",
+  "steps": [
+    {"do": "authorize", "payment": "order", "amount": 1000, "currency": "USD", "scenario": "approve"},
+    {"do": "capture", "payment": "order", "amount": 1500},
+    {"do": "capture", "payment": "order", "amount": 1000}
+  ]
+}

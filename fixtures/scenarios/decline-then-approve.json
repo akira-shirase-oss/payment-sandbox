@@ -1,0 +1,9 @@
+{
+  "name": "decline-then-approve",
+  "summary": "A payer's first attempt is declined (do not honor); a second payment is approved and captured.",
+  "steps": [
+    {"do": "authorize", "payment": "first", "amount": 1999, "currency": "USD", "scenario": "decline_do_not_honor"},
+    {"do": "authorize", "payment": "second", "amount": 1999, "currency": "USD", "scenario": "approve"},
+    {"do": "capture", "payment": "second", "amount": 1999}
+  ]
+}

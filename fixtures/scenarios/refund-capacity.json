@@ -1,0 +1,11 @@
+{
+  "name": "refund-capacity",
+  "summary": "Refunds of 20.00 and 30.00 use up a 50.00 capture; one more cent is refused, never overrun.",
+  "steps": [
+    {"do": "authorize", "payment": "order", "amount": 5000, "currency": "USD", "scenario": "approve"},
+    {"do": "capture", "payment": "order", "amount": 5000},
+    {"do": "refund", "payment": "order", "amount": 2000},
+    {"do": "refund", "payment": "order", "amount": 3000},
+    {"do": "refund", "payment": "order", "amount": 1}
+  ]
+}

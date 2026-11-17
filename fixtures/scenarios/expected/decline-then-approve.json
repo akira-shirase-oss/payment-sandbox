@@ -1,0 +1,139 @@
+{
+  "scenario": "decline-then-approve",
+  "steps": [
+    {
+      "step": 1,
+      "action": "authorize",
+      "payment": "first",
+      "http": 201,
+      "result": "declined",
+      "replayed": false,
+      "payment_status": "declined",
+      "operation": {
+        "kind": "authorize",
+        "state": "declined",
+        "amount": 1999,
+        "decline_code": "do_not_honor"
+      }
+    },
+    {
+      "step": 2,
+      "action": "authorize",
+      "payment": "second",
+      "http": 201,
+      "result": "succeeded",
+      "replayed": false,
+      "payment_status": "authorized",
+      "operation": {
+        "kind": "authorize",
+        "state": "succeeded",
+        "amount": 1999,
+        "decline_code": null
+      }
+    },
+    {
+      "step": 3,
+      "action": "capture",
+      "payment": "second",
+      "http": 201,
+      "result": "succeeded",
+      "replayed": false,
+      "payment_status": "captured",
+      "operation": {
+        "kind": "capture",
+        "state": "succeeded",
+        "amount": 1999,
+        "decline_code": null
+      }
+    }
+  ],
+  "payments": [
+    {
+      "payment": "first",
+      "status": "declined",
+      "currency": "USD",
+      "amount": 1999,
+      "authorized": 0,
+      "captured": 0,
+      "voided": 0,
+      "refunded": 0,
+      "operations": [
+        {
+          "kind": "authorize",
+          "state": "declined",
+          "amount": 1999,
+          "decline_code": "do_not_honor"
+        }
+      ],
+      "events": [
+        {
+          "kind": "authorize.declined",
+          "sequence": 1
+        }
+      ],
+      "journal": []
+    },
+    {
+      "payment": "second",
+      "status": "captured",
+      "currency": "USD",
+      "amount": 1999,
+      "authorized": 1999,
+      "captured": 1999,
+      "voided": 0,
+      "refunded": 0,
+      "operations": [
+        {
+          "kind": "authorize",
+          "state": "succeeded",
+          "amount": 1999,
+          "decline_code": null
+        },
+        {
+          "kind": "capture",
+          "state": "succeeded",
+          "amount": 1999,
+          "decline_code": null
+        }
+      ],
+      "events": [
+        {
+          "kind": "authorize.succeeded",
+          "sequence": 1
+        },
+        {
+          "kind": "capture.succeeded",
+          "sequence": 2
+        }
+      ],
+      "journal": [
+        {
+          "recipe": "authorize",
+          "lines": [
+            [
+              "payer_funding",
+              1999
+            ],
+            [
+              "payer_held",
+              -1999
+            ]
+          ]
+        },
+        {
+          "recipe": "capture",
+          "lines": [
+            [
+              "payer_held",
+              1999
+            ],
+            [
+              "merchant_pending",
+              -1999
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

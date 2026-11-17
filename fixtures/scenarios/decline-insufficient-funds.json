@@ -1,0 +1,8 @@
+{
+  "name": "decline-insufficient-funds",
+  "summary": "The network declines for insufficient funds; nothing is held, and a capture of the declined payment is refused.",
+  "steps": [
+    {"do": "authorize", "payment": "order", "amount": 2500, "currency": "EUR", "scenario": "decline_insufficient_funds"},
+    {"do": "capture", "payment": "order", "amount": 2500}
+  ]
+}

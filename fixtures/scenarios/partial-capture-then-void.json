@@ -1,0 +1,10 @@
+{
+  "name": "partial-capture-then-void",
+  "summary": "A 100.00 hold is captured for 60.00, the remaining 40.00 is voided, and 10.00 is refunded.",
+  "steps": [
+    {"do": "authorize", "payment": "order", "amount": 10000, "currency": "USD", "scenario": "approve"},
+    {"do": "capture", "payment": "order", "amount": 6000},
+    {"do": "void", "payment": "order"},
+    {"do": "refund", "payment": "order", "amount": 1000}
+  ]
+}

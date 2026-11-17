@@ -1,0 +1,57 @@
+{
+  "scenario": "decline-insufficient-funds",
+  "steps": [
+    {
+      "step": 1,
+      "action": "authorize",
+      "payment": "order",
+      "http": 201,
+      "result": "declined",
+      "replayed": false,
+      "payment_status": "declined",
+      "operation": {
+        "kind": "authorize",
+        "state": "declined",
+        "amount": 2500,
+        "decline_code": "insufficient_funds"
+      }
+    },
+    {
+      "step": 2,
+      "action": "capture",
+      "payment": "order",
+      "http": 409,
+      "result": "refused:invalid_state",
+      "replayed": null,
+      "payment_status": null,
+      "operation": null
+    }
+  ],
+  "payments": [
+    {
+      "payment": "order",
+      "status": "declined",
+      "currency": "EUR",
+      "amount": 2500,
+      "authorized": 0,
+      "captured": 0,
+      "voided": 0,
+      "refunded": 0,
+      "operations": [
+        {
+          "kind": "authorize",
+          "state": "declined",
+          "amount": 2500,
+          "decline_code": "insufficient_funds"
+        }
+      ],
+      "events": [
+        {
+          "kind": "authorize.declined",
+          "sequence": 1
+        }
+      ],
+      "journal": []
+    }
+  ]
+}

@@ -17,10 +17,14 @@ sandbox-db = { path = "crates/sandbox-db" }
 sandbox-sim = { path = "crates/sandbox-sim" }
 sandbox-dev-store = { path = "fixtures/dev-store" }
 sandbox-http = { path = "crates/sandbox-http" }
+sandbox-server = { path = "crates/sandbox-server" }
 
 # External crates: versions live here only. Minimal features; one async runtime (Tokio);
 # no TLS stack (everything this sandbox talks to is on loopback, D-023).
 anyhow = "1.0.104"
+# sandbox-cli's command line (D-068): derive, help and error context only; no colour, no
+# terminal probing.
+clap = { version = "4.6.8", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions", "env"] }
 # Key and secret generation (OS randomness).
 getrandom = "0.3.4"
 axum = "0.8.9"

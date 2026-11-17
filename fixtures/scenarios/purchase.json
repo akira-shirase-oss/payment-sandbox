@@ -1,0 +1,9 @@
+{
+  "name": "purchase",
+  "summary": "The first useful release: a 42.00 USD purchase approved, captured in full and partly refunded.",
+  "steps": [
+    {"do": "authorize", "payment": "order", "amount": 4200, "currency": "USD", "scenario": "approve"},
+    {"do": "capture", "payment": "order", "amount": 4200},
+    {"do": "refund", "payment": "order", "amount": 1200}
+  ]
+}
