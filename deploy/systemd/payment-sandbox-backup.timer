@@ -1,0 +1,13 @@
+# Payment Sandbox: a backup every night (SIMULATED MONEY ONLY). Enable with
+# `systemctl enable --now payment-sandbox-backup.timer`; `systemctl list-timers` shows the
+# next run. A run missed while the host was off happens at the next boot (Persistent).
+[Unit]
+Description=Nightly Payment Sandbox backup (simulated money only)
+
+[Timer]
+OnCalendar=*-*-* 03:17:00
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

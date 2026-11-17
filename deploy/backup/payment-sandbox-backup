@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Payment Sandbox backup (SIMULATED MONEY ONLY): run by payment-sandbox-backup.service, as
+# root, on its timer (docs/OPERATING.md, "Backup and restore"; D-083).
+#
+# 1. The database: a live `pg_dump --format=custom` as the schema owner. One consistent
+#    snapshot; the server keeps serving.
+# 2. The network's store (PS_SIM_DB, a redb file): copied while the network is stopped for
+#    the copy (well under a second for a small store), so the file is whole. Payments sent
+#    meanwhile come back uncertain and the reconciler settles them (D-015).
+# 3. The env files (PS_SECRET_KEY opens the stored webhook secrets; keep it with the dump).
+# Each backup is checked (pg_restore --list), then only the newest PS_BACKUP_KEEP of each kind
+# stay in PS_BACKUP_DIR. Copy that directory off the host yourself (rsync, restic, ...).
+set -euo pipefail
+umask 077
+
+url="${PS_MIGRATE_DATABASE_URL:?PS_MIGRATE_DATABASE_URL (from /etc/payment-sandbox/migrate.env)}"
+dir="${PS_BACKUP_DIR:-/var/backups/payment-sandbox}"
+keep="${PS_BACKUP_KEEP:-14}"
+sim_db="${PS_SIM_DB:-/var/lib/payment-sandbox/sim.redb}"
+sim_unit="${PS_BACKUP_SIM_UNIT:-payment-sandbox-sim.service}"
+etc="${PS_BACKUP_ETC:-/etc/payment-sandbox}"
+case "$keep" in '' | *[!0-9]* | 0) echo "backup: PS_BACKUP_KEEP must be a whole number of at least 1" >&2; exit 2 ;; esac
+
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+install -d -m 0700 "$dir"
+cleanup() { rm -f "$dir"/.partial-*; }
+trap cleanup EXIT
+
+# 1. The database, live.
+pg_dump --format=custom --file="$dir/.partial-db" "$url"
+pg_restore --list "$dir/.partial-db" >/dev/null
+mv "$dir/.partial-db" "$dir/db-$stamp.dump"
+
+# 2. The network's store, with the network stopped for the copy.
+if [ -f "$sim_db" ]; then
+  was_active=no
+  if systemctl is-active --quiet "$sim_unit"; then
+    was_active=yes
+    systemctl stop "$sim_unit"
+  fi
+  copied=0
+  cp "$sim_db" "$dir/.partial-sim" && copied=1
+  [ "$was_active" = yes ] && systemctl start "$sim_unit"
+  [ "$copied" = 1 ] || { echo "backup: copying $sim_db failed" >&2; exit 1; }
+  mv "$dir/.partial-sim" "$dir/sim-$stamp.redb"
+else
+  echo "backup: no network store at $sim_db (PS_SIM_DB); skipped" >&2
+fi
+
+# 3. The configuration, secrets included (root only, like the rest of this directory).
+tar -C "$(dirname "$etc")" -cf "$dir/.partial-etc" "$(basename "$etc")"
+mv "$dir/.partial-etc" "$dir/etc-$stamp.tar"
+
+# Retention: the newest $keep of each kind. A glob sorts by name, and the UTC stamps sort
+# oldest first.
+for kind in db sim etc; do
+  files=("$dir/$kind"-*)
+  [ -e "${files[0]}" ] || continue
+  for ((i = 0; i < ${#files[@]} - keep; i++)); do rm -f "${files[i]}"; done
+done
+echo "backup ok: $dir/db-$stamp.dump, sim-$stamp.redb, etc-$stamp.tar (keeping $keep of each)"

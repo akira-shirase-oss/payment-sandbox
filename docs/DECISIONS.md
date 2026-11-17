@@ -1274,6 +1274,24 @@ closes one of its findings, with the test that failed before the fix.
   job also asserts that the old passwordless TCP form fails there (the finding's
   evidence, run).
 
+- **D-083 — Backups run by themselves: a timer, a live dump, the network's store.** The
+  operator guide gave one-off commands that stopped the server, no schedule, no retention
+  and no step to restore `sim.redb` (`deploy/systemd` had only the three services). Now
+  `payment-sandbox-backup.timer` runs `payment-sandbox-backup.service` nightly
+  (`Persistent=true`): a live `pg_dump --format=custom` as the schema owner (one consistent
+  snapshot; the server keeps serving; the dump is read back with `pg_restore --list`), the
+  network's store copied while the network is stopped for the copy (payments sent meanwhile
+  come back `uncertain` and are settled, D-015), and `/etc/payment-sandbox` (the secret key
+  belongs with the dump), into a root-only directory keeping the newest 14 of each; copying
+  it off the host stays the operator's job, and the guide says so. The restore puts the
+  dump into a fresh database (`setup` keeps the passwords) and the store back, then
+  migrates and starts. The release job runs it once on every push against the stock
+  PostgreSQL of D-082: a payment, the timer scheduled, the backup (modes, contents, the
+  network running again), the restore, the payment found, `reconcile --network` clean and
+  a new payment. `scripts/restore-rehearsal.sh` stays the fingerprint-level check of the
+  database part (it needs a quiet source); the guide no longer asks to stop the server for
+  a backup.
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

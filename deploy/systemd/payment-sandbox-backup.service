@@ -1,0 +1,23 @@
+# Payment Sandbox: back up the database (a live pg_dump), the network's store and the env
+# files into /var/backups/payment-sandbox (SIMULATED MONEY ONLY). Started by its timer; run
+# it by hand with `systemctl start payment-sandbox-backup`. See docs/OPERATING.md, section 4.
+[Unit]
+Description=Payment Sandbox backup (simulated money only)
+Documentation=https://github.com/akira-shirase-oss/payment-sandbox/blob/main/docs/OPERATING.md
+After=postgresql.service payment-sandbox-sim.service
+
+[Service]
+Type=oneshot
+# Root: it reads migrate.env's owner URL, stops and starts the network for the store's copy
+# and reads /etc/payment-sandbox; nothing else runs as root.
+EnvironmentFile=/etc/payment-sandbox/migrate.env
+EnvironmentFile=-/etc/payment-sandbox/backup.env
+ExecStart=/opt/payment-sandbox/bin/payment-sandbox-backup
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/backups
+NoNewPrivileges=yes

@@ -30,12 +30,14 @@ On the host, as root:
 ```sh
 useradd --system --home /var/lib/payment-sandbox --shell /usr/sbin/nologin payment-sandbox
 install -d -m 0755 /opt/payment-sandbox/bin
-install -m 0755 target/release/sandbox-server target/release/sandbox-sim target/release/sandbox-cli /opt/payment-sandbox/bin/
+install -m 0755 target/release/sandbox-server target/release/sandbox-sim target/release/sandbox-cli \
+  deploy/backup/payment-sandbox-backup /opt/payment-sandbox/bin/
 cp -R apps/checkout/build /opt/payment-sandbox/checkout
 cp -R apps/dashboard/build /opt/payment-sandbox/dashboard
 install -d -m 0700 /etc/payment-sandbox
 for f in server sim migrate; do install -m 0600 deploy/env/$f.env.example /etc/payment-sandbox/$f.env; done
-install -m 0644 deploy/systemd/*.service /etc/systemd/system/
+install -m 0600 deploy/env/backup.env.example /etc/payment-sandbox/backup.env
+install -m 0644 deploy/systemd/*.service deploy/systemd/*.timer /etc/systemd/system/
 ```
 
 The env files are `0600 root`: systemd reads them as root before it starts each service,
@@ -63,7 +65,7 @@ sudo -u postgres env PS_ADMIN_DATABASE_URL='postgres:///postgres?host=/var/run/p
   /opt/payment-sandbox/bin/sandbox-server setup
 systemctl daemon-reload
 systemctl start payment-sandbox-migrate
-systemctl enable --now payment-sandbox-sim payment-sandbox-server
+systemctl enable --now payment-sandbox-sim payment-sandbox-server payment-sandbox-backup.timer
 ```
 
 With a password for the administrator instead (another distribution, a managed server),
@@ -111,7 +113,8 @@ Sign in to `https://dashboard.sandbox.example.com` with a key. The checkout's pa
 
 1. Read the release's `docs/DECISIONS.md` entries since your version; a migration that
    changes the journal's protections says so.
-2. Back up (section 4) and stop the server: `systemctl stop payment-sandbox-server`.
+2. Back up (`systemctl start payment-sandbox-backup`, section 4) and stop the server:
+   `systemctl stop payment-sandbox-server`.
 3. Install the new binaries and web builds as in section 1.
 4. `systemctl start payment-sandbox-migrate`; it is idempotent, and it fails, changing
    nothing, if a migration cannot apply.
@@ -129,35 +132,49 @@ against the previous release's data (D-072).
 ## 4. Backup and restore
 
 The server's PostgreSQL database and the network's store (`PS_SIM_DB`) are separate
-failure domains, backed up separately; keep `PS_SECRET_KEY` with the database backup.
+failure domains; `payment-sandbox-backup.timer` backs up both every night at about 03:17
+(a missed run happens at the next boot), into `/var/backups/payment-sandbox` (root only):
 
-**Back up** while the server is stopped or idle (the rehearsal compares fingerprints, so a
-write during the dump fails it, D-053):
+- `db-<stamp>.dump`: a live `pg_dump --format=custom` as the schema owner. One consistent
+  snapshot; the server keeps serving. Each dump is read back (`pg_restore --list`).
+- `sim-<stamp>.redb`: the network's store, copied while the network is stopped for the
+  copy (well under a second for a small store; a payment sent meanwhile comes back
+  `uncertain` and the reconciler settles it).
+- `etc-<stamp>.tar`: `/etc/payment-sandbox`, secrets included: `PS_SECRET_KEY` opens the
+  stored webhook secrets, so it belongs with the dump.
+
+The newest 14 of each are kept (`PS_BACKUP_KEEP` and `PS_BACKUP_DIR` in `backup.env`).
+**Copy the directory off the host** (rsync, restic, your backup system): a backup on the same
+disk is not a backup. `systemctl start payment-sandbox-backup` runs one now;
+`journalctl -u payment-sandbox-backup` shows each run.
+
+**Restore** into a fresh database created the way `setup` creates it (it keeps the
+passwords), then put back the network's store from the same backup and let the server check
+everything:
 
 ```sh
+b=/var/backups/payment-sandbox; stamp=20261117T031700Z       # the backup to restore
 systemctl stop payment-sandbox-server
-pg_dump --format=custom --file=/backup/payment_sandbox.dump "postgres://ps_owner:...@127.0.0.1:5432/payment_sandbox"
-systemctl stop payment-sandbox-sim && cp /var/lib/payment-sandbox/sim.redb /backup/sim.redb && systemctl start payment-sandbox-sim
-systemctl start payment-sandbox-server
-```
-
-**Restore** into a fresh database created the way `setup` creates it, then let the server
-check it:
-
-```sh
-systemctl stop payment-sandbox-server
-PS_ADMIN_DATABASE_URL=... PS_DATABASE_NAME=payment_sandbox_restored /opt/payment-sandbox/bin/sandbox-server setup   # keeps the passwords
+sudo -u postgres env PS_ADMIN_DATABASE_URL='postgres:///postgres?host=/var/run/postgresql' \
+  PS_DATABASE_NAME=payment_sandbox_restored /opt/payment-sandbox/bin/sandbox-server setup
 pg_restore --single-transaction --exit-on-error --no-owner --role=ps_owner \
-  --dbname="postgres://ps_owner:...@127.0.0.1:5432/payment_sandbox_restored" /backup/payment_sandbox.dump
-# point PS_DATABASE_URL and PS_MIGRATE_DATABASE_URL at payment_sandbox_restored, then:
-systemctl start payment-sandbox-migrate payment-sandbox-server
+  --dbname="postgres://ps_owner:...@127.0.0.1:5432/payment_sandbox_restored" "$b/db-$stamp.dump"
+# point PS_DATABASE_URL (server.env) and PS_MIGRATE_DATABASE_URL (migrate.env) at
+# payment_sandbox_restored, then put the network's store back:
+systemctl stop payment-sandbox-sim
+install -o payment-sandbox -g payment-sandbox -m 0600 "$b/sim-$stamp.redb" /var/lib/payment-sandbox/sim.redb
+systemctl start payment-sandbox-sim payment-sandbox-migrate payment-sandbox-server
+curl -fsS http://127.0.0.1:56080/readyz
+sandbox-cli reconcile --network                              # clean: the two agree
 ```
 
-`scripts/restore-rehearsal.sh <source> <copy>` is the tested form of this procedure (CI
-runs it): the same dump and single-transaction restore, run as PostgreSQL's administrator
-inside its container, then a fingerprint comparison and the protection checks on both
-sides. The commands above, as the owner on a host, are not run by CI; rehearse them on a
-copy before you need them.
+CI's release job runs exactly this on every push (D-083): a payment, the backup service
+(the timer scheduled), then the restore into a fresh database with the store put back, the
+payment found again, a clean `reconcile --network` and a new payment.
+`scripts/restore-rehearsal.sh <source> <copy>` is the stricter check of the database part:
+the same dump and single-transaction restore across two clusters, then a fingerprint
+comparison and the protection checks on both sides (it needs a quiet source, so the
+fingerprints can match).
 
 Restoring the database from **before** some operations, with a newer network store, is
 safe (drill c, D-015): `GET /v1/reconciliation?network=true` lists the operations the
