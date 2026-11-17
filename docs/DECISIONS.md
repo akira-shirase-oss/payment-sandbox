@@ -1372,6 +1372,23 @@ closes one of its findings, with the test that failed before the fix.
   that is not true yet) and the layout holds the nav's height while the session loads,
   bringing every signed-in page to about 0.001.
 
+- **D-089 — Full load runs on GitHub-hosted runners.** The full runs (≥1,000,000 requests)
+  were owed since M0 because the laptop is shared: its load decided every smoke. They now
+  run on GitHub-hosted runners through a manual workflow (`.github/workflows/load-full.yml`,
+  `workflow_dispatch`, one scenario or all): one job per scenario, each on its own runner
+  with its own PostgreSQL started from `deploy/compose.yaml` (the local stack's image,
+  digest and settings, so lock waits are logged as they are locally), the release build, and
+  `MODE=full scripts/load.sh <scenario>` unchanged. Each result is labelled "GitHub-hosted
+  runner" with the runner's CPU, cores, memory, OS, image and run id (no host names) and
+  uploaded as an artifact, pass or miss; the job fails on a threshold miss after the upload.
+  The results are committed under `perf/results/` as they came out, each with a row in
+  `perf/README.md`'s load matrix; a miss is kept, never rerun until green. They are
+  observations on shared cloud hardware where the load generator, the server, the network
+  and PostgreSQL share one 4-vCPU VM, not capacity. `m2-refund-race` runs at its defined
+  size (36,000 offered refunds), below the 1,000,000 rule by design: it measures exact
+  admission under contention, not volume. Actions are pinned by commit SHA and the token
+  is `contents: read`, as in `ci.yml`.
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is
