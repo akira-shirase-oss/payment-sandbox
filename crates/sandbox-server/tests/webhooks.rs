@@ -914,3 +914,75 @@ async fn endpoints_are_capped_per_project_and_listed_in_pages() {
     app.cleanup().await;
     sim.remove().await;
 }
+
+/// Review N10: a webhook could target the simulator's routes, the server's own API or
+/// PostgreSQL's port (a blind POST with a fixed body to a chosen path). Now the sandbox's
+/// own ports and PostgreSQL's are always refused, and any other loopback port needs an
+/// explicit list (`PS_WEBHOOK_PORTS`) or the dev profile's opt-in.
+async fn create(app: &TestApp, key: &str, url: String) -> StatusCode {
+    app.post("/v1/webhook_endpoints", key, None, json!({"url": url}))
+        .await
+        .0
+}
+
+#[tokio::test]
+async fn webhooks_may_not_target_the_sandboxs_own_ports_or_unlisted_ones() {
+    let sim = TestSim::start().await;
+    let sim_port = sim.url.rsplit(':').next().unwrap().to_owned();
+    let dev = TestApp::with_sim(
+        &sim,
+        &[("PS_SECRET_KEY", SECRET_KEY), ("PS_PROFILE", "dev")],
+    )
+    .await;
+    let (_, key) = dev.project("dev").await;
+    for url in [
+        format!("http://127.0.0.1:{sim_port}/v1/operations"),
+        format!("http://[::ffff:127.0.0.1]:{sim_port}/v1/faults"),
+        "http://127.0.0.1:56080/v1/projects".to_owned(),
+        "http://localhost:56432/x".to_owned(),
+    ] {
+        assert_eq!(
+            create(&dev, &key, url.clone()).await,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{url}"
+        );
+    }
+    assert_eq!(
+        create(&dev, &key, "http://127.0.0.1:9/hook".to_owned()).await,
+        StatusCode::CREATED
+    );
+
+    let listed = TestApp::with_sim(
+        &sim,
+        &[
+            ("PS_SECRET_KEY", SECRET_KEY),
+            ("PS_PROFILE", "shared"),
+            ("PS_WEBHOOK_PORTS", "9,56100-56110"),
+        ],
+    )
+    .await;
+    let (_, key) = listed.project("listed").await;
+    for (url, want) in [
+        ("http://127.0.0.1:9/", StatusCode::CREATED),
+        ("http://127.0.0.1:56105/", StatusCode::CREATED),
+        ("http://127.0.0.1:10/", StatusCode::UNPROCESSABLE_ENTITY),
+    ] {
+        assert_eq!(create(&listed, &key, url.to_owned()).await, want, "{url}");
+    }
+
+    let none = TestApp::with_sim(
+        &sim,
+        &[("PS_SECRET_KEY", SECRET_KEY), ("PS_PROFILE", "shared")],
+    )
+    .await;
+    let (_, key) = none.project("none").await;
+    assert_eq!(
+        create(&none, &key, "http://127.0.0.1:9/".to_owned()).await,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "outside the dev profile, an unlisted port"
+    );
+    for app in [dev, listed, none] {
+        app.cleanup().await;
+    }
+    sim.remove().await;
+}

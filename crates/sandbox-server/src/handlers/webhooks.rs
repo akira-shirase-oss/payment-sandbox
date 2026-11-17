@@ -17,6 +17,9 @@ use crate::error::ApiError;
 use crate::extract::{PathId, SandboxJson};
 use crate::state::AppState;
 
+/// Why a target port is refused (review N10, D-059).
+pub const PORT_REFUSED: &str = "webhooks may not target the sandbox's own ports or PostgreSQL's, and other ports need PS_WEBHOOK_PORTS (or PS_PROFILE=dev)";
+
 /// How long a rotated-out secret keeps signing.
 pub const ROTATION_OVERLAP: std::time::Duration = std::time::Duration::from_hours(24);
 
@@ -48,7 +51,11 @@ pub async fn create(
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Admin)?;
     let secret_box = secrets(&state)?;
-    webhook::parse_target(&body.url).map_err(|e| ApiError::InvalidBody(e.to_string()))?;
+    let target =
+        webhook::parse_target(&body.url).map_err(|e| ApiError::InvalidBody(e.to_string()))?;
+    if !state.config.webhook_ports.permits(target.port) {
+        return Err(ApiError::InvalidBody(PORT_REFUSED.to_owned()));
+    }
     let id = Uuid::now_v7();
     let secret = new_secret()?;
     let sealed = secret_box

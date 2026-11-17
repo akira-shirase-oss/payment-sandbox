@@ -122,6 +122,7 @@ pub struct Deliverer {
     http: reqwest::Client,
     poll: Duration,
     tasks: Arc<Tasks>,
+    ports: crate::config::WebhookPorts,
 }
 
 impl std::fmt::Debug for Deliverer {
@@ -151,6 +152,7 @@ impl Deliverer {
             http,
             poll: state.config.delivery_poll,
             tasks: state.tasks.clone(),
+            ports: state.config.webhook_ports.clone(),
         })
     }
 
@@ -327,6 +329,14 @@ impl Deliverer {
             status: None,
             error: e.to_string(),
         })?;
+        // Checked again here: an endpoint registered before the policy, or before a port
+        // became one of the sandbox's own (review N10).
+        if !self.ports.permits(target.port) {
+            return Err(Attempt::Dead {
+                status: None,
+                error: crate::handlers::webhooks::PORT_REFUSED.to_owned(),
+            });
+        }
         let host = target
             .host
             .trim_start_matches('[')

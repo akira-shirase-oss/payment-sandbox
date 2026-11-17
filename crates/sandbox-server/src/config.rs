@@ -81,6 +81,8 @@ pub struct Config {
     pub reconcile_network_max_pages: usize,
     /// Report budgets and concurrency (D-047).
     pub reports: ReportSettings,
+    /// The loopback ports webhooks may target (review N10, D-059).
+    pub webhook_ports: WebhookPorts,
     /// Connection cap and transport deadlines of the listener (D-054): `PS_MAX_CONNECTIONS`,
     /// `PS_READ_TIMEOUT_MS`, `PS_WRITE_TIMEOUT_MS`, `PS_MAX_REQUESTS_PER_CONNECTION`,
     /// `PS_MAX_CONNECTION_AGE_MS`.
@@ -125,6 +127,40 @@ pub struct ReconcileTuning {
     pub alert_age: Duration,
 }
 
+/// Which loopback ports webhooks may target (review N10, D-059): never the server's own,
+/// the network's or PostgreSQL's; otherwise those `PS_WEBHOOK_PORTS` lists (`9,56100-56199`),
+/// or any port when that is unset and `PS_PROFILE=dev` (the developer's opt-in); with
+/// neither, none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebhookPorts {
+    /// Always refused.
+    pub denied: Vec<u16>,
+    /// Inclusive ranges allowed; `None` allows every port not denied.
+    pub allowed: Option<Vec<(u16, u16)>>,
+}
+
+impl WebhookPorts {
+    /// True when a webhook may target `port`.
+    pub fn permits(&self, port: u16) -> bool {
+        !self.denied.contains(&port)
+            && self
+                .allowed
+                .as_ref()
+                .is_none_or(|ranges| ranges.iter().any(|(lo, hi)| (*lo..=*hi).contains(&port)))
+    }
+}
+
+/// The port of a `scheme://[user[:password]@]host:port/...` URL, if it names one.
+fn url_port(url: &str) -> Option<u16> {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let authority = rest.split(['/', '?']).next()?;
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let (host, port) = host_port.rsplit_once(':')?;
+    (!host.ends_with('[') && !port.contains(']'))
+        .then(|| port.parse().ok())
+        .flatten()
+}
+
 /// The server listener's default transport limits (chosen, not measured; D-054).
 pub const SERVER_LIMITS: sandbox_http::Limits = sandbox_http::Limits::with_connections(512);
 
@@ -146,16 +182,7 @@ impl Config {
             lookup: &lookup,
             errors: &mut errors,
         };
-        let default_listen = SocketAddr::from(([127, 0, 0, 1], 56080));
-        let listen = match lookup("PS_LISTEN") {
-            None => default_listen,
-            Some(raw) => raw.parse().unwrap_or_else(|_| {
-                parse
-                    .errors
-                    .push("PS_LISTEN is not a socket address".to_owned());
-                default_listen
-            }),
-        };
+        let listen = parse.listen();
         let database_url = parse.required("PS_DATABASE_URL");
         let sim_token = parse.required("PS_SIM_TOKEN");
         let pool = PoolSettings {
@@ -181,6 +208,8 @@ impl Config {
         let delivery_poll = parse.millis("PS_DELIVERY_POLL_MS", 250);
         let reports = parse.reports();
         let transport = parse.transport();
+        let sim_url = lookup("PS_SIM_URL").unwrap_or_else(|| "http://127.0.0.1:56081".to_owned());
+        let webhook_ports = parse.webhook_ports(listen, &sim_url, &database_url);
         let reconcile = parse.reconcile_tuning(reconcile_batch);
         let secret_key = lookup("PS_SECRET_KEY");
         if let Some(key) = &secret_key
@@ -190,7 +219,6 @@ impl Config {
         }
         let log_format = log_format(lookup("PS_LOG_FORMAT").as_deref(), &mut errors);
         let log_filter = lookup("PS_LOG").unwrap_or_else(|| "info".to_owned());
-        let sim_url = lookup("PS_SIM_URL").unwrap_or_else(|| "http://127.0.0.1:56081".to_owned());
         if !is_loopback_http(&sim_url) {
             errors.push(
                 "PS_SIM_URL must be http://127.0.0.1:<port> or http://localhost:<port>: the network is a local process (D-023)"
@@ -234,6 +262,7 @@ impl Config {
             secret_key: secret_key.map(Secret::new),
             reports,
             transport,
+            webhook_ports,
             reconcile,
             delivery_poll,
         };
@@ -357,6 +386,60 @@ impl<F: Fn(&str) -> Option<String>> Parser<'_, F> {
             backoff_max: self.millis("PS_RECONCILE_BACKOFF_MAX_MS", 300_000),
             alert_age: self.millis("PS_RECONCILE_ALERT_AGE_MS", 600_000),
         }
+    }
+
+    fn listen(&mut self) -> SocketAddr {
+        let default_listen = SocketAddr::from(([127, 0, 0, 1], 56080));
+        match (self.lookup)("PS_LISTEN") {
+            None => default_listen,
+            Some(raw) => raw.parse().unwrap_or_else(|_| {
+                self.errors
+                    .push("PS_LISTEN is not a socket address".to_owned());
+                default_listen
+            }),
+        }
+    }
+
+    fn webhook_ports(
+        &mut self,
+        listen: SocketAddr,
+        sim_url: &str,
+        database_url: &str,
+    ) -> WebhookPorts {
+        let mut denied = vec![listen.port()];
+        denied.extend(url_port(sim_url));
+        denied.push(url_port(database_url).unwrap_or(5432));
+        let profile =
+            sandbox_domain::access::Profile::parse((self.lookup)("PS_PROFILE").as_deref())
+                .unwrap_or_else(|_| {
+                    self.errors
+                        .push("PS_PROFILE must be dev, ci or shared".to_owned());
+                    sandbox_domain::access::Profile::Shared
+                });
+        let allowed = match (self.lookup)("PS_WEBHOOK_PORTS") {
+            Some(raw) => Some(
+                raw.split(',')
+                    .filter(|part| !part.trim().is_empty())
+                    .filter_map(|part| {
+                        let part = part.trim();
+                        let range = match part.split_once('-') {
+                            Some((lo, hi)) => lo.parse().ok().zip(hi.parse().ok()),
+                            None => part.parse().ok().map(|p: u16| (p, p)),
+                        };
+                        if range.is_none_or(|(lo, hi): (u16, u16)| lo == 0 || lo > hi) {
+                            self.errors.push(format!(
+                                "PS_WEBHOOK_PORTS: {part:?} is not a port or a range like 56100-56199"
+                            ));
+                            return None;
+                        }
+                        range
+                    })
+                    .collect(),
+            ),
+            None if profile == sandbox_domain::access::Profile::Dev => None,
+            None => Some(Vec::new()),
+        };
+        WebhookPorts { denied, allowed }
     }
 
     fn transport(&mut self) -> sandbox_http::Limits {

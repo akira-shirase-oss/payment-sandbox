@@ -715,6 +715,14 @@ review found. Each states the choice, the alternative and the cost.
     used to be approved and lower its record of what was captured, after
     which 1,500 was captured against 1,000 authorized. Test:
     `amounts_outside_the_valid_range_are_refused_and_move_nothing`.
+  - *N10:* webhooks may never target the server's listen port, the
+    network's port or PostgreSQL's (whatever the host form, IPv4-mapped
+    included), at registration (`422`) and again at delivery (`dead`).
+    Any other loopback port needs `PS_WEBHOOK_PORTS` (`9,56100-56199`), or
+    the developer's opt-in `PS_PROFILE=dev` when that is unset; with
+    neither, no target is accepted. (This refines D-046, which relied on the
+    credentials alone.) `scripts/load.sh` lists the store's port. Test:
+    `webhooks_may_not_target_the_sandboxs_own_ports_or_unlisted_ones`.
 
 ## Open questions (still open)
 

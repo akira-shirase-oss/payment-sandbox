@@ -179,6 +179,8 @@ impl TestApp {
             ("PS_DATABASE_URL".to_owned(), db.url()),
             ("PS_BOOTSTRAP_TOKEN".to_owned(), BOOTSTRAP.to_owned()),
             ("PS_SIM_TOKEN".to_owned(), SIM_TOKEN.to_owned()),
+            // Webhook tests deliver to receivers on random loopback ports (D-059's opt-in).
+            ("PS_PROFILE".to_owned(), "dev".to_owned()),
         ]);
         for (k, v) in extra {
             vars.insert((*k).to_owned(), (*v).to_owned());
