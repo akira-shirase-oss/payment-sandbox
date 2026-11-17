@@ -48,12 +48,10 @@ impl MakeRequestId for MakeRequestUuidV7 {
     }
 }
 
-/// True for client ids safe to copy into logs: 1–64 of `[A-Za-z0-9._-]`.
+/// True for client ids safe to copy into logs and back onto responses: canonical UUIDs only
+/// (review finding 8). Free-form ids let a card number reach logs and response headers.
 pub fn is_acceptable_request_id(value: &str) -> bool {
-    (1..=MAX_REQUEST_ID_LEN).contains(&value.len())
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    value.len() == 36 && uuid::Uuid::try_parse(value).is_ok()
 }
 
 async fn sanitize_request_id(mut request: Request) -> Request {
@@ -67,7 +65,8 @@ async fn sanitize_request_id(mut request: Request) -> Request {
     request
 }
 
-/// Root span: method, matched route (low cardinality), path (never the query string), id.
+/// Root span: method, matched route template (low cardinality) and request id. Never the
+/// concrete path: a path segment can carry anything a client typed (review finding 8).
 fn make_span(request: &Request<Body>) -> Span {
     let request_id = request
         .headers()
@@ -82,7 +81,6 @@ fn make_span(request: &Request<Body>) -> Span {
         "request",
         method = %request.method(),
         route,
-        path = %request.uri().path(),
         request_id = %request_id,
     )
 }
@@ -198,7 +196,8 @@ mod tests {
     fn request_id_policy() {
         for (input, expected) in [
             ("018f2f0e-3c1a-7cc0-9e1e-3f1f6b7f9a01", true),
-            ("trace.42_a", true),
+            ("trace.42_a", false),
+            ("4111111111111111", false),
             ("", false),
             ("has space", false),
             ("new\nline", false),

@@ -87,15 +87,21 @@ async fn probes_answer_and_every_response_is_labelled_simulated() {
 async fn errors_from_routing_share_one_envelope_with_the_request_id() {
     let router = app(&state(config("postgres://x@127.0.0.1:1/none", &[])));
     let request = Request::get("/nope")
-        .header("x-request-id", "trace-123")
+        .header("x-request-id", "018f2f0e-3c1a-7cc0-9e1e-3f1f6b7f9a01")
         .body(Body::empty())
         .unwrap();
     let (status, headers, body) = call(&router, request).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["error"]["code"], "route_not_found");
-    assert_eq!(body["error"]["request_id"], "trace-123");
+    assert_eq!(
+        body["error"]["request_id"],
+        "018f2f0e-3c1a-7cc0-9e1e-3f1f6b7f9a01"
+    );
     assert_eq!(body["simulated"], true);
-    assert_eq!(headers["x-request-id"], "trace-123");
+    assert_eq!(
+        headers["x-request-id"],
+        "018f2f0e-3c1a-7cc0-9e1e-3f1f6b7f9a01"
+    );
 
     let (status, _, body) = call(
         &router,

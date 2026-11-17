@@ -391,6 +391,17 @@ review found. Each states the choice, the alternative and the cost.
   one fixed message that names no value. Test:
   `card_numbers_as_json_numbers_are_refused_and_schema_errors_never_echo_input`.
 
+- **D-045 — Client request ids are UUIDs; logs carry route templates.**
+  Review finding: a card number in the URL path or in `X-Request-Id` was
+  logged (once at WARN, which the default filter emits) and the request id
+  was echoed on the response. Now only canonical UUIDs are accepted as
+  client request ids (anything else is replaced by a fresh UUIDv7), and
+  the root span records the matched route template, never the concrete
+  path. UUID path parameters are parsed by the server's own extractor:
+  axum's `Path<Uuid>` logs its rejection, at TRACE, with the raw segment.
+  `axum::rejection` logging is off in every filter. Test: `tests/logs.rs`
+  (a card number in the path and in `X-Request-Id`).
+
 ## Open questions (still open)
 
 - **Dashboard authentication** — per-project-owner session login is the

@@ -14,11 +14,10 @@ use sandbox_domain::scenario::Scenario;
 use sandbox_domain::{Amount, Currency, OperationKind, OperationState};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use uuid::Uuid;
 
 use crate::auth::Auth;
 use crate::error::ApiError;
-use crate::extract::{IdempotencyKeyHeader, SandboxJson};
+use crate::extract::{IdempotencyKeyHeader, PathId, SandboxJson};
 use crate::lifecycle::{self, AuthorizeInput, Outcome};
 use crate::state::AppState;
 
@@ -80,7 +79,7 @@ pub async fn create(
 pub async fn capture(
     State(state): State<AppState>,
     auth: Auth,
-    Path(payment_id): Path<Uuid>,
+    PathId(payment_id): PathId,
     IdempotencyKeyHeader(key): IdempotencyKeyHeader,
     SandboxJson(body): SandboxJson<AmountBody>,
 ) -> Result<Response, ApiError> {
@@ -101,7 +100,7 @@ pub async fn capture(
 pub async fn void(
     State(state): State<AppState>,
     auth: Auth,
-    Path(payment_id): Path<Uuid>,
+    PathId(payment_id): PathId,
     IdempotencyKeyHeader(key): IdempotencyKeyHeader,
     SandboxJson(Empty {}): SandboxJson<Empty>,
 ) -> Result<Response, ApiError> {
@@ -122,7 +121,7 @@ pub async fn void(
 pub async fn refund(
     State(state): State<AppState>,
     auth: Auth,
-    Path(payment_id): Path<Uuid>,
+    PathId(payment_id): PathId,
     IdempotencyKeyHeader(key): IdempotencyKeyHeader,
     SandboxJson(body): SandboxJson<AmountBody>,
 ) -> Result<Response, ApiError> {
@@ -143,7 +142,7 @@ pub async fn refund(
 pub async fn get(
     State(state): State<AppState>,
     auth: Auth,
-    Path(payment_id): Path<Uuid>,
+    PathId(payment_id): PathId,
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Read)?;
     let payment = sandbox_db::payments::get_payment(&state.db, auth.scope(), payment_id)
@@ -163,7 +162,7 @@ pub async fn get(
 pub async fn journal(
     State(state): State<AppState>,
     auth: Auth,
-    Path(payment_id): Path<Uuid>,
+    PathId(payment_id): PathId,
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Read)?;
     if sandbox_db::payments::get_payment(&state.db, auth.scope(), payment_id)

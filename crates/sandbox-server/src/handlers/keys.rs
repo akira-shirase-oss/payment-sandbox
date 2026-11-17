@@ -3,7 +3,7 @@
 
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
 };
@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::auth::{self, Auth};
 use crate::error::ApiError;
-use crate::extract::SandboxJson;
+use crate::extract::{PathId, SandboxJson};
 use crate::state::AppState;
 
 /// `POST /v1/keys` body.
@@ -93,7 +93,7 @@ pub async fn list(State(state): State<AppState>, auth: Auth) -> Result<Response,
 pub async fn revoke(
     State(state): State<AppState>,
     auth: Auth,
-    Path(key_id): Path<Uuid>,
+    PathId(key_id): PathId,
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Admin)?;
     let actor = format!("key:{}", auth.key_id());

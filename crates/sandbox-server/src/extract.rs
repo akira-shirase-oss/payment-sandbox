@@ -53,6 +53,25 @@ impl<S: Send + Sync> FromRequestParts<S> for IdempotencyKeyHeader {
     }
 }
 
+/// A UUID path parameter. Parsed here rather than by axum's `Path<Uuid>`, whose rejection
+/// is logged (at TRACE) with the raw segment — which may be a card number (review 8).
+#[derive(Debug, Clone, Copy)]
+pub struct PathId(pub uuid::Uuid);
+
+impl<S: Send + Sync> FromRequestParts<S> for PathId {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let axum::extract::Path(raw): axum::extract::Path<String> =
+            axum::extract::Path::from_request_parts(parts, state)
+                .await
+                .map_err(|_| ApiError::BadRequest("malformed path".to_owned()))?;
+        uuid::Uuid::try_parse(&raw)
+            .map(Self)
+            .map_err(|_| ApiError::NotFound("resource"))
+    }
+}
+
 /// A JSON body that passed the card guard.
 #[derive(Debug, Clone)]
 pub struct SandboxJson<T>(pub T);

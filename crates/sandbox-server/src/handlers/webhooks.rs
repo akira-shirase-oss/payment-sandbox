@@ -2,7 +2,7 @@
 
 use axum::{
     Json,
-    extract::{Path, Query, State},
+    extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::auth::Auth;
 use crate::error::ApiError;
-use crate::extract::SandboxJson;
+use crate::extract::{PathId, SandboxJson};
 use crate::state::AppState;
 
 /// How long a rotated-out secret keeps signing.
@@ -75,7 +75,7 @@ pub async fn list(State(state): State<AppState>, auth: Auth) -> Result<Response,
 pub async fn rotate(
     State(state): State<AppState>,
     auth: Auth,
-    Path(id): Path<Uuid>,
+    PathId(id): PathId,
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Admin)?;
     let secret_box = secrets(&state)?;
@@ -94,7 +94,7 @@ pub async fn rotate(
 pub async fn disable(
     State(state): State<AppState>,
     auth: Auth,
-    Path(id): Path<Uuid>,
+    PathId(id): PathId,
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Admin)?;
     if !sandbox_db::webhooks::disable(&state.db, auth.scope(), id).await? {

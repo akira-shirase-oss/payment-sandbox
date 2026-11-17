@@ -7,7 +7,8 @@ use crate::config::LogFormat;
 
 /// Installs the global subscriber.
 pub fn init(format: LogFormat, filter: &str) -> anyhow::Result<()> {
-    let filter = EnvFilter::try_new(filter)?;
+    // axum logs extractor rejections (at TRACE) with the raw input; never emit them.
+    let filter = EnvFilter::try_new(format!("{filter},axum::rejection=off"))?;
     let registry = tracing_subscriber::registry().with(filter);
     match format {
         LogFormat::Json => registry

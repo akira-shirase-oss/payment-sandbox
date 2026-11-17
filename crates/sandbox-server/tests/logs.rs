@@ -82,6 +82,33 @@ async fn no_secret_ever_reaches_the_logs() {
     )
     .await;
 
+    // Review finding 8: a card number in the path or in X-Request-Id is never logged or
+    // echoed back.
+    let request = axum::http::Request::get("/v1/payments/4242424242424242")
+        .header("authorization", format!("Bearer {admin}"))
+        .body(axum::body::Body::empty())
+        .unwrap();
+    tower::ServiceExt::oneshot(app.router.clone(), request)
+        .await
+        .unwrap();
+    let request = axum::http::Request::post("/v1/payments")
+        .header("authorization", format!("Bearer {admin}"))
+        .header("idempotency-key", "rid-1")
+        .header("x-request-id", "4111111111111111")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            r#"{"amount": 100, "currency": "USD", "token": "tok_sim_approve"}"#,
+        ))
+        .unwrap();
+    let response = tower::ServiceExt::oneshot(app.router.clone(), request)
+        .await
+        .unwrap();
+    assert_ne!(
+        response.headers()["x-request-id"],
+        "4111111111111111",
+        "a card-like request id was echoed"
+    );
+
     // Canary: proves the capture sees events from the code under test's thread.
     tracing::debug!(canary = "capture-canary-7f3a", "canary");
     let logs = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
@@ -106,10 +133,13 @@ async fn no_secret_ever_reaches_the_logs() {
         "4242424242424242",
         "4000056655665556",
         "5555555555554444",
+        "4111111111111111",
+        "/v1/payments/4242424242424242",
     ] {
+        let line = logs.lines().find(|l| l.contains(secret)).unwrap_or("");
         assert!(
             !logs.contains(secret),
-            "a secret reached the logs: {secret}"
+            "a secret reached the logs: {secret} in {line}"
         );
     }
     drop(guard);
