@@ -536,6 +536,19 @@ review found. Each states the choice, the alternative and the cost.
   whose real binary panics in its first sweep (`PS_FAULT=reconciler_panic`,
   fault-injection builds only).
 
+- **D-052 — One clock per timestamp in delivery.** Review finding: a new
+  delivery's `next_attempt_at` defaulted to the database's `now()`, while
+  claims compare it with the deliverer's injected clock, so a deliverer
+  clock behind the database's stalled every new delivery until it caught
+  up (a delay, not a loss). Now every timestamp is compared only on the
+  clock that wrote it: a new delivery is due at `-infinity`, at once on
+  any clock (migration 0009); retries, leases and the breaker (D-049) are
+  written by the deliverer's clock and compared on it; a rotation window
+  (`previous_expires_at`, set by the API) is written by the database's
+  clock and now compared on it in claims too, as the endpoint listing
+  already did. Test:
+  `a_new_delivery_is_due_at_once_whatever_the_deliverers_clock_says`.
+
 ## Open questions (still open)
 
 - **Dashboard authentication** — per-project-owner session login is the

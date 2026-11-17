@@ -791,3 +791,27 @@ async fn an_endpoint_that_keeps_failing_opens_its_circuit_and_is_probed_once() {
     app.cleanup().await;
     sim.remove().await;
 }
+
+/// Review finding 20: a new delivery's `next_attempt_at` came from the database's clock,
+/// while claims compare it with the deliverer's, so a deliverer clock behind the database's
+/// stalled every new delivery until it caught up. A new delivery is now due at once on any
+/// clock.
+#[tokio::test]
+async fn a_new_delivery_is_due_at_once_whatever_the_deliverers_clock_says() {
+    let (sim, app, key) = setup().await;
+    let (url, hits) = counting_receiver(Arc::new(std::sync::atomic::AtomicBool::new(true))).await;
+    endpoint(&app, &key, &url).await;
+    let clock = Arc::new(ShiftedClock::default());
+    clock.jump(-3_600_000);
+    purchase(&app, &key, 1, 0).await;
+    let deliverer = Deliverer::new(&app.state, clock).unwrap();
+    let report = deliverer.run_once().await.unwrap();
+    assert_eq!(
+        (report.claimed, report.delivered),
+        (1, 1),
+        "a deliverer an hour behind the database never saw the new delivery: {report:?}"
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    app.cleanup().await;
+    sim.remove().await;
+}

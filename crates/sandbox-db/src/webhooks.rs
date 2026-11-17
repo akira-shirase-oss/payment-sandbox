@@ -4,6 +4,11 @@
 //! read from the database clock, so a test can jump the deliverer's clock (drill (b), the
 //! wall-clock half) and prove a jump causes at most a duplicate delivery: every claim bumps
 //! `lease_token`, and only the holder of the current token can record a result.
+//!
+//! One clock per timestamp (D-052, review finding 20): a schedule, lease or breaker time is
+//! written by the deliverer's clock and compared on it (a new delivery is due at
+//! `-infinity`, at once on any clock); a rotation window is written by the database's clock
+//! and compared on it.
 
 use serde::Serialize;
 use sqlx::{PgPool, Row};
@@ -233,8 +238,9 @@ pub async fn claim(
             AND w.project_id = d.project_id AND w.id = d.endpoint_id
          RETURNING d.project_id, d.event_id, d.endpoint_id, d.lease_token, d.attempts,
                    w.url, w.secret_ciphertext, w.secret_nonce,
-                   CASE WHEN w.previous_expires_at > $1 THEN w.previous_ciphertext END AS previous_ciphertext,
-                   CASE WHEN w.previous_expires_at > $1 THEN w.previous_nonce END AS previous_nonce,
+                   -- The rotation window was written by the database's clock: compared on it.
+                   CASE WHEN w.previous_expires_at > now() THEN w.previous_ciphertext END AS previous_ciphertext,
+                   CASE WHEN w.previous_expires_at > now() THEN w.previous_nonce END AS previous_nonce,
                    e.kind, e.payment_id, e.operation_id, e.sequence,
                    extract(epoch FROM e.created_at)::bigint AS created_at",
     )
