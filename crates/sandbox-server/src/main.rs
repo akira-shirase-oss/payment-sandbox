@@ -8,6 +8,56 @@ use tokio::net::TcpListener;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    match std::env::args().nth(1).as_deref() {
+        None | Some("serve") => serve().await,
+        Some("setup") => setup().await,
+        Some("migrate") => migrate_command().await,
+        Some(other) => anyhow::bail!("unknown command {other:?}; use serve, setup or migrate"),
+    }
+}
+
+/// `sandbox-server setup`: as the stack's administrator (`PS_ADMIN_DATABASE_URL`), creates
+/// the roles (D-038) and the database `PS_DATABASE_NAME` (default `payment_sandbox`) if it
+/// does not exist.
+async fn setup() -> anyhow::Result<()> {
+    use sqlx::Connection as _;
+    let admin_url =
+        std::env::var("PS_ADMIN_DATABASE_URL").context("PS_ADMIN_DATABASE_URL is required")?;
+    let name = std::env::var("PS_DATABASE_NAME").unwrap_or_else(|_| "payment_sandbox".to_owned());
+    let mut admin = sqlx::PgConnection::connect(&admin_url)
+        .await
+        .context("connecting as the administrator")?;
+    sandbox_db::roles::bootstrap(&mut admin)
+        .await
+        .context("creating the roles")?;
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)")
+            .bind(&name)
+            .fetch_one(&mut admin)
+            .await?;
+    if !exists {
+        sandbox_db::roles::create_database(&mut admin, &name)
+            .await
+            .context("creating the database")?;
+    }
+    println!("setup ok: roles ps_owner, ps_runtime, ps_app; database {name}");
+    Ok(())
+}
+
+/// `sandbox-server migrate`: applies migrations as the owner (`PS_MIGRATE_DATABASE_URL`).
+/// The server itself never migrates: it does not own the schema.
+async fn migrate_command() -> anyhow::Result<()> {
+    let url =
+        std::env::var("PS_MIGRATE_DATABASE_URL").context("PS_MIGRATE_DATABASE_URL is required")?;
+    let db = sandbox_db::connect_lazy(&url, &sandbox_db::PoolSettings::default())
+        .context("configuring the pool")?;
+    migrate(&db).await?;
+    db.close().await;
+    println!("migrate ok");
+    Ok(())
+}
+
+async fn serve() -> anyhow::Result<()> {
     let config = Config::from_env().context("loading configuration")?;
     telemetry::init(config.log_format, &config.log_filter).context("initialising telemetry")?;
     tracing::warn!(
@@ -18,8 +68,14 @@ async fn main() -> anyhow::Result<()> {
     let signal = shutdown::os_signal().context("installing signal handlers")?;
     let db = sandbox_db::connect_lazy(config.database_url.expose(), &config.pool)
         .context("configuring the database pool")?;
-    if config.migrate_on_start {
-        migrate(&db).await?;
+    // Refuse to serve as a role that could switch the journal's protections off (D-038).
+    match sandbox_db::roles::check_runtime(&db).await {
+        Ok(()) => {}
+        Err(sandbox_db::roles::RoleCheckError::Refused(problem)) => anyhow::bail!("{problem}"),
+        Err(sandbox_db::roles::RoleCheckError::Db(error)) => {
+            return Err(error)
+                .context("checking the database role (is the database migrated and reachable?)");
+        }
     }
     let listener = TcpListener::bind(config.listen)
         .await

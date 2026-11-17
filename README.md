@@ -18,9 +18,11 @@
 export PATH="$(brew --prefix rustup)/bin:$PATH"   # the pinned toolchain (rust-toolchain.toml)
 scripts/stack.sh up                                # PostgreSQL on 127.0.0.1:56432 (compose project payment-sandbox)
 eval "$(scripts/stack.sh env)"
+cargo run -p sandbox-server -- setup               # roles ps_owner / ps_runtime / ps_app + database (D-038)
+cargo run -p sandbox-server -- migrate             # migrations, as the owner
 scripts/check.sh                                   # the gate CI runs: fmt, clippy, architecture, tests, cargo-deny
 cargo run -p sandbox-sim                           # simulated network on 127.0.0.1:56081
-cargo run -p sandbox-server                        # API on 127.0.0.1:56080 (webhooks need PS_SECRET_KEY)
+cargo run -p sandbox-server                        # API on 127.0.0.1:56080, as ps_app (webhooks need PS_SECRET_KEY)
 cargo run -p sandbox-dev-store                     # the development store on 127.0.0.1:56082
 ```
 

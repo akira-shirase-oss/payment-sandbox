@@ -57,8 +57,6 @@ pub struct Config {
     pub readiness_timeout: Duration,
     /// Hard deadline for draining in-flight requests at shutdown.
     pub shutdown_grace: Duration,
-    /// Apply migrations at startup.
-    pub migrate_on_start: bool,
     /// Log format.
     pub log_format: LogFormat,
     /// `tracing` filter directives.
@@ -133,7 +131,6 @@ impl Config {
         let reconcile_batch: i64 = parse.value("PS_RECONCILE_BATCH", Some(200));
         let delivery_poll = parse.millis("PS_DELIVERY_POLL_MS", 250);
         let secret_key = lookup("PS_SECRET_KEY");
-        let migrate_on_start: bool = parse.value("PS_MIGRATE", Some(true));
         if let Some(key) = &secret_key
             && crate::secrets::SecretBox::from_hex(key).is_err()
         {
@@ -171,7 +168,6 @@ impl Config {
             max_in_flight,
             readiness_timeout,
             shutdown_grace,
-            migrate_on_start,
             log_format,
             log_filter,
             bootstrap_token: bootstrap_token.map(Secret::new),

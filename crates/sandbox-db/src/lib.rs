@@ -14,6 +14,7 @@ pub mod payments;
 pub mod pool;
 pub mod projects;
 pub mod reconcile;
+pub mod roles;
 #[cfg(feature = "test-support")]
 pub mod testing;
 pub mod webhooks;

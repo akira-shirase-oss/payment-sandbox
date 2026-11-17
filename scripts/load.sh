@@ -37,6 +37,11 @@ summary="$(mktemp)"
 log="target/perf/server-${scenario}-${stamp}.log"
 mkdir -p target/perf
 
+# Roles, database and schema as their owners (D-038); the server then runs as ps_app.
+: "${PS_ADMIN_DATABASE_URL:?export PS_ADMIN_DATABASE_URL (scripts/stack.sh env)}"
+: "${PS_MIGRATE_DATABASE_URL:?export PS_MIGRATE_DATABASE_URL (scripts/stack.sh env)}"
+./target/release/sandbox-server setup >/dev/null
+./target/release/sandbox-server migrate >/dev/null
 load_before="$(uptime | sed 's/.*load averages*: *//')"
 started_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 sim_db="target/perf/sim-${scenario}-${stamp}.redb"

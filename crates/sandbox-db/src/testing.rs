@@ -1,8 +1,10 @@
 //! Test support: one throwaway, migrated database per test.
 //!
-//! `PS_TEST_DATABASE_URL` names a PostgreSQL role allowed to `CREATE DATABASE` (the local
-//! stack's: `scripts/stack.sh up` prints it). Tests that need a database fail loudly
-//! without it rather than pass silently.
+//! `PS_TEST_DATABASE_URL` names an administrator able to create roles and databases (the
+//! local stack's superuser: `scripts/stack.sh env` prints it). Each test database is
+//! created owned by `ps_owner` and migrated as it; [`TestDb::pool`] connects as the owner
+//! (for inspection and tamper attempts), and [`TestDb::url`] is the runtime role `ps_app`
+//! that servers connect as (D-038). Tests that need a database fail loudly without it.
 #![expect(
     clippy::expect_used,
     reason = "test support: a setup failure must abort the test with its cause"
@@ -43,12 +45,19 @@ impl TestDb {
             .connect()
             .await
             .expect("connecting to PS_TEST_DATABASE_URL");
-        admin
-            .execute(AssertSqlSafe(format!("CREATE DATABASE {name}")))
+        crate::roles::bootstrap(&mut admin)
+            .await
+            .expect("creating the database roles");
+        crate::roles::create_database(&mut admin, &name)
             .await
             .expect("creating the test database");
         admin.close().await.ok();
-        let url = Self::url_for(&admin_url, &name);
+        let url = Self::url_as(
+            &admin_url,
+            &name,
+            crate::roles::OWNER,
+            crate::roles::OWNER_PASSWORD,
+        );
         let options = crate::pool::connect_options(&url, &crate::PoolSettings::default())
             .expect("invariant: test url parses");
         let pool = PgPoolOptions::new()
@@ -67,9 +76,38 @@ impl TestDb {
         }
     }
 
-    /// The new database's URL (for child processes).
+    /// The runtime role's URL: what a server under test connects as.
     pub fn url(&self) -> String {
+        Self::url_as(
+            &self.admin_url,
+            &self.name,
+            crate::roles::APP,
+            crate::roles::APP_PASSWORD,
+        )
+    }
+
+    /// The owner's URL (migrations, inspection).
+    pub fn owner_url(&self) -> String {
+        Self::url_as(
+            &self.admin_url,
+            &self.name,
+            crate::roles::OWNER,
+            crate::roles::OWNER_PASSWORD,
+        )
+    }
+
+    /// The administrator's URL for this database (superuser).
+    pub fn admin_url(&self) -> String {
         Self::url_for(&self.admin_url, &self.name)
+    }
+
+    fn url_as(admin_url: &str, name: &str, user: &str, password: &str) -> String {
+        let base = Self::url_for(admin_url, name);
+        let Some((scheme, rest)) = base.split_once("://") else {
+            return base;
+        };
+        let host = rest.rsplit_once('@').map_or(rest, |(_, host)| host);
+        format!("{scheme}://{user}:{password}@{host}")
     }
 
     /// The database name.
@@ -105,7 +143,8 @@ impl TestDb {
         for _ in 0..50 {
             let result = admin
                 .execute(AssertSqlSafe(format!(
-                    "CREATE DATABASE {name} TEMPLATE {}",
+                    "CREATE DATABASE {name} OWNER {} TEMPLATE {}",
+                    crate::roles::OWNER,
                     self.name
                 )))
                 .await;
@@ -120,9 +159,22 @@ impl TestDb {
             "could not copy {} (is a pool still open on it?)",
             self.name
         );
+        admin
+            .execute(AssertSqlSafe(format!(
+                "REVOKE ALL ON DATABASE {name} FROM PUBLIC; GRANT CONNECT ON DATABASE {name} TO {};",
+                crate::roles::RUNTIME
+            )))
+            .await
+            .expect("closing the copy");
         admin.close().await.ok();
-        self.pool = Self::pool_for(&Self::url_for(&self.admin_url, &self.name)).await;
-        let pool = Self::pool_for(&Self::url_for(&self.admin_url, &name)).await;
+        self.pool = Self::pool_for(&self.owner_url()).await;
+        let owner = Self::url_as(
+            &self.admin_url,
+            &name,
+            crate::roles::OWNER,
+            crate::roles::OWNER_PASSWORD,
+        );
+        let pool = Self::pool_for(&owner).await;
         Self {
             pool,
             admin_url: self.admin_url.clone(),

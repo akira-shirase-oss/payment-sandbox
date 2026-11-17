@@ -301,6 +301,20 @@ review found. Each states the choice, the alternative and the cost.
   deterministic regression test exists for a planner's choice; the evidence
   is the rerun smoke, whose report answered within its deadline.
 
+- **D-038 — The server is not the owner.** Review finding: the server
+  connected as the stack's superuser, which owns every table, so replica
+  mode, `DISABLE TRIGGER`, `TRUNCATE`, backdating and cross-project lines
+  all got past the journal's protections. Now three roles: the stack's
+  superuser only creates roles and databases (`sandbox-server setup`);
+  `ps_owner` owns the database and every object and is used only by
+  `sandbox-server migrate`; the server logs in as `ps_app`, a member of
+  `ps_runtime` with `SELECT, INSERT` on the append-only tables and
+  `SELECT, INSERT, UPDATE` on mutable ones, no `TRUNCATE`, no DDL, no
+  `TEMP`, `NOSUPERUSER NOBYPASSRLS`. The server checks its role at startup
+  and refuses to run as a superuser, as a role with BYPASSRLS, as the
+  journal's owner, or with `TEMP` (`sandbox_db::roles::check_runtime`).
+  Tests: `tests/roles.rs`.
+
 ## Open questions (still open)
 
 - **Dashboard authentication** — per-project-owner session login is the
