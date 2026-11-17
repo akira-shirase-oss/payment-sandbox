@@ -31,7 +31,10 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 /// Every release with a fixture, oldest first. Never remove one.
-const RELEASES: &[&str] = &["0.1.0"];
+// 1.0.0 is the first release (v1.0.0). Its fixture is at its own newest migration, so today
+// no migration is applied to it; the first migration after v1.0.0 is the first one tested
+// against a release's data (D-072, D-087).
+const RELEASES: &[&str] = &["1.0.0"];
 
 /// Tables in an order that satisfies every foreign key.
 const TABLES: &[&str] = &[
@@ -173,7 +176,7 @@ async fn every_releases_data_restores_and_migrates_to_this_release() {
 }
 
 /// Writes this release's fixture. Run once per release, then commit the file:
-/// `PS_WRITE_RELEASE_FIXTURE=0.1.0 cargo test -p sandbox-server --test releases -- --ignored`
+/// `PS_WRITE_RELEASE_FIXTURE=1.0.0 cargo test -p sandbox-server --test releases -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "writes fixtures/releases/<version>.json when PS_WRITE_RELEASE_FIXTURE names it"]
 #[expect(

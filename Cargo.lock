@@ -1871,7 +1871,7 @@ dependencies = [
 
 [[package]]
 name = "sandbox-cli"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "clap",
@@ -1896,7 +1896,7 @@ dependencies = [
 
 [[package]]
 name = "sandbox-db"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "proptest",
  "sandbox-db",
@@ -1912,7 +1912,7 @@ dependencies = [
 
 [[package]]
 name = "sandbox-dev-store"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1934,7 +1934,7 @@ dependencies = [
 
 [[package]]
 name = "sandbox-domain"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "hex",
  "hmac",
@@ -1948,7 +1948,7 @@ dependencies = [
 
 [[package]]
 name = "sandbox-http"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "http-body-util",
@@ -1962,7 +1962,7 @@ dependencies = [
 
 [[package]]
 name = "sandbox-server"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1994,7 +1994,7 @@ dependencies = [
 
 [[package]]
 name = "sandbox-sim"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum",

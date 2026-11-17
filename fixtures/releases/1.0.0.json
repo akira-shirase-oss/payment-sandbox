@@ -1,0 +1,1386 @@
+{
+  "_note": "Every row a database of this release held after the fixture's operations (SIMULATED MONEY ONLY; synthetic keys, hashed; secrets sealed under a test key). Restored by tests/releases.rs into every later release.",
+  "balances": {
+    "01a1eaa0-db45-71a5-9777-06a3c4474e83": {
+      "1": {
+        "JPY/merchant_pending": -6000,
+        "JPY/payer_funding": 6000,
+        "KWD/payer_funding": 1250,
+        "KWD/payer_held": -1250,
+        "USD/merchant_pending": -3000,
+        "USD/payer_funding": 3000
+      },
+      "2": {
+        "EUR/payer_funding": 3300,
+        "EUR/payer_held": -3300
+      }
+    },
+    "01a1eaa0-db69-7168-832f-2771b2a86be7": {
+      "1": {
+        "USD/merchant_pending": -3000,
+        "USD/payer_funding": 3000
+      }
+    }
+  },
+  "migrations": 13,
+  "probe": {
+    "amount": 3300,
+    "currency": "EUR",
+    "idempotency_key": "probe-1",
+    "payment_id": "bbe46153-2b4e-5f3c-82b2-e06447cecb2e",
+    "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+  },
+  "release": "1.0.0",
+  "tables": {
+    "accounts": [
+      {
+        "currency": "EUR",
+        "kind": "fees",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "EUR",
+        "kind": "merchant_available",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "EUR",
+        "kind": "merchant_pending",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "EUR",
+        "kind": "network_settlement",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "EUR",
+        "kind": "payer_funding",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "EUR",
+        "kind": "payer_held",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "EUR",
+        "kind": "refunds_clearing",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "JPY",
+        "kind": "fees",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "JPY",
+        "kind": "merchant_available",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "JPY",
+        "kind": "merchant_pending",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "JPY",
+        "kind": "network_settlement",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "JPY",
+        "kind": "payer_funding",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "JPY",
+        "kind": "payer_held",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "JPY",
+        "kind": "refunds_clearing",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "KWD",
+        "kind": "fees",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "KWD",
+        "kind": "merchant_available",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "KWD",
+        "kind": "merchant_pending",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "KWD",
+        "kind": "network_settlement",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "KWD",
+        "kind": "payer_funding",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "KWD",
+        "kind": "payer_held",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "KWD",
+        "kind": "refunds_clearing",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "USD",
+        "kind": "fees",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "USD",
+        "kind": "merchant_available",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "USD",
+        "kind": "merchant_pending",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "USD",
+        "kind": "network_settlement",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "USD",
+        "kind": "payer_funding",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "USD",
+        "kind": "payer_held",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "USD",
+        "kind": "refunds_clearing",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "currency": "EUR",
+        "kind": "fees",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "currency": "EUR",
+        "kind": "merchant_available",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "currency": "EUR",
+        "kind": "merchant_pending",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "currency": "EUR",
+        "kind": "network_settlement",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "currency": "EUR",
+        "kind": "payer_funding",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "currency": "EUR",
+        "kind": "payer_held",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "currency": "EUR",
+        "kind": "refunds_clearing",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "currency": "JPY",
+        "kind": "fees",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "currency": "JPY",
+        "kind": "merchant_available",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "currency": "JPY",
+        "kind": "merchant_pending",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "currency": "JPY",
+        "kind": "network_settlement",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "currency": "JPY",
+        "kind": "payer_funding",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "currency": "JPY",
+        "kind": "payer_held",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "currency": "JPY",
+        "kind": "refunds_clearing",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "currency": "KWD",
+        "kind": "fees",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "currency": "KWD",
+        "kind": "merchant_available",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "currency": "KWD",
+        "kind": "merchant_pending",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "currency": "KWD",
+        "kind": "network_settlement",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "currency": "KWD",
+        "kind": "payer_funding",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "currency": "KWD",
+        "kind": "payer_held",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "currency": "KWD",
+        "kind": "refunds_clearing",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "currency": "USD",
+        "kind": "fees",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "currency": "USD",
+        "kind": "merchant_available",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "currency": "USD",
+        "kind": "merchant_pending",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "currency": "USD",
+        "kind": "network_settlement",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "currency": "USD",
+        "kind": "payer_funding",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "currency": "USD",
+        "kind": "payer_held",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "currency": "USD",
+        "kind": "refunds_clearing",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      }
+    ],
+    "api_keys": [
+      {
+        "created_at": "2026-11-17T17:49:32.896091+00:00",
+        "id": "01a1eaa0-db45-71a5-9777-06a4d5a8731d",
+        "key_hash": "\\xe22452b54ffd623ef4668e338b65d68ece6eeaf02bd0118c15240fe3fdb40c8d",
+        "key_prefix": "sk_sim_6c519734",
+        "label": "first admin key",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "revoked_at": null,
+        "scopes": [
+          "admin"
+        ]
+      },
+      {
+        "created_at": "2026-11-17T17:49:32.932135+00:00",
+        "id": "01a1eaa0-db69-7168-832f-2772b7be359a",
+        "key_hash": "\\xbd4a360d3550c615583757708d2b65a94cbe2e1ff0484a9d60e34cc2f22f4fb8",
+        "key_prefix": "sk_sim_cc06e728",
+        "label": "first admin key",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7",
+        "revoked_at": null,
+        "scopes": [
+          "admin"
+        ]
+      }
+    ],
+    "audit_events": [
+      {
+        "action": "project.created",
+        "actor": "bootstrap",
+        "at": "2026-11-17T17:49:32.896091+00:00",
+        "id": "01a1eaa0-db63-76f9-a9ac-64f11b0b2786",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "subject_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "action": "key.created",
+        "actor": "bootstrap",
+        "at": "2026-11-17T17:49:32.896091+00:00",
+        "id": "01a1eaa0-db67-71a4-9951-e8ac8b5ce59b",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "subject_id": "01a1eaa0-db45-71a5-9777-06a4d5a8731d"
+      },
+      {
+        "action": "dataset.reset",
+        "actor": "key:01a1eaa0-db45-71a5-9777-06a4d5a8731d",
+        "at": "2026-11-17T17:49:33.477313+00:00",
+        "id": "01a1eaa0-dda8-7462-a8d2-712e953ec11a",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "subject_id": "01a1eaa0-db45-71a5-9777-06a4d5a8731d"
+      },
+      {
+        "action": "project.created",
+        "actor": "bootstrap",
+        "at": "2026-11-17T17:49:32.932135+00:00",
+        "id": "01a1eaa0-db87-74e3-9a8f-db8b5c4cb7a3",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7",
+        "subject_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "action": "key.created",
+        "actor": "bootstrap",
+        "at": "2026-11-17T17:49:32.932135+00:00",
+        "id": "01a1eaa0-db8a-725f-af0f-2d854d8c0cbe",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7",
+        "subject_id": "01a1eaa0-db69-7168-832f-2772b7be359a"
+      }
+    ],
+    "checkout_attempts": [],
+    "checkout_sessions": [
+      {
+        "amount_minor": 1500,
+        "attempts": 0,
+        "capture_method": "automatic",
+        "created_at": "2026-11-17T17:49:33.469134+00:00",
+        "currency": "USD",
+        "dataset_epoch": 1,
+        "description": null,
+        "embed_origins": [],
+        "expires_at": "2026-11-17T18:49:33.469134+00:00",
+        "id": "01a1eaa0-dd9c-7054-bc90-3872748ab254",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "return_url": null,
+        "secret_hash": "\\xdbda5dc6e140a5a83b4b7979a53060bbbafa669bbee8d437650736ca6c7118f4"
+      }
+    ],
+    "deliveries": [
+      {
+        "attempts": 0,
+        "delivered_at": null,
+        "endpoint_id": "01a1eaa0-db8d-712f-866f-6131f9dffc0e",
+        "event_id": "0d05ab72-cea4-520b-a79e-df7c7eb3f68d",
+        "last_error": null,
+        "last_status": null,
+        "lease_token": 0,
+        "lease_until": null,
+        "next_attempt_at": "-infinity",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "state": "pending"
+      },
+      {
+        "attempts": 0,
+        "delivered_at": null,
+        "endpoint_id": "01a1eaa0-db8d-712f-866f-6131f9dffc0e",
+        "event_id": "1dc2f484-0654-580a-82b3-05b6469c16cf",
+        "last_error": null,
+        "last_status": null,
+        "lease_token": 0,
+        "lease_until": null,
+        "next_attempt_at": "-infinity",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "state": "pending"
+      },
+      {
+        "attempts": 0,
+        "delivered_at": null,
+        "endpoint_id": "01a1eaa0-db8d-712f-866f-6131f9dffc0e",
+        "event_id": "1fdd3405-1493-5969-92f0-2e84acf2386c",
+        "last_error": null,
+        "last_status": null,
+        "lease_token": 0,
+        "lease_until": null,
+        "next_attempt_at": "-infinity",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "state": "pending"
+      },
+      {
+        "attempts": 0,
+        "delivered_at": null,
+        "endpoint_id": "01a1eaa0-db8d-712f-866f-6131f9dffc0e",
+        "event_id": "42dd83aa-9569-546f-9bb8-2b550a8f0ad1",
+        "last_error": null,
+        "last_status": null,
+        "lease_token": 0,
+        "lease_until": null,
+        "next_attempt_at": "-infinity",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "state": "pending"
+      },
+      {
+        "attempts": 0,
+        "delivered_at": null,
+        "endpoint_id": "01a1eaa0-db8d-712f-866f-6131f9dffc0e",
+        "event_id": "46e8f3db-2e1c-50e6-96d7-f891405c5d91",
+        "last_error": null,
+        "last_status": null,
+        "lease_token": 0,
+        "lease_until": null,
+        "next_attempt_at": "-infinity",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "state": "pending"
+      },
+      {
+        "attempts": 0,
+        "delivered_at": null,
+        "endpoint_id": "01a1eaa0-db8d-712f-866f-6131f9dffc0e",
+        "event_id": "4b0cc2d2-0a3d-5940-983e-1fbba74b001b",
+        "last_error": null,
+        "last_status": null,
+        "lease_token": 0,
+        "lease_until": null,
+        "next_attempt_at": "-infinity",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "state": "pending"
+      },
+      {
+        "attempts": 0,
+        "delivered_at": null,
+        "endpoint_id": "01a1eaa0-db8d-712f-866f-6131f9dffc0e",
+        "event_id": "4e52017a-3fe3-54c3-b8f1-f813ba2a399d",
+        "last_error": null,
+        "last_status": null,
+        "lease_token": 0,
+        "lease_until": null,
+        "next_attempt_at": "-infinity",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "state": "pending"
+      },
+      {
+        "attempts": 0,
+        "delivered_at": null,
+        "endpoint_id": "01a1eaa0-db8d-712f-866f-6131f9dffc0e",
+        "event_id": "8b385719-dd06-5236-9e6d-ff644b0d9ad3",
+        "last_error": null,
+        "last_status": null,
+        "lease_token": 0,
+        "lease_until": null,
+        "next_attempt_at": "-infinity",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "state": "pending"
+      },
+      {
+        "attempts": 0,
+        "delivered_at": null,
+        "endpoint_id": "01a1eaa0-db8d-712f-866f-6131f9dffc0e",
+        "event_id": "ffe65ab3-b13c-5c29-82d3-a5f5770dd611",
+        "last_error": null,
+        "last_status": null,
+        "lease_token": 0,
+        "lease_until": null,
+        "next_attempt_at": "-infinity",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "state": "pending"
+      }
+    ],
+    "events": [
+      {
+        "created_at": "2026-11-17T17:49:32.983337+00:00",
+        "dataset_epoch": 1,
+        "id": "0d05ab72-cea4-520b-a79e-df7c7eb3f68d",
+        "kind": "capture.succeeded",
+        "operation_id": "4e73bad9-9124-5afb-818a-4e5885cbb424",
+        "payment_id": "75e3991a-47d2-56f7-9666-5f8980d2f041",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "sequence": 2
+      },
+      {
+        "created_at": "2026-11-17T17:49:33.074468+00:00",
+        "dataset_epoch": 1,
+        "id": "1dc2f484-0654-580a-82b3-05b6469c16cf",
+        "kind": "authorize.declined",
+        "operation_id": "cf2e5e03-687f-5a4a-9a3e-4e47ff2c6d69",
+        "payment_id": "8e277496-b99c-5788-ad57-de72e39bc343",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "sequence": 1
+      },
+      {
+        "created_at": "2026-11-17T17:49:32.961879+00:00",
+        "dataset_epoch": 1,
+        "id": "1fdd3405-1493-5969-92f0-2e84acf2386c",
+        "kind": "authorize.succeeded",
+        "operation_id": "9653e536-72cd-528e-a370-81152f92f981",
+        "payment_id": "75e3991a-47d2-56f7-9666-5f8980d2f041",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "sequence": 1
+      },
+      {
+        "created_at": "2026-11-17T17:49:33.127497+00:00",
+        "dataset_epoch": 1,
+        "id": "42dd83aa-9569-546f-9bb8-2b550a8f0ad1",
+        "kind": "void.succeeded",
+        "operation_id": "956e99f1-0929-5d2f-8200-af1897b47c34",
+        "payment_id": "102cb67b-4850-5f67-84c2-02c6352d9a7d",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "sequence": 3
+      },
+      {
+        "created_at": "2026-11-17T17:49:33.108501+00:00",
+        "dataset_epoch": 1,
+        "id": "46e8f3db-2e1c-50e6-96d7-f891405c5d91",
+        "kind": "capture.succeeded",
+        "operation_id": "24309adf-1cee-594c-a5e7-9a2e13d32298",
+        "payment_id": "102cb67b-4850-5f67-84c2-02c6352d9a7d",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "sequence": 2
+      },
+      {
+        "created_at": "2026-11-17T17:49:33.460975+00:00",
+        "dataset_epoch": 1,
+        "id": "4b0cc2d2-0a3d-5940-983e-1fbba74b001b",
+        "kind": "authorize.succeeded",
+        "operation_id": "f61235ae-349f-547e-8d37-bf5d17e70606",
+        "payment_id": "a5ba3977-7ea0-5cd8-8720-867562b4169b",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "sequence": 1
+      },
+      {
+        "created_at": "2026-11-17T17:49:33.499181+00:00",
+        "dataset_epoch": 2,
+        "id": "4e52017a-3fe3-54c3-b8f1-f813ba2a399d",
+        "kind": "authorize.succeeded",
+        "operation_id": "25ba0375-b359-5beb-8a37-4bc6e2f213f4",
+        "payment_id": "bbe46153-2b4e-5f3c-82b2-e06447cecb2e",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "sequence": 1
+      },
+      {
+        "created_at": "2026-11-17T17:49:33.093208+00:00",
+        "dataset_epoch": 1,
+        "id": "8b385719-dd06-5236-9e6d-ff644b0d9ad3",
+        "kind": "authorize.succeeded",
+        "operation_id": "317f171e-74c0-5447-a7ed-626854f9ed65",
+        "payment_id": "102cb67b-4850-5f67-84c2-02c6352d9a7d",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "sequence": 1
+      },
+      {
+        "created_at": "2026-11-17T17:49:33.007456+00:00",
+        "dataset_epoch": 1,
+        "id": "ffe65ab3-b13c-5c29-82d3-a5f5770dd611",
+        "kind": "refund.succeeded",
+        "operation_id": "06ee9f64-0229-5078-af23-2c69d8a108d2",
+        "payment_id": "75e3991a-47d2-56f7-9666-5f8980d2f041",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "sequence": 3
+      },
+      {
+        "created_at": "2026-11-17T17:49:33.040723+00:00",
+        "dataset_epoch": 1,
+        "id": "038d4748-9a15-5bfe-959e-307f2d3635e3",
+        "kind": "capture.succeeded",
+        "operation_id": "6c1cf553-61f9-5380-902c-9b04d69f23c8",
+        "payment_id": "b38a2bad-2db4-544d-a76d-2db56c5f2c64",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7",
+        "sequence": 2
+      },
+      {
+        "created_at": "2026-11-17T17:49:33.057489+00:00",
+        "dataset_epoch": 1,
+        "id": "0915dc94-18ac-5d81-9d86-a55de2dbafff",
+        "kind": "refund.succeeded",
+        "operation_id": "951b8cc7-8b86-5628-879f-4fbecc6f1340",
+        "payment_id": "b38a2bad-2db4-544d-a76d-2db56c5f2c64",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7",
+        "sequence": 3
+      },
+      {
+        "created_at": "2026-11-17T17:49:33.025202+00:00",
+        "dataset_epoch": 1,
+        "id": "e1fd7b1e-61fc-5a1b-add8-4ccbb5bbe72b",
+        "kind": "authorize.succeeded",
+        "operation_id": "7c201160-013b-56e9-88f6-f010c5f22b5d",
+        "payment_id": "b38a2bad-2db4-544d-a76d-2db56c5f2c64",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7",
+        "sequence": 1
+      }
+    ],
+    "journal_entries": [
+      {
+        "created_xact": "493529",
+        "currency": "USD",
+        "dataset_epoch": 1,
+        "id": "52a856b0-5a54-5406-8e71-932cd2877a69",
+        "operation_id": "9653e536-72cd-528e-a370-81152f92f981",
+        "payment_id": "75e3991a-47d2-56f7-9666-5f8980d2f041",
+        "posted_at": "2026-11-17T17:49:32.961879+00:00",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "recipe": "authorize",
+        "reverses_entry_id": null,
+        "semantics_version": 1,
+        "seq": 2
+      },
+      {
+        "created_xact": "493531",
+        "currency": "USD",
+        "dataset_epoch": 1,
+        "id": "ab6daabc-99af-532d-9c8b-aa9a33e7f89f",
+        "operation_id": "4e73bad9-9124-5afb-818a-4e5885cbb424",
+        "payment_id": "75e3991a-47d2-56f7-9666-5f8980d2f041",
+        "posted_at": "2026-11-17T17:49:32.983337+00:00",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "recipe": "capture",
+        "reverses_entry_id": null,
+        "semantics_version": 1,
+        "seq": 4
+      },
+      {
+        "created_xact": "493533",
+        "currency": "USD",
+        "dataset_epoch": 1,
+        "id": "87259635-3c3e-583c-b58c-1885115f3048",
+        "operation_id": "06ee9f64-0229-5078-af23-2c69d8a108d2",
+        "payment_id": "75e3991a-47d2-56f7-9666-5f8980d2f041",
+        "posted_at": "2026-11-17T17:49:33.007456+00:00",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "recipe": "refund",
+        "reverses_entry_id": null,
+        "semantics_version": 1,
+        "seq": 6
+      },
+      {
+        "created_xact": "493535",
+        "currency": "USD",
+        "dataset_epoch": 1,
+        "id": "1eaf8c10-ab98-5d82-8f6b-30f5687ecc79",
+        "operation_id": "7c201160-013b-56e9-88f6-f010c5f22b5d",
+        "payment_id": "b38a2bad-2db4-544d-a76d-2db56c5f2c64",
+        "posted_at": "2026-11-17T17:49:33.025202+00:00",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7",
+        "recipe": "authorize",
+        "reverses_entry_id": null,
+        "semantics_version": 1,
+        "seq": 8
+      },
+      {
+        "created_xact": "493537",
+        "currency": "USD",
+        "dataset_epoch": 1,
+        "id": "409a8336-6d58-5818-b05f-1137b4655dd4",
+        "operation_id": "6c1cf553-61f9-5380-902c-9b04d69f23c8",
+        "payment_id": "b38a2bad-2db4-544d-a76d-2db56c5f2c64",
+        "posted_at": "2026-11-17T17:49:33.040723+00:00",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7",
+        "recipe": "capture",
+        "reverses_entry_id": null,
+        "semantics_version": 1,
+        "seq": 10
+      },
+      {
+        "created_xact": "493539",
+        "currency": "USD",
+        "dataset_epoch": 1,
+        "id": "75dd2009-9e54-5894-93dc-1052a2145455",
+        "operation_id": "951b8cc7-8b86-5628-879f-4fbecc6f1340",
+        "payment_id": "b38a2bad-2db4-544d-a76d-2db56c5f2c64",
+        "posted_at": "2026-11-17T17:49:33.057489+00:00",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7",
+        "recipe": "refund",
+        "reverses_entry_id": null,
+        "semantics_version": 1,
+        "seq": 12
+      },
+      {
+        "created_xact": "493543",
+        "currency": "JPY",
+        "dataset_epoch": 1,
+        "id": "634c6a96-ed6e-5086-9dd8-86750dfd5c2e",
+        "operation_id": "317f171e-74c0-5447-a7ed-626854f9ed65",
+        "payment_id": "102cb67b-4850-5f67-84c2-02c6352d9a7d",
+        "posted_at": "2026-11-17T17:49:33.093208+00:00",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "recipe": "authorize",
+        "reverses_entry_id": null,
+        "semantics_version": 1,
+        "seq": 14
+      },
+      {
+        "created_xact": "493545",
+        "currency": "JPY",
+        "dataset_epoch": 1,
+        "id": "9e03c55a-02af-5814-b679-239b3ecb0186",
+        "operation_id": "24309adf-1cee-594c-a5e7-9a2e13d32298",
+        "payment_id": "102cb67b-4850-5f67-84c2-02c6352d9a7d",
+        "posted_at": "2026-11-17T17:49:33.108501+00:00",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "recipe": "capture",
+        "reverses_entry_id": null,
+        "semantics_version": 1,
+        "seq": 16
+      },
+      {
+        "created_xact": "493547",
+        "currency": "JPY",
+        "dataset_epoch": 1,
+        "id": "b674a187-af63-5b6c-b675-4677b8c713e7",
+        "operation_id": "956e99f1-0929-5d2f-8200-af1897b47c34",
+        "payment_id": "102cb67b-4850-5f67-84c2-02c6352d9a7d",
+        "posted_at": "2026-11-17T17:49:33.127497+00:00",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "recipe": "void",
+        "reverses_entry_id": null,
+        "semantics_version": 1,
+        "seq": 18
+      },
+      {
+        "created_xact": "493550",
+        "currency": "KWD",
+        "dataset_epoch": 1,
+        "id": "2db6557d-fcc1-513e-a594-83a4a74cb91a",
+        "operation_id": "f61235ae-349f-547e-8d37-bf5d17e70606",
+        "payment_id": "a5ba3977-7ea0-5cd8-8720-867562b4169b",
+        "posted_at": "2026-11-17T17:49:33.460975+00:00",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "recipe": "authorize",
+        "reverses_entry_id": null,
+        "semantics_version": 1,
+        "seq": 20
+      },
+      {
+        "created_xact": "493554",
+        "currency": "EUR",
+        "dataset_epoch": 2,
+        "id": "dd167d34-720a-5d07-bd77-dab0eaea7e80",
+        "operation_id": "25ba0375-b359-5beb-8a37-4bc6e2f213f4",
+        "payment_id": "bbe46153-2b4e-5f3c-82b2-e06447cecb2e",
+        "posted_at": "2026-11-17T17:49:33.499181+00:00",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "recipe": "authorize",
+        "reverses_entry_id": null,
+        "semantics_version": 1,
+        "seq": 22
+      }
+    ],
+    "journal_lines": [
+      {
+        "account_kind": "payer_funding",
+        "amount_minor": 1250,
+        "currency": "KWD",
+        "dataset_epoch": 1,
+        "entry_id": "2db6557d-fcc1-513e-a594-83a4a74cb91a",
+        "line_no": 1,
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "account_kind": "payer_held",
+        "amount_minor": -1250,
+        "currency": "KWD",
+        "dataset_epoch": 1,
+        "entry_id": "2db6557d-fcc1-513e-a594-83a4a74cb91a",
+        "line_no": 2,
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "account_kind": "payer_funding",
+        "amount_minor": 4200,
+        "currency": "USD",
+        "dataset_epoch": 1,
+        "entry_id": "52a856b0-5a54-5406-8e71-932cd2877a69",
+        "line_no": 1,
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "account_kind": "payer_held",
+        "amount_minor": -4200,
+        "currency": "USD",
+        "dataset_epoch": 1,
+        "entry_id": "52a856b0-5a54-5406-8e71-932cd2877a69",
+        "line_no": 2,
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "account_kind": "payer_funding",
+        "amount_minor": 10000,
+        "currency": "JPY",
+        "dataset_epoch": 1,
+        "entry_id": "634c6a96-ed6e-5086-9dd8-86750dfd5c2e",
+        "line_no": 1,
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "account_kind": "payer_held",
+        "amount_minor": -10000,
+        "currency": "JPY",
+        "dataset_epoch": 1,
+        "entry_id": "634c6a96-ed6e-5086-9dd8-86750dfd5c2e",
+        "line_no": 2,
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "account_kind": "merchant_pending",
+        "amount_minor": 1200,
+        "currency": "USD",
+        "dataset_epoch": 1,
+        "entry_id": "87259635-3c3e-583c-b58c-1885115f3048",
+        "line_no": 1,
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "account_kind": "payer_funding",
+        "amount_minor": -1200,
+        "currency": "USD",
+        "dataset_epoch": 1,
+        "entry_id": "87259635-3c3e-583c-b58c-1885115f3048",
+        "line_no": 2,
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "account_kind": "payer_held",
+        "amount_minor": 6000,
+        "currency": "JPY",
+        "dataset_epoch": 1,
+        "entry_id": "9e03c55a-02af-5814-b679-239b3ecb0186",
+        "line_no": 1,
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "account_kind": "merchant_pending",
+        "amount_minor": -6000,
+        "currency": "JPY",
+        "dataset_epoch": 1,
+        "entry_id": "9e03c55a-02af-5814-b679-239b3ecb0186",
+        "line_no": 2,
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "account_kind": "payer_held",
+        "amount_minor": 4200,
+        "currency": "USD",
+        "dataset_epoch": 1,
+        "entry_id": "ab6daabc-99af-532d-9c8b-aa9a33e7f89f",
+        "line_no": 1,
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "account_kind": "merchant_pending",
+        "amount_minor": -4200,
+        "currency": "USD",
+        "dataset_epoch": 1,
+        "entry_id": "ab6daabc-99af-532d-9c8b-aa9a33e7f89f",
+        "line_no": 2,
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "account_kind": "payer_held",
+        "amount_minor": 4000,
+        "currency": "JPY",
+        "dataset_epoch": 1,
+        "entry_id": "b674a187-af63-5b6c-b675-4677b8c713e7",
+        "line_no": 1,
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "account_kind": "payer_funding",
+        "amount_minor": -4000,
+        "currency": "JPY",
+        "dataset_epoch": 1,
+        "entry_id": "b674a187-af63-5b6c-b675-4677b8c713e7",
+        "line_no": 2,
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "account_kind": "payer_funding",
+        "amount_minor": 3300,
+        "currency": "EUR",
+        "dataset_epoch": 2,
+        "entry_id": "dd167d34-720a-5d07-bd77-dab0eaea7e80",
+        "line_no": 1,
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "account_kind": "payer_held",
+        "amount_minor": -3300,
+        "currency": "EUR",
+        "dataset_epoch": 2,
+        "entry_id": "dd167d34-720a-5d07-bd77-dab0eaea7e80",
+        "line_no": 2,
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83"
+      },
+      {
+        "account_kind": "payer_funding",
+        "amount_minor": 4200,
+        "currency": "USD",
+        "dataset_epoch": 1,
+        "entry_id": "1eaf8c10-ab98-5d82-8f6b-30f5687ecc79",
+        "line_no": 1,
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "account_kind": "payer_held",
+        "amount_minor": -4200,
+        "currency": "USD",
+        "dataset_epoch": 1,
+        "entry_id": "1eaf8c10-ab98-5d82-8f6b-30f5687ecc79",
+        "line_no": 2,
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "account_kind": "payer_held",
+        "amount_minor": 4200,
+        "currency": "USD",
+        "dataset_epoch": 1,
+        "entry_id": "409a8336-6d58-5818-b05f-1137b4655dd4",
+        "line_no": 1,
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "account_kind": "merchant_pending",
+        "amount_minor": -4200,
+        "currency": "USD",
+        "dataset_epoch": 1,
+        "entry_id": "409a8336-6d58-5818-b05f-1137b4655dd4",
+        "line_no": 2,
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "account_kind": "merchant_pending",
+        "amount_minor": 1200,
+        "currency": "USD",
+        "dataset_epoch": 1,
+        "entry_id": "75dd2009-9e54-5894-93dc-1052a2145455",
+        "line_no": 1,
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      },
+      {
+        "account_kind": "payer_funding",
+        "amount_minor": -1200,
+        "currency": "USD",
+        "dataset_epoch": 1,
+        "entry_id": "75dd2009-9e54-5894-93dc-1052a2145455",
+        "line_no": 2,
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7"
+      }
+    ],
+    "operations": [
+      {
+        "amount_minor": 1200,
+        "attempts": 1,
+        "checks": 0,
+        "created_at": "2026-11-17T17:49:32.993716+00:00",
+        "dataset_epoch": 1,
+        "decline_code": null,
+        "fingerprint": "\\x8e1d94588dcb0ed3cefec864794b95b2a51842fc806a72e7436e5a441469408f",
+        "id": "06ee9f64-0229-5078-af23-2c69d8a108d2",
+        "idempotency_key": "refund-1",
+        "kind": "refund",
+        "network_ref": "simnet_35faf913deb5cd8d1240",
+        "next_check_at": "-infinity",
+        "payment_id": "75e3991a-47d2-56f7-9666-5f8980d2f041",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "resolved_at": "2026-11-17T17:49:33.007456+00:00",
+        "state": "succeeded"
+      },
+      {
+        "amount_minor": 6000,
+        "attempts": 1,
+        "checks": 0,
+        "created_at": "2026-11-17T17:49:33.099701+00:00",
+        "dataset_epoch": 1,
+        "decline_code": null,
+        "fingerprint": "\\x9a1903013c1207313e2dc527a93e2c97fb39116ccebacf0156175ee186033d89",
+        "id": "24309adf-1cee-594c-a5e7-9a2e13d32298",
+        "idempotency_key": "held-capture",
+        "kind": "capture",
+        "network_ref": "simnet_9c1e2eba51083c422512",
+        "next_check_at": "-infinity",
+        "payment_id": "102cb67b-4850-5f67-84c2-02c6352d9a7d",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "resolved_at": "2026-11-17T17:49:33.108501+00:00",
+        "state": "succeeded"
+      },
+      {
+        "amount_minor": 3300,
+        "attempts": 1,
+        "checks": 0,
+        "created_at": "2026-11-17T17:49:33.48606+00:00",
+        "dataset_epoch": 2,
+        "decline_code": null,
+        "fingerprint": "\\x5e1f8e830d9e23dae9173e8f3dd7d53becd3a2620e8ce2d45efe4f566a1f33f9",
+        "id": "25ba0375-b359-5beb-8a37-4bc6e2f213f4",
+        "idempotency_key": "probe-1",
+        "kind": "authorize",
+        "network_ref": "simnet_d590db54781fad3d9706",
+        "next_check_at": "-infinity",
+        "payment_id": "bbe46153-2b4e-5f3c-82b2-e06447cecb2e",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "resolved_at": "2026-11-17T17:49:33.499181+00:00",
+        "state": "succeeded"
+      },
+      {
+        "amount_minor": 10000,
+        "attempts": 1,
+        "checks": 0,
+        "created_at": "2026-11-17T17:49:33.083399+00:00",
+        "dataset_epoch": 1,
+        "decline_code": null,
+        "fingerprint": "\\xb0c1423b71f45922b53b2ef6907c236d9fc9a67f3183b597a33218d19f694509",
+        "id": "317f171e-74c0-5447-a7ed-626854f9ed65",
+        "idempotency_key": "held-1",
+        "kind": "authorize",
+        "network_ref": "simnet_9b6ee3cc5aafde339865",
+        "next_check_at": "-infinity",
+        "payment_id": "102cb67b-4850-5f67-84c2-02c6352d9a7d",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "resolved_at": "2026-11-17T17:49:33.093208+00:00",
+        "state": "succeeded"
+      },
+      {
+        "amount_minor": 4200,
+        "attempts": 1,
+        "checks": 0,
+        "created_at": "2026-11-17T17:49:32.97364+00:00",
+        "dataset_epoch": 1,
+        "decline_code": null,
+        "fingerprint": "\\xb79353c909aee23c0c8a54254c710fa843ac2c401f3f64adc6537e8855bd6106",
+        "id": "4e73bad9-9124-5afb-818a-4e5885cbb424",
+        "idempotency_key": "capture-1",
+        "kind": "capture",
+        "network_ref": "simnet_00292d0942f7e33e0595",
+        "next_check_at": "-infinity",
+        "payment_id": "75e3991a-47d2-56f7-9666-5f8980d2f041",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "resolved_at": "2026-11-17T17:49:32.983337+00:00",
+        "state": "succeeded"
+      },
+      {
+        "amount_minor": 4000,
+        "attempts": 1,
+        "checks": 0,
+        "created_at": "2026-11-17T17:49:33.117263+00:00",
+        "dataset_epoch": 1,
+        "decline_code": null,
+        "fingerprint": "\\x8caaa07231399d5e8abaa3f458320a6739f1458dc2e026f427d6c0486aaf46e3",
+        "id": "956e99f1-0929-5d2f-8200-af1897b47c34",
+        "idempotency_key": "held-void",
+        "kind": "void",
+        "network_ref": "simnet_a5bfec2d25cd56642267",
+        "next_check_at": "-infinity",
+        "payment_id": "102cb67b-4850-5f67-84c2-02c6352d9a7d",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "resolved_at": "2026-11-17T17:49:33.127497+00:00",
+        "state": "succeeded"
+      },
+      {
+        "amount_minor": 4200,
+        "attempts": 1,
+        "checks": 0,
+        "created_at": "2026-11-17T17:49:32.949114+00:00",
+        "dataset_epoch": 1,
+        "decline_code": null,
+        "fingerprint": "\\x15f57abbe4b36a38154110615b557a73e7126c7e1d3c7bbf5b6ccb93d8e87fdc",
+        "id": "9653e536-72cd-528e-a370-81152f92f981",
+        "idempotency_key": "order-1",
+        "kind": "authorize",
+        "network_ref": "simnet_0aedbe4e535982203cbe",
+        "next_check_at": "-infinity",
+        "payment_id": "75e3991a-47d2-56f7-9666-5f8980d2f041",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "resolved_at": "2026-11-17T17:49:32.961879+00:00",
+        "state": "succeeded"
+      },
+      {
+        "amount_minor": 999,
+        "attempts": 1,
+        "checks": 0,
+        "created_at": "2026-11-17T17:49:33.065439+00:00",
+        "dataset_epoch": 1,
+        "decline_code": "do_not_honor",
+        "fingerprint": "\\xf0d1f600e1c052e1dcfc6f826c39fa8bbc98de1ceaf154ca3dd749aac5ec824d",
+        "id": "cf2e5e03-687f-5a4a-9a3e-4e47ff2c6d69",
+        "idempotency_key": "declined-1",
+        "kind": "authorize",
+        "network_ref": "simnet_c56e08a9d3249c484e62",
+        "next_check_at": "-infinity",
+        "payment_id": "8e277496-b99c-5788-ad57-de72e39bc343",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "resolved_at": "2026-11-17T17:49:33.074468+00:00",
+        "state": "declined"
+      },
+      {
+        "amount_minor": 1250,
+        "attempts": 2,
+        "checks": 0,
+        "created_at": "2026-11-17T17:49:33.136321+00:00",
+        "dataset_epoch": 1,
+        "decline_code": null,
+        "fingerprint": "\\x143468ea13986c292ae1aa7e7ce744548602e1b85ec0c9a16b6150549049fee5",
+        "id": "f61235ae-349f-547e-8d37-bf5d17e70606",
+        "idempotency_key": "lost-1",
+        "kind": "authorize",
+        "network_ref": "simnet_f72be1292cc0df26d19e",
+        "next_check_at": "-infinity",
+        "payment_id": "a5ba3977-7ea0-5cd8-8720-867562b4169b",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "resolved_at": "2026-11-17T17:49:33.460975+00:00",
+        "state": "succeeded"
+      },
+      {
+        "amount_minor": 4200,
+        "attempts": 1,
+        "checks": 0,
+        "created_at": "2026-11-17T17:49:33.032516+00:00",
+        "dataset_epoch": 1,
+        "decline_code": null,
+        "fingerprint": "\\x99141ff040ce4a25f69e4bb5869c580a2ca29f75211a0e590df8401260ce454d",
+        "id": "6c1cf553-61f9-5380-902c-9b04d69f23c8",
+        "idempotency_key": "capture-2",
+        "kind": "capture",
+        "network_ref": "simnet_ec17f05a46e679234c6f",
+        "next_check_at": "-infinity",
+        "payment_id": "b38a2bad-2db4-544d-a76d-2db56c5f2c64",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7",
+        "resolved_at": "2026-11-17T17:49:33.040723+00:00",
+        "state": "succeeded"
+      },
+      {
+        "amount_minor": 4200,
+        "attempts": 1,
+        "checks": 0,
+        "created_at": "2026-11-17T17:49:33.014499+00:00",
+        "dataset_epoch": 1,
+        "decline_code": null,
+        "fingerprint": "\\x15f57abbe4b36a38154110615b557a73e7126c7e1d3c7bbf5b6ccb93d8e87fdc",
+        "id": "7c201160-013b-56e9-88f6-f010c5f22b5d",
+        "idempotency_key": "order-2",
+        "kind": "authorize",
+        "network_ref": "simnet_910b86aa9a4e14310569",
+        "next_check_at": "-infinity",
+        "payment_id": "b38a2bad-2db4-544d-a76d-2db56c5f2c64",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7",
+        "resolved_at": "2026-11-17T17:49:33.025202+00:00",
+        "state": "succeeded"
+      },
+      {
+        "amount_minor": 1200,
+        "attempts": 1,
+        "checks": 0,
+        "created_at": "2026-11-17T17:49:33.047497+00:00",
+        "dataset_epoch": 1,
+        "decline_code": null,
+        "fingerprint": "\\xef2faa30eb5d1049f1d7f8417fd103ef44e10840260249ef83a36aec692c40c3",
+        "id": "951b8cc7-8b86-5628-879f-4fbecc6f1340",
+        "idempotency_key": "refund-2",
+        "kind": "refund",
+        "network_ref": "simnet_15c6ff782013029c48c8",
+        "next_check_at": "-infinity",
+        "payment_id": "b38a2bad-2db4-544d-a76d-2db56c5f2c64",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7",
+        "resolved_at": "2026-11-17T17:49:33.057489+00:00",
+        "state": "succeeded"
+      }
+    ],
+    "payments": [
+      {
+        "amount_minor": 10000,
+        "authorize_operation_id": "317f171e-74c0-5447-a7ed-626854f9ed65",
+        "authorized_minor": 10000,
+        "capture_reserved_minor": 0,
+        "captured_minor": 6000,
+        "created_at": "2026-11-17T17:49:33.083399+00:00",
+        "currency": "JPY",
+        "dataset_epoch": 1,
+        "decline_code": null,
+        "description": null,
+        "event_sequence": 3,
+        "id": "102cb67b-4850-5f67-84c2-02c6352d9a7d",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "refund_reserved_minor": 0,
+        "refunded_minor": 0,
+        "status": "captured",
+        "token": "tok_sim_approve",
+        "updated_at": "2026-11-17T17:49:33.127497+00:00",
+        "void_reserved_minor": 0,
+        "voided_minor": 4000
+      },
+      {
+        "amount_minor": 4200,
+        "authorize_operation_id": "9653e536-72cd-528e-a370-81152f92f981",
+        "authorized_minor": 4200,
+        "capture_reserved_minor": 0,
+        "captured_minor": 4200,
+        "created_at": "2026-11-17T17:49:32.949114+00:00",
+        "currency": "USD",
+        "dataset_epoch": 1,
+        "decline_code": null,
+        "description": null,
+        "event_sequence": 3,
+        "id": "75e3991a-47d2-56f7-9666-5f8980d2f041",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "refund_reserved_minor": 0,
+        "refunded_minor": 1200,
+        "status": "partially_refunded",
+        "token": "tok_sim_approve",
+        "updated_at": "2026-11-17T17:49:33.007456+00:00",
+        "void_reserved_minor": 0,
+        "voided_minor": 0
+      },
+      {
+        "amount_minor": 999,
+        "authorize_operation_id": "cf2e5e03-687f-5a4a-9a3e-4e47ff2c6d69",
+        "authorized_minor": 0,
+        "capture_reserved_minor": 0,
+        "captured_minor": 0,
+        "created_at": "2026-11-17T17:49:33.065439+00:00",
+        "currency": "EUR",
+        "dataset_epoch": 1,
+        "decline_code": "do_not_honor",
+        "description": null,
+        "event_sequence": 1,
+        "id": "8e277496-b99c-5788-ad57-de72e39bc343",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "refund_reserved_minor": 0,
+        "refunded_minor": 0,
+        "status": "declined",
+        "token": "tok_sim_decline_do_not_honor",
+        "updated_at": "2026-11-17T17:49:33.074468+00:00",
+        "void_reserved_minor": 0,
+        "voided_minor": 0
+      },
+      {
+        "amount_minor": 1250,
+        "authorize_operation_id": "f61235ae-349f-547e-8d37-bf5d17e70606",
+        "authorized_minor": 1250,
+        "capture_reserved_minor": 0,
+        "captured_minor": 0,
+        "created_at": "2026-11-17T17:49:33.136321+00:00",
+        "currency": "KWD",
+        "dataset_epoch": 1,
+        "decline_code": null,
+        "description": null,
+        "event_sequence": 1,
+        "id": "a5ba3977-7ea0-5cd8-8720-867562b4169b",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "refund_reserved_minor": 0,
+        "refunded_minor": 0,
+        "status": "authorized",
+        "token": "tok_sim_lost_reply",
+        "updated_at": "2026-11-17T17:49:33.460975+00:00",
+        "void_reserved_minor": 0,
+        "voided_minor": 0
+      },
+      {
+        "amount_minor": 3300,
+        "authorize_operation_id": "25ba0375-b359-5beb-8a37-4bc6e2f213f4",
+        "authorized_minor": 3300,
+        "capture_reserved_minor": 0,
+        "captured_minor": 0,
+        "created_at": "2026-11-17T17:49:33.48606+00:00",
+        "currency": "EUR",
+        "dataset_epoch": 2,
+        "decline_code": null,
+        "description": null,
+        "event_sequence": 1,
+        "id": "bbe46153-2b4e-5f3c-82b2-e06447cecb2e",
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "refund_reserved_minor": 0,
+        "refunded_minor": 0,
+        "status": "authorized",
+        "token": "tok_sim_approve",
+        "updated_at": "2026-11-17T17:49:33.499181+00:00",
+        "void_reserved_minor": 0,
+        "voided_minor": 0
+      },
+      {
+        "amount_minor": 4200,
+        "authorize_operation_id": "7c201160-013b-56e9-88f6-f010c5f22b5d",
+        "authorized_minor": 4200,
+        "capture_reserved_minor": 0,
+        "captured_minor": 4200,
+        "created_at": "2026-11-17T17:49:33.014499+00:00",
+        "currency": "USD",
+        "dataset_epoch": 1,
+        "decline_code": null,
+        "description": null,
+        "event_sequence": 3,
+        "id": "b38a2bad-2db4-544d-a76d-2db56c5f2c64",
+        "project_id": "01a1eaa0-db69-7168-832f-2771b2a86be7",
+        "refund_reserved_minor": 0,
+        "refunded_minor": 1200,
+        "status": "partially_refunded",
+        "token": "tok_sim_approve",
+        "updated_at": "2026-11-17T17:49:33.057489+00:00",
+        "void_reserved_minor": 0,
+        "voided_minor": 0
+      }
+    ],
+    "projects": [
+      {
+        "created_at": "2026-11-17T17:49:32.896091+00:00",
+        "dataset_epoch": 2,
+        "id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "name": "release-a",
+        "slug": "release-a"
+      },
+      {
+        "created_at": "2026-11-17T17:49:32.932135+00:00",
+        "dataset_epoch": 1,
+        "id": "01a1eaa0-db69-7168-832f-2771b2a86be7",
+        "name": "release-b",
+        "slug": "release-b"
+      }
+    ],
+    "webhook_endpoints": [
+      {
+        "circuit_open_until": null,
+        "circuit_opens": 0,
+        "consecutive_failures": 0,
+        "created_at": "2026-11-17T17:49:32.942315+00:00",
+        "disabled_at": null,
+        "id": "01a1eaa0-db8d-712f-866f-6131f9dffc0e",
+        "previous_ciphertext": null,
+        "previous_expires_at": null,
+        "previous_nonce": null,
+        "project_id": "01a1eaa0-db45-71a5-9777-06a3c4474e83",
+        "secret_ciphertext": "\\x2def121f2f38a05621e45b0c7f866c41437f58bc6b5eeb071e015af9c816aff71b84e166e5200ffd7b9650fac029d3524f7bff9f164b8fe241731ce5974d953494292f24186f26ccd4b5fdbfb9d3f8d5c786381c1983cff5d64b",
+        "secret_nonce": "\\xf0eef9c3569ce6fc76e1b985",
+        "url": "http://127.0.0.1:56199/hooks"
+      }
+    ]
+  }
+}

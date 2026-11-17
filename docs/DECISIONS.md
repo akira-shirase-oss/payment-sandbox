@@ -1115,7 +1115,8 @@ refused. These fix the smallest version that meets it.
   applies this release's remaining migrations, and requires: the server's role and
   protections check passes, every project and epoch reconciles with the same balances, a
   request repeated under an old idempotency key replays its stored answer, and new money
-  moves. The first fixture is 0.1.0's (migrations 1–13); the next release adds its own and
+  moves. The first fixture is 1.0.0's (migrations 1–13; written as 0.1.0's until D-087);
+  the next release adds its own and
   keeps every earlier one, so a migration that cannot apply to an earlier release's data
   fails before it ships. The network's store is not part of a fixture (its format is
   redb's; the drills cover its restarts and restores).
@@ -1345,6 +1346,16 @@ closes one of its findings, with the test that failed before the fix.
   unaccepted key's words; a missing payment's words, its Back link and its code shown only
   after Details; no "(D-NNN)" on the ledger or webhooks pages); the old pages failed each
   of these by construction (raw text, the key sent, no link, ids in the copy).
+
+- **D-087 — The first release is 1.0.0, and its fixture says so.** D-072's first fixture was
+  named `0.1.0` while v1 is to be tagged `v1.0.0`, and it sat at migration 13, every
+  migration there is, so `tests/releases.rs` applied none to it: per-release coverage
+  proves nothing until the next migration exists. The workspace and the SDK are now
+  version 1.0.0 (`--version` says so), the fixture is rewritten by that version as
+  `fixtures/releases/1.0.0.json` (the writer refuses any other) and `0.1.0.json`, never
+  released, is gone. Coverage starts with the first migration after v1.0.0: it must apply
+  to 1.0.0's data, reconcile and replay old keys, or it fails before it ships (the review's
+  mutation check showed a breaking 14th migration would be caught).
 
 ## Open questions (still open)
 

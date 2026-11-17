@@ -1,6 +1,6 @@
 {
   "name": "@sandbox/sdk",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Payment Sandbox's TypeScript SDK for test stores (SIMULATED MONEY ONLY): payments with safe retries and honest uncertain outcomes, webhook verification, dataset reset. Refuses production-looking configuration.",
   "type": "module",
