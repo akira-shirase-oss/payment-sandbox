@@ -332,3 +332,48 @@ async fn a_cursor_the_server_did_not_issue_is_refused_before_any_query() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     app.cleanup().await;
 }
+
+/// Second check on N3: a cursor was not bound to what it explains. Project B accepted
+/// project A's cursor and carried on with A's running total; one account's cursor paged
+/// another. A cursor now seals its project, epoch, currency and account.
+#[tokio::test]
+async fn a_cursor_explains_only_the_account_it_was_issued_for() {
+    let sim = TestSim::start().await;
+    let app = TestApp::with_sim(&sim, &[]).await;
+    let (_, a) = app.project("store-a").await;
+    let (_, b) = app.project("store-b").await;
+    for (key, prefix) in [(&a, "a"), (&b, "b")] {
+        for n in 0..3 {
+            let (status, _) = app
+                .authorize(key, &format!("{prefix}-{n}"), 100, "USD", "tok_sim_approve")
+                .await;
+            assert_eq!(status, StatusCode::CREATED);
+        }
+    }
+    let path = "/v1/balances/USD/payer_held/explain?limit=1";
+    let (_, page) = app.get(path, &a).await;
+    let cursor = page["explanation"]["next"]["cursor"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (status, _) = app.get(&format!("{path}&cursor={cursor}"), &a).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the cursor works for its own account"
+    );
+    for (key, other) in [
+        (&b, path.to_owned()),
+        (
+            &a,
+            "/v1/balances/USD/payer_funding/explain?limit=1".to_owned(),
+        ),
+        (&a, "/v1/balances/EUR/payer_held/explain?limit=1".to_owned()),
+    ] {
+        let (status, body) = app.get(&format!("{other}&cursor={cursor}"), key).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{other}: {body}");
+        assert_eq!(body["error"]["code"], "invalid_cursor", "{body}");
+    }
+    app.cleanup().await;
+    sim.remove().await;
+}

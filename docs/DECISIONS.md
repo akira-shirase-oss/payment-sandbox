@@ -664,7 +664,12 @@ review found. Each states the choice, the alternative and the cost.
   outlive a restart), otherwise random per process. Every query string is
   percent-decoded and card-guarded (`422 raw_card_data_rejected`), and a
   logged error cause that quotes anything card-like is withheld whole.
+  A second review check found cursors unbound: project B accepted project
+  A's cursor and carried on with A's running total. A cursor now seals what
+  it explains (project, dataset epoch, currency, account) and opens only
+  for that (`400 invalid_cursor` otherwise).
   Tests: `a_cursor_the_server_did_not_issue_is_refused_before_any_query`,
+  `a_cursor_explains_only_the_account_it_was_issued_for`,
   `tests/logs.rs` (a card number in a cursor), `cursor::tests`.
 
 - **D-057 — Delivery fairness is per project too, and endpoints are

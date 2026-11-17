@@ -340,8 +340,15 @@ pub async fn explain(
     let currency = Currency::from_code(&currency).map_err(|_| ApiError::NotFound("currency"))?;
     let account = sandbox_domain::AccountKind::from_code(&account)
         .map_err(|_| ApiError::NotFound("account"))?;
-    // Opened, and every field checked, before anything reaches the database.
-    let cursor = match q.cursor.as_deref().map(|c| state.cursors.open(c)) {
+    // Opened, and every field checked, before anything reaches the database; a cursor
+    // explains only what it was issued for.
+    let context = crate::cursor::context(
+        auth.scope().project_id,
+        auth.scope().epoch,
+        currency.code(),
+        account.code(),
+    );
+    let cursor = match q.cursor.as_deref().map(|c| state.cursors.open(c, &context)) {
         None => None,
         Some(Ok(crate::cursor::Opened::Authentic(cursor))) => Some(cursor),
         Some(Ok(crate::cursor::Opened::Unverified { generation })) => {
@@ -369,7 +376,7 @@ pub async fn explain(
     let next = explanation
         .next
         .as_ref()
-        .map(|c| json!({"cursor": state.cursors.seal(c)}));
+        .map(|c| json!({"cursor": state.cursors.seal(c, &context)}));
     let mut body = json!(explanation);
     body["next"] = next.unwrap_or(Value::Null);
     Ok(Json(json!({

@@ -5,8 +5,11 @@
 //! reached the ERROR log and the database's log) and `running` was whatever the client said.
 //! Now the server issues one opaque value: the fields, then an HMAC-SHA256 tag (128 bits) over
 //! them, both written with the letters `a`–`p` (one per half-byte), so a cursor has no digits
-//! for the card guard to mistake and nothing a client can edit unnoticed. [`CursorKey::open`]
-//! checks shape, tag and every field's grammar before anything reaches the database.
+//! for the card guard to mistake and nothing a client can edit unnoticed. The fields include
+//! what the cursor explains (project, epoch, currency and account: a second review check
+//! found one project accepting another's cursor and its running total), and
+//! [`CursorKey::open`] refuses a cursor issued for anything else. It checks shape, context,
+//! tag and every field's grammar before anything reaches the database.
 //!
 //! The key is derived from `PS_SECRET_KEY` when it is set, so cursors outlive a restart;
 //! otherwise it is random per process, and a cursor from an earlier process is refused as
@@ -82,10 +85,10 @@ impl CursorKey {
         tag
     }
 
-    /// Seals `cursor`.
-    pub fn seal(&self, cursor: &ExplainCursor) -> String {
+    /// Seals `cursor` for `context` (what it explains; see [`context`]).
+    pub fn seal(&self, cursor: &ExplainCursor, context: &str) -> String {
         let payload = format!(
-            "{}|{}|{}|{}",
+            "{context}|{}|{}|{}|{}",
             cursor.generation, cursor.as_of, cursor.after_seq, cursor.running
         );
         let tag = self.tag(payload.as_bytes());
@@ -94,8 +97,8 @@ impl CursorKey {
         out
     }
 
-    /// Opens a sealed cursor: shape, then fields, then tag.
-    pub fn open(&self, sealed: &str) -> Result<Opened, InvalidCursor> {
+    /// Opens a sealed cursor issued for `context`: shape, context, fields, then tag.
+    pub fn open(&self, sealed: &str, context: &str) -> Result<Opened, InvalidCursor> {
         if sealed.len() > MAX_CURSOR_CHARS
             || sealed.len() < TAG_CHARS + 2
             || !sealed.len().is_multiple_of(2)
@@ -105,7 +108,11 @@ impl CursorKey {
         let bytes = from_letters(sealed).ok_or(InvalidCursor)?;
         let (payload, tag) = bytes.split_at(bytes.len() - TAG_BYTES);
         let text = std::str::from_utf8(payload).map_err(|_| InvalidCursor)?;
-        let cursor = parse(text).ok_or(InvalidCursor)?;
+        let (sealed_for, fields) = text.split_once('|').ok_or(InvalidCursor)?;
+        if sealed_for != context {
+            return Err(InvalidCursor);
+        }
+        let cursor = parse(fields).ok_or(InvalidCursor)?;
         let expected = self.tag(payload);
         let same = expected
             .iter()
@@ -120,6 +127,11 @@ impl CursorKey {
             })
         }
     }
+}
+
+/// What a cursor explains: one account of one project's dataset epoch, in one currency.
+pub fn context(project: uuid::Uuid, epoch: i32, currency: &str, account: &str) -> String {
+    format!("{project}/{epoch}/{currency}/{account}")
 }
 
 fn letters(bytes: &[u8]) -> String {
@@ -206,6 +218,8 @@ fn valid_snapshot(text: &str) -> bool {
 mod tests {
     use super::*;
 
+    const HERE: &str = "018f2f0e-3c1a-7cc0-9e1e-3f1f6b7f9a01/1/USD/payer_held";
+
     fn cursor() -> ExplainCursor {
         ExplainCursor {
             generation: "7708887061324505132.1.16384".to_owned(),
@@ -218,12 +232,12 @@ mod tests {
     #[test]
     fn a_sealed_cursor_opens_and_any_edit_is_noticed() {
         let key = CursorKey::new(None);
-        let sealed = key.seal(&cursor());
+        let sealed = key.seal(&cursor(), HERE);
         assert!(!sealed.bytes().any(|b| b.is_ascii_digit()), "{sealed}");
-        assert_eq!(key.open(&sealed), Ok(Opened::Authentic(cursor())));
+        assert_eq!(key.open(&sealed, HERE), Ok(Opened::Authentic(cursor())));
         // Another process's key: well formed, unverified, generation readable.
         assert_eq!(
-            CursorKey::new(None).open(&sealed),
+            CursorKey::new(None).open(&sealed, HERE),
             Ok(Opened::Unverified {
                 generation: cursor().generation
             })
@@ -231,15 +245,37 @@ mod tests {
         // An edited running total.
         let mut forged = cursor();
         forged.running = 4_242_424_242_424_242;
-        let forged = CursorKey::new(None).seal(&forged);
-        assert!(matches!(key.open(&forged), Ok(Opened::Unverified { .. })));
+        let forged = CursorKey::new(None).seal(&forged, HERE);
+        assert!(matches!(
+            key.open(&forged, HERE),
+            Ok(Opened::Unverified { .. })
+        ));
         // The server key makes cursors outlive a restart.
         let hex = "00".repeat(32);
         let a = CursorKey::new(Some(&hex));
         assert_eq!(
-            CursorKey::new(Some(&hex)).open(&a.seal(&cursor())),
+            CursorKey::new(Some(&hex)).open(&a.seal(&cursor(), HERE), HERE),
             Ok(Opened::Authentic(cursor()))
         );
+    }
+
+    #[test]
+    fn a_cursor_opens_only_for_what_it_explains() {
+        let key = CursorKey::new(None);
+        let sealed = key.seal(&cursor(), HERE);
+        let id = uuid::Uuid::from_u128(7);
+        for elsewhere in [
+            context(id, 1, "USD", "payer_held"),
+            "018f2f0e-3c1a-7cc0-9e1e-3f1f6b7f9a01/2/USD/payer_held".to_owned(),
+            "018f2f0e-3c1a-7cc0-9e1e-3f1f6b7f9a01/1/EUR/payer_held".to_owned(),
+            "018f2f0e-3c1a-7cc0-9e1e-3f1f6b7f9a01/1/USD/payer_funding".to_owned(),
+        ] {
+            assert_eq!(
+                key.open(&sealed, &elsewhere),
+                Err(InvalidCursor),
+                "{elsewhere}"
+            );
+        }
     }
 
     #[test]
@@ -252,7 +288,7 @@ mod tests {
             &"a".repeat(MAX_CURSOR_CHARS + 2),
             "4242424242424242",
         ] {
-            assert_eq!(key.open(bad), Err(InvalidCursor), "{bad:?}");
+            assert_eq!(key.open(bad, HERE), Err(InvalidCursor), "{bad:?}");
         }
         for as_of in [
             "4242424242424242",
@@ -265,7 +301,11 @@ mod tests {
         ] {
             let mut c = cursor();
             c.as_of = as_of.to_owned();
-            assert_eq!(key.open(&key.seal(&c)), Err(InvalidCursor), "{as_of}");
+            assert_eq!(
+                key.open(&key.seal(&c, HERE), HERE),
+                Err(InvalidCursor),
+                "{as_of}"
+            );
         }
         assert!(valid_snapshot("10:10:"));
         assert!(valid_snapshot("10:20:11,15"));
