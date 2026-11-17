@@ -386,3 +386,54 @@ async fn the_rehearsal_fails_when_the_source_itself_was_weakened() {
         assert!(said.contains(named), "{named} not reported: {said}");
     }
 }
+
+/// Second check on N5: a source whose balance trigger function was replaced by a no-op (its
+/// search path still pinned, every name in place) rehearsed as "restore ok", and `ps_app`
+/// then posted an unbalanced late line on the copy. The definitions are pinned now.
+#[tokio::test]
+async fn the_rehearsal_fails_when_a_function_body_was_replaced() {
+    use sqlx::Executor as _;
+    let source = TestDb::new().await;
+    source
+        .pool
+        .execute(sqlx::AssertSqlSafe(
+            "CREATE OR REPLACE FUNCTION public.journal_lines_check_balance() RETURNS trigger
+             LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$ BEGIN RETURN NULL; END $$",
+        ))
+        .await
+        .unwrap();
+    let target = format!("{}_noop", source.name());
+    let script = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../scripts/restore-rehearsal.sh"
+    );
+    let rehearsal = std::process::Command::new(script)
+        .arg(source.name())
+        .arg(&target)
+        .output()
+        .unwrap();
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&rehearsal.stdout),
+        String::from_utf8_lossy(&rehearsal.stderr)
+    );
+    {
+        use sqlx::Connection as _;
+        let mut admin = sqlx::PgConnection::connect(&source.admin_url())
+            .await
+            .unwrap();
+        admin
+            .execute(sqlx::AssertSqlSafe(format!(
+                "DROP DATABASE IF EXISTS {target} WITH (FORCE)"
+            )))
+            .await
+            .unwrap();
+        admin.close().await.ok();
+    }
+    source.cleanup().await;
+    assert!(
+        !rehearsal.status.success(),
+        "a no-op balance trigger rehearsed as ok: {said}"
+    );
+    assert!(said.contains("journal_lines_check_balance"), "{said}");
+}

@@ -303,3 +303,36 @@ async fn the_runtime_role_cannot_choose_an_entrys_sequence_number() {
         "the caller chose seq {seq} (highest {highest})"
     );
 }
+
+/// Second check on N5: the manifest checked names and search paths, not definitions. As the
+/// owner, a trigger function replaced by a no-op (search path still pinned), a trigger
+/// recreated under its own name for fewer events, or a function made SECURITY DEFINER left
+/// it satisfied, and the server started. Each is now refused.
+#[tokio::test]
+async fn the_server_refuses_replaced_function_bodies_and_trigger_definitions() {
+    use sandbox_db::roles::{RoleCheckError, check_runtime};
+    use sqlx::Executor as _;
+    let replacements = [
+        "CREATE OR REPLACE FUNCTION public.journal_lines_check_balance() RETURNS trigger
+         LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$ BEGIN RETURN NULL; END $$",
+        "CREATE OR REPLACE FUNCTION public.journal_refuse_change() RETURNS trigger
+         LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$ BEGIN RETURN NEW; END $$",
+        "DROP TRIGGER journal_entries_append_only ON journal_entries;
+         CREATE TRIGGER journal_entries_append_only BEFORE DELETE ON journal_entries
+             FOR EACH ROW EXECUTE FUNCTION journal_refuse_change()",
+        "ALTER FUNCTION journal_entries_stamp() SECURITY DEFINER",
+    ];
+    for replacement in replacements {
+        let db = TestDb::new().await;
+        let app = sqlx::PgPool::connect(&db.url()).await.unwrap();
+        assert!(check_runtime(&app).await.is_ok(), "fresh database refused");
+        db.pool.execute(AssertSqlSafe(replacement)).await.unwrap();
+        let refused = check_runtime(&app).await;
+        app.close().await;
+        db.cleanup().await;
+        assert!(
+            matches!(refused, Err(RoleCheckError::Refused(_))),
+            "served after: {replacement}: {refused:?}"
+        );
+    }
+}

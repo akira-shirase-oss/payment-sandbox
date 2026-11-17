@@ -1,33 +1,41 @@
 -- The journal's protections, stated once (review N5; D-058). SIMULATED MONEY ONLY.
 --
 -- One row per problem; no rows means the database is protected as the migrations left it.
+-- A migration that changes a trigger or a function must update its digest here in the same
+-- commit (`md5(pg_get_triggerdef(oid))`, `md5(pg_get_functiondef(oid))` on a fresh database).
 -- Checked absolutely, not by comparison with another copy: the restore rehearsal runs it on
 -- the source and on the copy (scripts/restore-rehearsal.sh), and the server runs it at
 -- startup and refuses to serve when it returns anything (sandbox_db::roles::check_runtime).
--- Every trigger below must exist and be enabled; every function in `public` must pin its
--- search path; `ps_runtime` must hold exactly the listed table privileges, may not create
+-- Every trigger below must exist, be enabled and keep its exact definition; every function
+-- in `public` must be one listed, keep its exact definition (body included), pin its search
+-- path, be SECURITY INVOKER and belong to ps_owner (a second review check: names alone let
+-- a no-op body through); `ps_runtime` must hold exactly the listed table privileges, may not create
 -- temporary tables or objects in `public`, and `ps_owner` must own every table.
-WITH expected_triggers (tbl, name) AS (
-    VALUES ('audit_events', 'audit_events_append_only'),
-           ('audit_events', 'audit_events_no_truncate'),
-           ('events', 'events_append_only'),
-           ('events', 'events_no_truncate'),
-           ('journal_entries', 'journal_entries_append_only'),
-           ('journal_entries', 'journal_entries_have_lines'),
-           ('journal_entries', 'journal_entries_no_truncate'),
-           ('journal_entries', 'journal_entries_stamp'),
-           ('journal_lines', 'journal_lines_append_only'),
-           ('journal_lines', 'journal_lines_balanced'),
-           ('journal_lines', 'journal_lines_no_truncate'),
-           ('operations', 'operations_no_delete'),
-           ('operations', 'operations_no_truncate'),
-           ('operations', 'operations_resolved_is_final'),
-           ('payments', 'payments_no_delete'),
-           ('payments', 'payments_no_truncate')
-), expected_functions (name) AS (
-    VALUES ('journal_entries_check_lines'), ('journal_entries_stamp'),
-           ('journal_lines_check_balance'), ('journal_refuse_change'),
-           ('operations_resolved_is_final')
+WITH expected_triggers (tbl, name, digest) AS (
+    -- md5(pg_get_triggerdef(oid)): the events, timing, level, deferral and function.
+    VALUES ('audit_events', 'audit_events_append_only', '840ce02299857c3b0d6f322dc8ec6dd8'),
+           ('audit_events', 'audit_events_no_truncate', '0a7c918edf788926b7af1cf537e8edfb'),
+           ('events', 'events_append_only', 'fcc09665686ff23b157bbbc542baf67f'),
+           ('events', 'events_no_truncate', '2e7a1229fe028261672001f3e492f451'),
+           ('journal_entries', 'journal_entries_append_only', 'df1436dcbf9e28d88f587f2f80511f9c'),
+           ('journal_entries', 'journal_entries_have_lines', '704d41c83f8fbe45cfbed4a9407fdde3'),
+           ('journal_entries', 'journal_entries_no_truncate', 'c8dff5913a4cd99048a854d05f116f24'),
+           ('journal_entries', 'journal_entries_stamp', '6a2eaf82dbc554bd6e4ee10c8dfaf3b9'),
+           ('journal_lines', 'journal_lines_append_only', '4978365e3afc48a4e41284d248455d4d'),
+           ('journal_lines', 'journal_lines_balanced', 'fc42d40baa4171ca3cf5b12e65819ea3'),
+           ('journal_lines', 'journal_lines_no_truncate', 'b4f1af17dbc6a854ac9b6f5d5c9efd2d'),
+           ('operations', 'operations_no_delete', 'c86329765441658d9bf6e22ecdf897a5'),
+           ('operations', 'operations_no_truncate', 'fca21370b8e532d970738903402625db'),
+           ('operations', 'operations_resolved_is_final', 'f5ab60868728ffeae03a024304f87cc3'),
+           ('payments', 'payments_no_delete', '9d8be5096e435ecdfe4e228c330ab2c1'),
+           ('payments', 'payments_no_truncate', 'e78203e1076c56708807bba773ee3dc9')
+), expected_functions (name, digest) AS (
+    -- md5(pg_get_functiondef(oid)): the whole definition, body and settings included.
+    VALUES ('journal_entries_check_lines', '0751af9ed7f638e9d937e6b5556d19a7'),
+           ('journal_entries_stamp', '8df55a68832985280d17f363674717c8'),
+           ('journal_lines_check_balance', '45d580297b8266c2c2d8ad823546e34b'),
+           ('journal_refuse_change', '92238c34856bc8af8688e3c80df79b27'),
+           ('operations_resolved_is_final', 'ad4f3d10a4cc76f979df1abac1648a39')
 ), expected_grants (tbl, privileges) AS (
     VALUES ('accounts', 'INSERT,SELECT'),
            ('api_keys', 'INSERT,SELECT,UPDATE'),
@@ -65,12 +73,31 @@ SELECT problem FROM (
           WHERE t.tgrelid = pg_catalog.to_regclass('public.' || e.tbl)
             AND t.tgname = e.name AND t.tgenabled = 'O' AND NOT t.tgisinternal)
     UNION ALL
+    SELECT format('trigger %s.%s is not defined as the migrations left it', e.tbl, e.name)
+      FROM expected_triggers e
+      JOIN pg_catalog.pg_trigger t
+        ON t.tgrelid = pg_catalog.to_regclass('public.' || e.tbl) AND t.tgname = e.name
+     WHERE pg_catalog.md5(pg_catalog.pg_get_triggerdef(t.oid)) <> e.digest
+    UNION ALL
     SELECT format('function %s is missing', e.name)
       FROM expected_functions e
      WHERE NOT EXISTS (
          SELECT 1 FROM pg_catalog.pg_proc p
           JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
          WHERE n.nspname = 'public' AND p.proname = e.name)
+    UNION ALL
+    SELECT format('function %s is not defined as the migrations left it', p.proname)
+      FROM pg_catalog.pg_proc p
+      JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+      LEFT JOIN expected_functions e ON e.name = p.proname
+     WHERE n.nspname = 'public'
+       AND pg_catalog.md5(pg_catalog.pg_get_functiondef(p.oid)) IS DISTINCT FROM e.digest
+    UNION ALL
+    SELECT format('function %s is SECURITY DEFINER or not owned by ps_owner', p.proname)
+      FROM pg_catalog.pg_proc p
+      JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+     WHERE n.nspname = 'public'
+       AND (p.prosecdef OR pg_catalog.pg_get_userbyid(p.proowner) <> 'ps_owner')
     UNION ALL
     SELECT format('function %s does not pin search_path = pg_catalog, pg_temp', p.proname)
       FROM pg_catalog.pg_proc p

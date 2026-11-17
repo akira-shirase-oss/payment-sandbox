@@ -640,7 +640,13 @@ review found. Each states the choice, the alternative and the cost.
   — every balance explains to the source's lines on the copy, then the
   copy's counter is walked to each of three restored entries' ids and, at
   each, `ps_app` tries to add a balanced pair of lines to that entry:
-  refused.
+  refused. Not supported: a logical-replication subscriber as the server's
+  database. Its apply worker writes replicated rows in its own transactions,
+  so they are not native there and count as committed before every
+  snapshot; an entry applied after an explanation began, with a lower
+  sequence number than a page already read, would be skipped, so
+  explanations across replicated entries would not be stable. Restore by
+  `pg_dump`/`pg_restore` (or a physical copy) instead.
 
 - **D-056 — Explanation cursors are sealed by the server; query strings are
   card-guarded.** Review N3: the cursor's `as_of` went straight into a
@@ -694,7 +700,17 @@ review found. Each states the choice, the alternative and the cost.
   the dump and on the copy after it, and on the copy also requires that
   `ps_app`'s `UPDATE` of a journal line and `DELETE` of an entry are
   refused. A migration that changes any protection must change the
-  manifest in the same commit. (D-055 made the "counter above every
+  manifest in the same commit. A second review check showed names were not
+  enough: as the owner, a trigger function replaced by a no-op (search path
+  still pinned) passed, the server started, the rehearsal said `restore ok`,
+  and `ps_app` posted an unbalanced late line. So the manifest also pins
+  every trigger's definition (`md5(pg_get_triggerdef)`: events, timing,
+  level, deferral, function) and every function's (`md5(pg_get_functiondef)`:
+  body and settings), lists every function allowed in `public`, and requires
+  each to be SECURITY INVOKER and owned by `ps_owner`; a migration that
+  changes one updates its digest in the same commit. Tests also:
+  `the_server_refuses_replaced_function_bodies_and_trigger_definitions`,
+  `the_rehearsal_fails_when_a_function_body_was_replaced`. (D-055 made the "counter above every
   restored id" precondition unnecessary, so it is not checked.) Tests:
   `the_server_refuses_a_database_whose_protections_were_weakened` (five
   weakenings, each alone), `the_rehearsal_fails_when_the_source_itself_was_weakened`.
