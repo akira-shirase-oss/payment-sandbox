@@ -13,7 +13,6 @@ test.skip(!out, 'set E2E_PERF_OUT (scripts/web-perf.sh) to measure page loads');
 
 interface Sample {
 	ttfb: number;
-	fcp: number;
 	dom_content_loaded: number;
 	load: number;
 	ready: number;
@@ -28,16 +27,17 @@ const READY = (selector: string) => `
 	})();`;
 
 async function sample(page: Page, url: string, selector: string): Promise<Sample> {
+	// Always a new document: the checkout strips its fragment, so going to the same URL
+	// again from the page itself would be a same-document navigation.
+	await page.goto('about:blank');
 	await page.goto(url);
 	await expect(page.locator(selector).first()).toBeVisible();
 	await page.waitForLoadState('load');
 	return page.evaluate(() => {
 		const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming;
-		const fcp = performance.getEntriesByName('first-contentful-paint')[0]?.startTime ?? -1;
 		const resources = performance.getEntriesByType('resource') as PerformanceResourceTiming[];
 		return {
 			ttfb: nav.responseStart,
-			fcp,
 			dom_content_loaded: nav.domContentLoadedEventEnd,
 			load: nav.loadEventEnd,
 			ready: (window as unknown as { __ready?: number }).__ready ?? -1,
@@ -85,7 +85,10 @@ test('page loads: the checkout until Pay is on screen, the dashboard until Sign 
 	const dashboard = await series(browser, async () => env.dashboard, 'button[type="submit"]');
 	const result = {
 		samples: SAMPLES,
-		unit: 'milliseconds from navigation start (transferred_bytes: bytes)',
+		unit: 'milliseconds from navigation start; transferred_bytes in bytes (the sandbox serves identity on loopback; fonts included)',
+		ready: 'the first moment the button the visitor acts on is in the document (a MutationObserver on the page clock)',
+		cold: 'a fresh browser context: nothing cached',
+		warm: 'the same context again: hashed assets from the HTTP cache',
 		note: 'loopback, Chromium headless, same machine as the servers: a development observation',
 		checkout,
 		dashboard
