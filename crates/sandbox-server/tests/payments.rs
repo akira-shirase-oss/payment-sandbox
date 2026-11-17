@@ -1010,3 +1010,45 @@ async fn every_common_card_number_shape_is_refused_and_never_stored() {
     assert_eq!(stored, 0);
     teardown(sim, app).await;
 }
+
+/// Review finding 7: a card number sent as a JSON number is refused as card data, and no
+/// schema error ever echoes the client's input.
+#[tokio::test]
+async fn card_numbers_as_json_numbers_are_refused_and_schema_errors_never_echo_input() {
+    let (sim, app, key) = setup().await;
+    let bodies = [
+        json!({"amount": 100, "currency": "USD", "token": 4_242_424_242_424_242_i64}),
+        json!({"amount": 100, "currency": "USD", "token": "tok_sim_approve", "description": 4_000_056_655_665_556_i64}),
+        json!({"amount": 100, "currency": 5_555_555_555_554_444_i64, "token": "tok_sim_approve"}),
+    ];
+    for (n, body) in bodies.into_iter().enumerate() {
+        let (status, reply) = app
+            .post("/v1/payments", &key, Some(&format!("n{n}")), body)
+            .await;
+        assert_eq!(
+            (status, reply["error"]["code"].as_str()),
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Some("raw_card_data_rejected")
+            ),
+            "{reply}"
+        );
+        for digits in ["4242424242424242", "4000056655665556", "5555555555554444"] {
+            assert!(!reply.to_string().contains(digits), "echoed: {reply}");
+        }
+    }
+    let (status, reply) = app
+        .post(
+            "/v1/payments",
+            &key,
+            Some("t"),
+            json!({"amount": "ten thousand", "currency": "USD", "token": "tok_sim_approve"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        !reply.to_string().contains("ten thousand"),
+        "a schema error echoed the input: {reply}"
+    );
+    teardown(sim, app).await;
+}

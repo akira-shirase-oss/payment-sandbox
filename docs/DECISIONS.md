@@ -384,6 +384,13 @@ review found. Each states the choice, the alternative and the cost.
   check applies to every JSON string and key and to the `Idempotency-Key`.
   Test: `every_common_card_number_shape_is_refused_and_never_stored`.
 
+- **D-044 — No error message carries client input.** Review finding: a
+  card number sent as a JSON number came back in a `422 invalid_body`
+  message, which serde wrote as "invalid type: integer `4242…`". Every
+  JSON number is now card-guarded like a string, and schema errors have
+  one fixed message that names no value. Test:
+  `card_numbers_as_json_numbers_are_refused_and_schema_errors_never_echo_input`.
+
 ## Open questions (still open)
 
 - **Dashboard authentication** — per-project-owner session login is the

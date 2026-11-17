@@ -93,8 +93,13 @@ pub fn parse_guarded<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, ApiError> {
     if carries_card_data(&value) {
         return Err(ApiError::RawCardData);
     }
-    serde_json::from_value(value)
-        .map_err(|e| ApiError::InvalidBody(truncate(&e.to_string(), MAX_DETAIL)))
+    serde_json::from_value(value).map_err(|_| {
+        // Fixed text: serde's messages quote the offending value (review 7).
+        ApiError::InvalidBody(
+            "the request body does not match this endpoint's schema (field names, types or ranges)"
+                .to_owned(),
+        )
+    })
 }
 
 /// True when any object key is a card field, or any string (key or value) is card-like.
@@ -107,11 +112,9 @@ pub fn carries_card_data(value: &serde_json::Value) -> bool {
                 || card_guard::contains_pan_like(key)
                 || carries_card_data(value)
         }),
-        // Numbers are only accepted in typed numeric fields that deny unknown keys, where
-        // a card-sized number fails the amount bounds.
-        serde_json::Value::Number(_) | serde_json::Value::Bool(_) | serde_json::Value::Null => {
-            false
-        }
+        // A card number sent as a JSON number is card data too (review 7).
+        serde_json::Value::Number(n) => card_guard::contains_pan_like(&n.to_string()),
+        serde_json::Value::Bool(_) | serde_json::Value::Null => false,
     }
 }
 

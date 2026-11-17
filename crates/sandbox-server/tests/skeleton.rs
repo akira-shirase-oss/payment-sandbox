@@ -251,7 +251,8 @@ async fn bodies_keys_and_card_data_follow_the_rules() {
         );
         let text = body.to_string();
         assert!(
-            !text.contains("4242") && !text.contains("5555"),
+            // Whole card numbers only: a random request id can contain "4242".
+            !text.contains("4242424242424242") && !text.contains("5555 5555 5555 4444"),
             "card digits echoed: {text}"
         );
     }
