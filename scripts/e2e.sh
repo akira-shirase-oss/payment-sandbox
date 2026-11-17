@@ -115,7 +115,7 @@ if [ "$#" -eq 0 ]; then
   pids+=("$example")
   link=""
   for _ in $(seq 1 100); do
-    link="$(grep -o 'http://[^ ]*/c/[^ ]*' "$work/checkout-example.log" | head -n 1 || true)"
+    link="$(grep -o 'http://[^ ]*/c/[^ ]*' "$work/checkout-example.log" 2>/dev/null | head -n 1 || true)"
     [ -n "$link" ] && break
     sleep 0.1
   done

@@ -143,9 +143,9 @@ when nothing disagrees.
 (`<PS_CHECKOUT_ORIGIN>/c/<id>#<client secret>`); the secret is in the fragment, so it never
 reaches a server log, and it is shown once. Send the payer to `url`. The view:
 `session` (`id`, `amount`, `currency`, `capture_method`, `expires_at`, `expired`,
-`attempts_left`, `state`, `next_action`), `attempt` (the latest: its scenario, payment and
-the authorize and capture states), `captured`, `refunded`, and `attempts` (every attempt and
-its `payment_id`). `state` is one of `open`, `processing`, `uncertain`, `declined`,
+`attempts_left`, `state`, `next_action`), `attempt` (the latest: its number, scenario, the
+authorize and capture states and any decline code), `captured`, `refunded`, and `attempts`
+(every attempt, oldest first, with its `payment_id`). `state` is one of `open`, `processing`, `uncertain`, `declined`,
 `not_executed`, `authorized`, `paid`, `conflict`: only `paid` (or `authorized` with manual
 capture) is money you may act on.
 

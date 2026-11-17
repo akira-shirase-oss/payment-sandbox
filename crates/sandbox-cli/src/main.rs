@@ -924,6 +924,10 @@ fn describe_session(view: &Value) -> (String, Ended) {
     };
     lines.push(format!("next: {next}"));
     if let Some(attempt) = view["attempt"].as_object() {
+        let payment = view["attempts"]
+            .as_array()
+            .and_then(|all| all.last())
+            .and_then(|last| last["payment_id"].as_str());
         lines.push(format!(
             "latest attempt #{}: {} -> authorize {}{}, payment {}",
             attempt["number"],
@@ -932,7 +936,7 @@ fn describe_session(view: &Value) -> (String, Ended) {
             attempt["decline_code"]
                 .as_str()
                 .map_or(String::new(), |c| format!(" ({c})")),
-            attempt["payment_id"].as_str().unwrap_or("?")
+            payment.unwrap_or("?")
         ));
     }
     lines.push(format!(

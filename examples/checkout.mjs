@@ -23,6 +23,6 @@ const result = await sandbox.checkoutSessions.waitForPayment(created.session.id,
 console.log(`checkout ${result.session.state}, finished ${result.finished}`);
 if (!result.paid) throw new Error('not paid: do not fulfil the order');
 
-// The session names its payment: the same journal-backed record as any other.
-const { payment } = await sandbox.payments.get(result.attempt.payment_id);
+// Each attempt names its payment: the same journal-backed record as any other.
+const { payment } = await sandbox.payments.get(result.attempts.at(-1).payment_id);
 console.log(`payment ${payment.status}: captured ${payment.captured} of ${payment.amount}`);

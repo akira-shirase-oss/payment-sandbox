@@ -123,8 +123,8 @@ export interface CheckoutSession {
 		state: CheckoutState;
 		next_action: 'pay' | 'wait' | 'continue' | null;
 	};
-	/** The latest attempt, if the payer submitted one. */
-	attempt: { number: number; scenario: string; payment_id: string; authorize: OperationState | null; decline_code: string | null; capture: OperationState | null } | null;
+	/** The latest attempt, if the payer submitted one (its payment is the last of `attempts`). */
+	attempt: { number: number; scenario: string; authorize: OperationState | null; decline_code: string | null; capture: OperationState | null } | null;
 	captured: number;
 	refunded: number;
 	/** Every attempt and its payment. */
