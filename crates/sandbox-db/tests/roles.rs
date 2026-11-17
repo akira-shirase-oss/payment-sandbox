@@ -113,7 +113,7 @@ async fn only_the_runtime_role_passes_the_startup_check() {
 
 /// Review finding 2: a temporary table named like a journal table must not answer the
 /// triggers' queries. Run as a DML role that *may* create temporary tables (stronger than
-/// ps_app, which may not), so the triggers' own schema qualification is what is tested.
+/// `ps_app`, which may not), so the triggers' own schema qualification is what is tested.
 #[tokio::test]
 async fn a_temporary_table_cannot_shadow_the_journal_in_its_triggers() {
     let db = TestDb::new().await;
