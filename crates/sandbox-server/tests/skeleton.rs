@@ -66,7 +66,16 @@ async fn probes_answer_and_every_response_is_labelled_simulated() {
     assert_eq!(headers["sandbox-simulated"], "true");
     assert!(headers.contains_key("x-request-id"));
     assert_eq!(body["simulated"], true);
-    let (status, _, body) = call(&router, get_req("/readyz")).await;
+    // The lazy pool's first connection may miss the 500 ms readiness deadline on a busy
+    // machine; readiness must turn green within a few seconds (review 14).
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let (status, body) = loop {
+        let (status, _, body) = call(&router, get_req("/readyz")).await;
+        if status == StatusCode::OK || Instant::now() > deadline {
+            break (status, body);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
     assert_eq!(status, StatusCode::OK, "{body}");
     let (status, _, body) = call(&router, get_req("/v1/sandbox")).await;
     assert_eq!(status, StatusCode::OK);

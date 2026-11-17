@@ -143,8 +143,18 @@ pub struct TestApp {
 }
 
 impl TestApp {
+    /// An app without a simulated network. Correctness tests get generous database
+    /// deadlines: on a busy machine (load average 18–99 has been seen) the production 1 s
+    /// pool-acquire deadline made them fail for timing, not behaviour (review 14).
     pub async fn new(extra: &[(&str, &str)]) -> Self {
-        Self::on(TestDb::new().await, extra)
+        let mut vars = vec![
+            ("PS_DB_ACQUIRE_TIMEOUT_MS", "15000"),
+            ("PS_DB_STATEMENT_TIMEOUT_MS", "10000"),
+            ("PS_DB_LOCK_TIMEOUT_MS", "10000"),
+            ("PS_REQUEST_TIMEOUT_MS", "60000"),
+        ];
+        vars.extend_from_slice(extra);
+        Self::on(TestDb::new().await, &vars)
     }
 
     /// An app talking to `sim`, with deadlines generous enough for a busy test machine:
