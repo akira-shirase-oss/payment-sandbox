@@ -4,8 +4,9 @@
 //! accident: a key that is not a sandbox key is refused outright (a real processor's key
 //! would be useless here and must not travel), a real processor's host is refused outright,
 //! and any host that is not this machine is refused unless the caller says so explicitly
-//! (a CI service container or a shared sandbox behind a proxy, D-071). The key is never
-//! echoed in any message.
+//! (a CI service container or a shared sandbox behind a proxy, D-071). Off this machine the
+//! key must travel over `https://`; plain `http://` needs a second, explicit opt-in (a CI
+//! service container on a private network, D-079). The key is never echoed in any message.
 
 use std::fmt;
 
@@ -116,22 +117,52 @@ pub enum ConfigError {
         "{0} is not this machine: the sandbox runs on loopback (127.0.0.1, ::1, localhost). If it runs in a CI service container or on a shared host you control, allow it explicitly with --allow-non-local (or PS_ALLOW_NON_LOCAL=1)"
     )]
     NonLocal(String),
+    /// Plain `http://` to another machine, not explicitly allowed.
+    #[error(
+        "{0} is not this machine, and http:// would send your sandbox key in clear text: use its https:// URL. Only on a private network you control (a CI service container) pass --allow-plain-http (or PS_ALLOW_PLAIN_HTTP=1) as well"
+    )]
+    PlainHttp(String),
+}
+
+/// What a configuration may reach beyond this machine.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Allow {
+    /// Hosts other than loopback (`--allow-non-local`).
+    pub non_local: bool,
+    /// Plain `http://` to such a host (`--allow-plain-http`).
+    pub plain_http: bool,
 }
 
 impl Config {
-    /// Checks `api_url` and `key`. `allow_non_local` admits hosts other than loopback; it
-    /// never admits a real processor's host or a non-sandbox key.
+    /// Checks `api_url` and `key`. `allow_non_local` admits hosts other than loopback over
+    /// `https://`; it never admits a real processor's host or a non-sandbox key.
     pub fn new(
         api_url: &str,
         key: Option<&str>,
         allow_non_local: bool,
     ) -> Result<Self, ConfigError> {
+        Self::checked(
+            api_url,
+            key,
+            Allow {
+                non_local: allow_non_local,
+                plain_http: false,
+            },
+        )
+    }
+
+    /// Checks `api_url` and `key` with what `allow` admits beyond this machine.
+    pub fn checked(api_url: &str, key: Option<&str>, allow: Allow) -> Result<Self, ConfigError> {
         let host = url_host(api_url)?;
         if is_real_processor(&host) {
             return Err(ConfigError::RealProcessor(host));
         }
-        if !allow_non_local && !is_loopback_host(&host) {
+        let local = is_loopback_host(&host);
+        if !allow.non_local && !local {
             return Err(ConfigError::NonLocal(host));
+        }
+        if !local && !allow.plain_http && api_url.starts_with("http://") {
+            return Err(ConfigError::PlainHttp(host));
         }
         let key = key
             .map(str::trim)
@@ -253,8 +284,25 @@ mod tests {
             Config::new("http://10.0.0.5:56080", Some(KEY), false).unwrap_err(),
             ConfigError::NonLocal("10.0.0.5".to_owned())
         );
-        // Explicitly allowed: a CI service container or a shared sandbox host.
-        assert!(Config::new("http://sandbox:56080", Some(KEY), true).is_ok());
+        // Explicitly allowed: a shared sandbox host over https.
+        assert!(Config::new("https://sandbox.example.com", Some(KEY), true).is_ok());
+        // Plain http off this machine would carry the key in clear text (v1 review L3): it
+        // needs its own, second opt-in (a CI service container on a private network).
+        assert_eq!(
+            Config::new("http://sandbox:56080", Some(KEY), true).unwrap_err(),
+            ConfigError::PlainHttp("sandbox".to_owned())
+        );
+        assert!(
+            Config::checked(
+                "http://sandbox:56080",
+                Some(KEY),
+                Allow {
+                    non_local: true,
+                    plain_http: true
+                }
+            )
+            .is_ok()
+        );
         // Built at run time, so no literal in the source looks like a real processor's key.
         let hex = "0123456789abcdef".repeat(4);
         for key in [

@@ -35,7 +35,15 @@ describe('the configuration', () => {
 		);
 		expect(refusal(() => checkConfig({ apiKey: KEY, apiUrl: 'https://sandbox.example.com' }, env))).toBe('non_local');
 		expect(refusal(() => checkConfig({ apiKey: KEY, apiUrl: 'http://10.0.0.5:56080' }, env))).toBe('non_local');
-		expect(checkConfig({ apiKey: KEY, apiUrl: 'http://sandbox:56080', allowNonLocal: true }, env).apiUrl).toBe('http://sandbox:56080');
+		// v1 review L3: off this machine, plain http would carry the key in clear text: https,
+		// or an explicit second opt-in for a private network (a CI service container).
+		expect(refusal(() => checkConfig({ apiKey: KEY, apiUrl: 'http://sandbox:56080', allowNonLocal: true }, env))).toBe('plain_http');
+		expect(checkConfig({ apiKey: KEY, apiUrl: 'https://sandbox.example.com', allowNonLocal: true }, env).apiUrl).toBe(
+			'https://sandbox.example.com'
+		);
+		expect(
+			checkConfig({ apiKey: KEY, apiUrl: 'http://sandbox:56080', allowNonLocal: true, allowPlainHttp: true }, env).apiUrl
+		).toBe('http://sandbox:56080');
 		// Built at run time, so no literal in the source looks like a real processor's key.
 		const hex = '0123456789abcdef'.repeat(4);
 		for (const apiKey of [

@@ -1230,6 +1230,17 @@ closes one of its findings, with the test that failed before the fix.
   and the SDK's "never re-sends a reset after an answer that may follow a commit"; both
   re-sent before the fix).
 
+- **D-079 — Off this machine, the key travels over HTTPS.** D-068's `--allow-non-local` /
+  `allowNonLocal` admitted `http://` to any host, so a sandbox key could cross a network in
+  clear text. Now a host other than loopback must also be `https://` (D-074 gave the CLI
+  TLS), unless a second, explicit opt-in says the network is private: `--allow-plain-http`
+  (`PS_ALLOW_PLAIN_HTTP=1`) / `allowPlainHttp: true`, for a CI service container. The
+  refusal names both fixes. Loopback keeps plain `http://`, as the server's own origins do
+  (D-071: public origins are `https://` names). Tests: `config::tests` (`http://sandbox`
+  refused with only `--allow-non-local`, admitted with both), `tests/cli.rs` (the binary
+  exits 2 naming `https://` and `--allow-plain-http`; it tried to connect, exit 5, before),
+  and the SDK's `config.test.ts` (`plain_http`, which it accepted before).
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

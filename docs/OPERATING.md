@@ -166,6 +166,7 @@ explanation again.
 | Everyone is signed out | the server restarted (sessions are in memory, D-062) | sign in again |
 | `429 rate_limited` on reports | a project spent its report budget (D-047) | wait `Retry-After` seconds; raise `PS_REPORT_BURST` only with a measurement |
 | `sandbox-cli` says `is not this machine` | the API is on the shared host | pass `--allow-non-local` (or `PS_ALLOW_NON_LOCAL=1`) |
+| `sandbox-cli` says `http:// would send your sandbox key in clear text` | an `http://` URL for another machine | use the proxy's `https://` name |
 | `sandbox-cli` says `could not open a secure (TLS) connection ... not trusted` | the proxy's certificate comes from an authority this machine does not trust | pass that authority's certificate with `--ca-cert` (or `PS_CA_CERT`) |
 | `sandbox-cli` says `does not speak TLS on this port` / `the answer was not HTTP` | `https://` to a plain port, or `http://` to the proxy's TLS port | use the proxy's `https://` name, or `http://127.0.0.1:56080` on the host |
 

@@ -139,7 +139,9 @@ conflict, never a reinterpretation.
 The SDK and the CLI refuse, before sending anything: a key that is not `sk_sim_` followed by
 64 hex characters (a real processor's key never travels), a real processor's host, a host
 that is not this machine unless you pass `allowNonLocal: true` / `--allow-non-local` (a CI
-service container, or a sandbox you deployed), and, in the SDK, `NODE_ENV=production`
+service container, or a sandbox you deployed), plain `http://` to such a host (the key would
+travel in clear text) unless you also pass `allowPlainHttp: true` / `--allow-plain-http` (a
+private network you control), and, in the SDK, `NODE_ENV=production`
 unless `allowProductionEnvironment: true` says this is a test of a production build. Every
 answer must carry `Sandbox-Simulated: true`, or the client stops.
 

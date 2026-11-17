@@ -27,6 +27,7 @@ async fn cli(api: &str, key: Option<&str>, args: &[&str]) -> Output {
         .args(args)
         .env_remove("PS_API_KEY")
         .env_remove("PS_ALLOW_NON_LOCAL")
+        .env_remove("PS_ALLOW_PLAIN_HTTP")
         .env("PS_API_URL", api)
         .stdin(std::process::Stdio::null());
     if let Some(key) = key {
@@ -122,6 +123,21 @@ async fn production_looking_configuration_is_refused_before_anything_is_sent() {
         stderr(&remote).contains("--allow-non-local"),
         "{}",
         stderr(&remote)
+    );
+
+    // Plain http to another machine: the key would travel in clear text (v1 review L3).
+    let plain = cli(
+        "http://sandbox.example.com:56080",
+        Some(key),
+        &["--allow-non-local", "status"],
+    )
+    .await;
+    assert_eq!(code(&plain), 2);
+    assert!(stderr(&plain).contains("https://"), "{}", stderr(&plain));
+    assert!(
+        stderr(&plain).contains("--allow-plain-http"),
+        "{}",
+        stderr(&plain)
     );
 
     let missing = cli("http://127.0.0.1:56080", None, &["status"]).await;

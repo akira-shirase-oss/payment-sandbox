@@ -15,7 +15,8 @@ if (!hold.settled) await sandbox.payments.waitForSettlement(hold.payment.id);
 
 - **Refuses production-looking configuration** (D-068): a key that is not `sk_sim_…`, a real
   processor's host, `NODE_ENV=production`, or a host other than this machine (unless
-  `allowNonLocal: true`, for a CI service container or a shared sandbox you run).
+  `allowNonLocal: true`, for a CI service container or a shared sandbox you run), and plain
+  `http://` to such a host unless `allowPlainHttp: true` says the network is private (D-079).
 - **Retries safely**: every money-moving call carries an idempotency key and every retry
   reuses it; at most 4 attempts with jittered backoff inside a 30 s deadline.
 - **Honest outcomes**: `outcome: 'uncertain'` with `settled: false` is not a success;

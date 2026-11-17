@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use sandbox_cli::client::{Answer, Client, ClientError, RetryPolicy};
-use sandbox_cli::config::{Config, DEFAULT_API_URL};
+use sandbox_cli::config::{Allow, Config, DEFAULT_API_URL};
 use sandbox_cli::scenario::{self, RunOptions};
 use sandbox_domain::money::format_minor;
 use sandbox_domain::{Amount, Currency};
@@ -72,6 +72,10 @@ struct Global {
     /// Never allows a real processor's host or key.
     #[arg(long, env = "PS_ALLOW_NON_LOCAL", global = true)]
     allow_non_local: bool,
+    /// With --allow-non-local, also allow plain http:// to that machine, which sends your key
+    /// in clear text: only on a private network you control (a CI service container).
+    #[arg(long, env = "PS_ALLOW_PLAIN_HTTP", global = true)]
+    allow_plain_http: bool,
     /// Also trust this certificate authority (a PEM file) for an https:// API: a shared
     /// sandbox whose proxy uses a private CA. The machine's own authorities stay trusted.
     #[arg(long, env = "PS_CA_CERT", global = true, value_name = "FILE.pem")]
@@ -345,10 +349,13 @@ impl Ctx {
 }
 
 async fn run(cli: Cli) -> Result<Ended, Failure> {
-    let mut config = Config::new(
+    let mut config = Config::checked(
         &cli.global.api_url,
         cli.global.key.as_deref(),
-        cli.global.allow_non_local,
+        Allow {
+            non_local: cli.global.allow_non_local,
+            plain_http: cli.global.allow_plain_http,
+        },
     )
     .map_err(|e| usage(e.to_string()))?;
     if let Some(path) = &cli.global.ca_cert {

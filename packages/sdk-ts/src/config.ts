@@ -39,6 +39,11 @@ export interface SandboxOptions {
 	 */
 	allowNonLocal?: boolean;
 	/**
+	 * With `allowNonLocal`, also allow plain `http://` to that machine, which sends your key in
+	 * clear text: only on a private network you control (a CI service container).
+	 */
+	allowPlainHttp?: boolean;
+	/**
 	 * Allow use while `NODE_ENV` is `production`. A production build pointed at the sandbox
 	 * is usually a mistake (no order may ever be fulfilled from simulated money), so this is
 	 * refused unless you say it is a test of a production build.
@@ -130,6 +135,12 @@ export function checkConfig(options: SandboxOptions, env: Record<string, string 
 		throw new ConfigError(
 			'non_local',
 			`${host} is not this machine: the sandbox runs on loopback (127.0.0.1, ::1, localhost). If it runs in a CI service container or on a shared host you control, pass allowNonLocal: true.`
+		);
+	}
+	if (!isLoopbackHost(host) && !options.allowPlainHttp && new URL(apiUrl).protocol === 'http:') {
+		throw new ConfigError(
+			'plain_http',
+			`${host} is not this machine, and http:// would send your sandbox key in clear text: use its https:// URL. Only on a private network you control (a CI service container) pass allowPlainHttp: true as well.`
 		);
 	}
 	const key = (options.apiKey ?? '').trim();

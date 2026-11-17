@@ -10,7 +10,7 @@ pub mod config;
 pub mod scenario;
 
 pub use client::{Answer, Client, ClientError, RetryPolicy};
-pub use config::{Config, ConfigError};
+pub use config::{Allow, Config, ConfigError};
 
 /// The notice every invocation prints first (on standard error).
 pub const NOTICE: &str = sandbox_domain::SANDBOX_NOTICE;
