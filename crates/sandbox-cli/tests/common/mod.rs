@@ -50,13 +50,14 @@ impl Stack {
             let _ = rx.wait_for(|s| *s).await;
         };
 
-        // The simulated network: its own store, its own port, lost replies held 1 s.
+        // The simulated network: its own store, its own port, lost replies held 4 s: longer
+        // than the server's 2 s network deadline below, so a lost reply is always lost.
         let sim_path = temp("sim");
         let store = sandbox_sim::store::Store::open(&sim_path).await.unwrap();
         let sim = sandbox_sim::SimState {
             store,
             faults: Arc::new(sandbox_sim::faults::Faults::default()),
-            lost_reply_hold: Duration::from_secs(1),
+            lost_reply_hold: Duration::from_secs(4),
             access: Arc::new(sandbox_sim::Access {
                 network: sandbox_domain::access::Credential::new(SIM_TOKEN).unwrap(),
                 control: None,
@@ -79,7 +80,10 @@ impl Stack {
             ("PS_SIM_URL", sim_url),
             ("PS_PROFILE", "dev".to_owned()),
             ("PS_SECRET_KEY", SECRET_KEY.to_owned()),
-            ("PS_SIM_TIMEOUT_MS", "300".to_owned()),
+            // A network call that answers must never look lost: on a busy CI runner the
+            // network's durable write took over 300 ms once (an approval came back
+            // `uncertain` and the scenario trace differed), so the deadline is 2 s.
+            ("PS_SIM_TIMEOUT_MS", "2000".to_owned()),
             // The grace stays at its default (the network deadline plus 1 s), so the reconciler
             // never resolves an operation whose own request is still waiting: a scenario's
             // uncertain answer is then the same on every run.

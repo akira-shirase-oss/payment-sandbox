@@ -10,6 +10,11 @@
 
 mod common;
 
+/// The network deadline of the tests that lose replies on purpose: under the networks' 3 s
+/// hold, so a lost reply stays lost, and far above a durable write on a busy CI runner (one
+/// took over 300 ms), so an answer is never mistaken for a lost one.
+const SIM_DEADLINE_MS: &str = "2000";
+
 use axum::Router;
 use axum::http::{Method, StatusCode};
 use common::{TestApp, TestSim, raw, test_site};
@@ -250,7 +255,7 @@ async fn a_decline_lets_the_payer_try_again_and_only_the_approval_charges() {
 #[tokio::test]
 async fn an_uncertain_answer_is_never_shown_as_paid_until_readback_resolves_it() {
     let sim = TestSim::start().await;
-    let app = TestApp::with_sim(&sim, &[("PS_SIM_TIMEOUT_MS", "300")]).await;
+    let app = TestApp::with_sim(&sim, &[("PS_SIM_TIMEOUT_MS", SIM_DEADLINE_MS)]).await;
     let (_, key) = app.project("shop").await;
     let page = Page::new(&app);
     let (id, secret, _) = session(&app, &key, json!({"amount": 4_000, "currency": "EUR"})).await;

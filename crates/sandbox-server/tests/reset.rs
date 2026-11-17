@@ -9,6 +9,11 @@
 
 mod common;
 
+/// The network deadline of the tests that lose replies on purpose: under the networks' 3 s
+/// hold, so a lost reply stays lost, and far above a durable write on a busy CI runner (one
+/// took over 300 ms), so an answer is never mistaken for a lost one.
+const SIM_DEADLINE_MS: &str = "2000";
+
 use axum::http::StatusCode;
 use common::{TestApp, TestSim};
 use sandbox_db::ProjectScope;
@@ -282,7 +287,7 @@ async fn concurrent_resets_of_one_epoch_open_exactly_one_new_epoch() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_operation_open_across_a_reset_resolves_in_its_own_epoch() {
     let sim = TestSim::start().await;
-    let app = TestApp::with_sim(&sim, &[("PS_SIM_TIMEOUT_MS", "300")]).await;
+    let app = TestApp::with_sim(&sim, &[("PS_SIM_TIMEOUT_MS", SIM_DEADLINE_MS)]).await;
     let (project_id, admin) = app.project("in-flight").await;
     let (status, body) = app
         .authorize(&admin, "lost-1", 2_500, "EUR", "tok_sim_lost_reply")

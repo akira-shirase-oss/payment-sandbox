@@ -16,6 +16,11 @@
 
 mod common;
 
+/// The network deadline of the tests that lose replies on purpose: under the networks' 3 s
+/// hold, so a lost reply stays lost, and far above a durable write on a busy CI runner (one
+/// took over 300 ms), so an answer is never mistaken for a lost one.
+const SIM_DEADLINE_MS: &str = "2000";
+
 use std::time::Duration;
 
 use axum::http::StatusCode;
@@ -33,7 +38,7 @@ fn id(reply: &Value) -> String {
 #[tokio::test]
 async fn a_lost_reply_stays_uncertain_until_readback_and_then_applies_once() {
     let sim = TestSim::start().await;
-    let app = TestApp::with_sim(&sim, &[("PS_SIM_TIMEOUT_MS", "300")]).await;
+    let app = TestApp::with_sim(&sim, &[("PS_SIM_TIMEOUT_MS", SIM_DEADLINE_MS)]).await;
     let (_, key) = app.project("store").await;
     let (status, first) = app
         .authorize(&key, "lost", 800, "USD", "tok_sim_lost_reply")
@@ -76,7 +81,7 @@ async fn a_lost_reply_stays_uncertain_until_readback_and_then_applies_once() {
 #[tokio::test]
 async fn a_capture_whose_reply_is_lost_keeps_its_reservation_until_readback() {
     let sim = TestSim::start().await;
-    let app = TestApp::with_sim(&sim, &[("PS_SIM_TIMEOUT_MS", "300")]).await;
+    let app = TestApp::with_sim(&sim, &[("PS_SIM_TIMEOUT_MS", SIM_DEADLINE_MS)]).await;
     let (_, key) = app.project("store").await;
     let (_, auth) = app
         .authorize(&key, "a", 100, "EUR", "tok_sim_approve")
