@@ -110,3 +110,103 @@ async fn only_the_runtime_role_passes_the_startup_check() {
     }
     db.cleanup().await;
 }
+
+/// Review finding 2: a temporary table named like a journal table must not answer the
+/// triggers' queries. Run as a DML role that *may* create temporary tables (stronger than
+/// ps_app, which may not), so the triggers' own schema qualification is what is tested.
+#[tokio::test]
+async fn a_temporary_table_cannot_shadow_the_journal_in_its_triggers() {
+    let db = TestDb::new().await;
+    let project = projects::create(&db.pool, Uuid::now_v7(), "store", "S")
+        .await
+        .unwrap();
+    let p = project.id;
+    let entry = Recipe::Authorize
+        .post(Currency::Usd, Amount::new(500).unwrap())
+        .unwrap();
+    let posted = entry_id(Uuid::now_v7(), Recipe::Authorize);
+    let mut tx = db.pool.begin().await.unwrap();
+    journal::post(
+        &mut tx,
+        project.scope(),
+        posted,
+        &entry,
+        EntryRefs::default(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let role = format!("ps_shadow_{}", Uuid::now_v7().simple());
+    let mut admin = PgConnection::connect(&db.admin_url()).await.unwrap();
+    sqlx::raw_sql(AssertSqlSafe(format!(
+        "CREATE ROLE {role} LOGIN PASSWORD 'shadow' IN ROLE ps_runtime;
+         GRANT TEMP ON DATABASE {} TO {role};",
+        db.name()
+    )))
+    .execute(&mut admin)
+    .await
+    .unwrap();
+    let url = db
+        .url()
+        .replacen("ps_app:ps-app-dev", &format!("{role}:shadow"), 1);
+    let mut conn = PgConnection::connect(&url).await.unwrap();
+    let fresh = Uuid::now_v7();
+    let attacks = [
+        // One unbalanced line of +1,000,000; the shadow shows the triggers a balanced pair.
+        format!(
+            "BEGIN;
+             CREATE TEMP TABLE journal_lines (project_id uuid, entry_id uuid, line_no smallint, amount_minor bigint) ON COMMIT DROP;
+             INSERT INTO pg_temp.journal_lines VALUES ('{p}', '{fresh}', 1, 5), ('{p}', '{fresh}', 2, -5);
+             INSERT INTO public.journal_entries (project_id, id, dataset_epoch, currency, recipe, semantics_version)
+             VALUES ('{p}', '{fresh}', 1, 'USD', 'authorize', 1);
+             INSERT INTO public.journal_lines (project_id, entry_id, line_no, currency, dataset_epoch, account_kind, amount_minor)
+             VALUES ('{p}', '{fresh}', 1, 'USD', 1, 'payer_funding', 1000000);
+             COMMIT;"
+        ),
+        // A late pair on an already committed entry; the shadow claims it is new.
+        format!(
+            "BEGIN;
+             CREATE TEMP TABLE journal_entries (project_id uuid, id uuid, created_xact xid8) ON COMMIT DROP;
+             INSERT INTO pg_temp.journal_entries VALUES ('{p}', '{posted}', pg_current_xact_id());
+             INSERT INTO public.journal_lines (project_id, entry_id, line_no, currency, dataset_epoch, account_kind, amount_minor)
+             VALUES ('{p}', '{posted}', 3, 'USD', 1, 'payer_funding', 7), ('{p}', '{posted}', 4, 'USD', 1, 'payer_held', -7);
+             COMMIT;"
+        ),
+    ];
+    for sql in attacks {
+        let result = sqlx::raw_sql(AssertSqlSafe(sql.clone()))
+            .execute(&mut conn)
+            .await;
+        let _ = sqlx::raw_sql("ROLLBACK").execute(&mut conn).await;
+        assert!(
+            result.is_err(),
+            "a shadow table got past the journal's triggers:\n{sql}"
+        );
+    }
+    let (lines, total): (i64, i64) = sqlx::query_as(
+        "SELECT count(*), coalesce(sum(amount_minor), 0)::bigint FROM journal_lines",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!((lines, total), (2, 0));
+    // ps_app itself may not create temporary tables at all.
+    let mut app = runtime(&db).await;
+    assert!(
+        sqlx::raw_sql("CREATE TEMP TABLE t (a int)")
+            .execute(&mut app)
+            .await
+            .is_err()
+    );
+    conn.close().await.ok();
+    app.close().await.ok();
+    sqlx::raw_sql(AssertSqlSafe(format!(
+        "REVOKE TEMP ON DATABASE {} FROM {role}; DROP ROLE {role};",
+        db.name()
+    )))
+    .execute(&mut admin)
+    .await
+    .unwrap();
+    db.cleanup().await;
+}

@@ -315,6 +315,18 @@ review found. Each states the choice, the alternative and the cost.
   journal's owner, or with `TEMP` (`sandbox_db::roles::check_runtime`).
   Tests: `tests/roles.rs`.
 
+- **D-039 — Trigger functions name their tables and pin their search
+  path.** Review finding: the balance and late-line triggers named
+  `journal_lines` and `journal_entries` without a schema, and PostgreSQL
+  searches the session's `pg_temp` first, so a role with only `INSERT`
+  and `TEMP` shadowed them with temporary tables and committed a single
+  +1,000,000 line and a late line on a posted entry. Every relation in
+  every trigger function is now schema-qualified, every function pins
+  `search_path = pg_catalog, pg_temp` (temp last, migration 0006), and
+  the runtime role has no `TEMP` (D-038). Test:
+  `a_temporary_table_cannot_shadow_the_journal_in_its_triggers`, run as a
+  role that does have `TEMP`.
+
 ## Open questions (still open)
 
 - **Dashboard authentication** — per-project-owner session login is the
