@@ -88,7 +88,8 @@ else
   mem_gb="$(( $(grep MemTotal /proc/meminfo | awk '{print $2}') / 1048576 ))"; os="$(uname -sr)"
 fi
 commit="$(git rev-parse HEAD)"
-dirty=false; git diff --quiet HEAD -- . ':!perf/results' || dirty=true
+# Untracked files count too: new code that is not committed is still not the commit.
+dirty=false; [ -z "$(git status --porcelain -- . ':!perf/results' ':!target')" ] || dirty=true
 
 out="${outdir}/${stamp}-${scenario}-${mode}.json"
 jq -n \

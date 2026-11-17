@@ -8,7 +8,10 @@ finer split (D-031) gives every milestone its own failure drills and load
 scenario instead of leaving them for the end.
 
 **Status rule.** A status cell may say *Done* only when it names the tests
-and the evidence path that prove the gate. Anything else is *Planned* or
+and the evidence path that prove the gate, **including a committed full
+load run** (workspace load-test standard): until then a milestone whose
+functional gates pass is *In progress*. Every smoke run, failures included,
+is listed in `perf/results/smoke/README.md`. Anything else is *Planned* or
 *In progress*. Load evidence measured while the machine was busy is a
 smoke observation, never capacity, and the full run stays listed as owed.
 
@@ -18,17 +21,17 @@ to it as automated tests; a load scenario with thresholds under `perf/`.
 
 | Milestone | Builds | Proves (gate) | Status |
 |---|---|---|---|
-| **M0 — the spine** *(Done)* | Cargo workspace; pure `sandbox-domain` (`Money` over D-010's currency table, chart of accounts, journal entries, posting recipes, operation state machine); PostgreSQL schema with an append-only, balance-checked journal; Axum skeleton (bounded bodies, deadlines, idempotency-key parsing, one error envelope); `scripts/check.sh`; CI; `deploy/compose.yaml` | Every posted entry balances per currency (property tests + a commit-time trigger); unbalanced, mixed-currency and overflowing postings are named refusals; `UPDATE`/`DELETE`/`TRUNCATE` on the journal fail in the database; the domain crate has no I/O dependencies; first load scenario and first failure drill (database outage) | See below |
-| **M1 — projects and sandbox keys** *(Done)* | Projects created with a bootstrap token; `sk_sim_` keys hashed, with scopes and revocation; project-scoped repositories over composite keys | A key of project A can never read or write project B (schema and API tests); a revoked key fails at once; secrets never appear in logs (log-capture test); load scenario on authenticated reads | See below |
-| **M2 — payment lifecycle** *(Done; full load runs owed)* | Payments, authorize / capture / void / refund as two-phase holds (D-011), operations with derived identity (D-015) and payload-bound keys (D-016), transactional capacity (D-014); `sandbox-sim` as a separate process with its own SQLite store answering approve/decline by scenario token; raw-card rejection (D-019) | Same key + different payload → conflict; the D-027 races (hot payment, hot account) cannot overrun capacity and the excess fails with a named refusal; capture-vs-void and refund-vs-pending-capture races; zero journal imbalance and every payment's sums equal its journal sums; PAN-like input rejected and never persisted or logged; load scenario: lifecycle at a fixed rate plus both races | Planned |
-| **M3 — uncertain outcomes and recovery** *(Done; full load run owed)* | Simulator lost replies, timeouts and seeded failure scenarios; fenced readback (D-017); reconciler at startup and periodically; reverse reconciliation; simulator virtual clock | Lost replies stay `uncertain` until readback, then apply exactly once; **drill (a)**: server killed after the simulator accepted, before the result was stored → recovers with no second charge; restart of either or both processes mid-operation; **drill (b, simulator half)**: a virtual-clock jump forward and back leaves posted journal history byte-identical; **drill (c)**: server database restored from an older dump, newer simulator store → a client retry reconciles with no second charge, and reverse reconciliation reports what the server lost | Planned |
-| **M4 — signed webhooks** *(Done; full load run owed)* | Outbox committed with every state change; leased deliverer with fencing, deadline, bounded jittered retries (D-032); signatures and rotation (D-020); egress guard (D-023); `fixtures/dev-store` (D-024) with inbox dedup, thin-event re-read (D-025) and a unique fulfillment key | Delivery fuzzer: random duplication, reordering and delay over N payments ends with fulfillments equal to captured payments and zero duplicates; receiver down → retries then delivers, nothing lost; signature, replay-window and rotation tests; loopback-only egress refuses private, link-local, public and redirect targets; **drill (b, wall-clock half)**: a lease-clock jump causes at most a duplicate delivery, never a lost or corrupt one | Planned |
-| **M5 — reconciliation and explain-balance** *(Done; full load run owed)* | Reconciliation report (journal balance, payment sums vs journal, account checkpoints, open uncertain operations, simulator agreement both ways); `explain-balance` for any account | After every load run, every account's balance equals the sum of its journal entries with zero mismatches; any balance can be explained line by line; a planted drift is detected | Planned |
+| **M0 — the spine** | Cargo workspace; pure `sandbox-domain` (`Money` over D-010's currency table, chart of accounts, journal entries, posting recipes, operation state machine); PostgreSQL schema with an append-only, balance-checked journal; Axum skeleton (bounded bodies, deadlines, idempotency-key parsing, one error envelope); `scripts/check.sh`; CI; `deploy/compose.yaml` | Every posted entry balances per currency (property tests + a commit-time trigger); unbalanced, mixed-currency and overflowing postings are named refusals; `UPDATE`/`DELETE`/`TRUNCATE` on the journal fail in the database; the domain crate has no I/O dependencies; first load scenario and first failure drill (database outage) | In progress: functional gates pass; full ≥1,000,000-request load run owed |
+| **M1 — projects and sandbox keys** | Projects created with a bootstrap token; `sk_sim_` keys hashed, with scopes and revocation; project-scoped repositories over composite keys | A key of project A can never read or write project B (schema and API tests); a revoked key fails at once; secrets never appear in logs (log-capture test); load scenario on authenticated reads | In progress: functional gates pass; full ≥1,000,000-request load run owed |
+| **M2 — payment lifecycle** | Payments, authorize / capture / void / refund as two-phase holds (D-011), operations with derived identity (D-015) and payload-bound keys (D-016), transactional capacity (D-014); `sandbox-sim` as a separate process with its own SQLite store answering approve/decline by scenario token; raw-card rejection (D-019) | Same key + different payload → conflict; the D-027 races (hot payment, hot account) cannot overrun capacity and the excess fails with a named refusal; capture-vs-void and refund-vs-pending-capture races; zero journal imbalance and every payment's sums equal its journal sums; PAN-like input rejected and never persisted or logged; load scenario: lifecycle at a fixed rate plus both races | In progress: functional gates pass; full ≥1,000,000-request load run owed |
+| **M3 — uncertain outcomes and recovery** | Simulator lost replies, timeouts and seeded failure scenarios; fenced readback (D-017); reconciler at startup and periodically; reverse reconciliation; simulator virtual clock | Lost replies stay `uncertain` until readback, then apply exactly once; **drill (a)**: server killed after the simulator accepted, before the result was stored → recovers with no second charge; restart of either or both processes mid-operation; **drill (b, simulator half)**: a virtual-clock jump forward and back leaves posted journal history byte-identical; **drill (c)**: server database restored from an older dump, newer simulator store → a client retry reconciles with no second charge, and reverse reconciliation reports what the server lost | In progress: functional gates pass; full ≥1,000,000-request load run owed |
+| **M4 — signed webhooks** | Outbox committed with every state change; leased deliverer with fencing, deadline, bounded jittered retries (D-032); signatures and rotation (D-020); egress guard (D-023); `fixtures/dev-store` (D-024) with inbox dedup, thin-event re-read (D-025) and a unique fulfillment key | Delivery fuzzer: random duplication, reordering and delay over N payments ends with fulfillments equal to captured payments and zero duplicates; receiver down → retries then delivers, nothing lost; signature, replay-window and rotation tests; loopback-only egress refuses private, link-local, public and redirect targets; **drill (b, wall-clock half)**: a lease-clock jump causes at most a duplicate delivery, never a lost or corrupt one | In progress: functional gates pass; full ≥1,000,000-request load run owed |
+| **M5 — reconciliation and explain-balance** | Reconciliation report (journal balance, payment sums vs journal, account balances against what the payments imply, open uncertain operations, agreement with the network both ways and field by field (D-041)); `explain-balance` for any account | After every load run, every account's balance equals the sum of its journal entries with zero mismatches; any balance can be explained line by line; a planted drift is detected | In progress: functional gates pass; full ≥1,000,000-request load run owed |
 | **M6 — first useful release** | SvelteKit + Tailwind v4 + shadcn-svelte (D-035, from this repository's copy of the Colophon UI package in `packages/ui`) checkout (scenario picker, **no card field**, D-019) and inspection dashboard (operations, postings, balances, events, reconciler state) on separate origins (D-029) | The guide's first useful release end to end: one synthetic purchase, partial refund, balanced ledger visible in the UI, durable webhook fulfilled by the dev store, and the M3 kill drill repeated through the checkout path; browser tests prove no card field exists | Planned |
 | **M7 — developer product** | Rust CLI, TypeScript SDK, seeded scenario library, dataset reset as a new epoch with typed confirmation (D-022), sandbox labels end to end, migration/restore tests per release | A development store tests payment failures reproducibly: each library scenario run twice yields the same sequence of states and events (ids aside); reset needs `admin` + typed slug and never deletes journal rows; production-looking SDK config refused | Planned |
 | **M8 — billing direction** | Server-side inbox for asynchronous simulator outcomes; authorization expiry on virtual time; then settlement → fees → payouts → disputes → invoices → recurring, each with its own contract | Each new scenario reconciles to the journal; virtual time never rewrites already-posted history | Planned |
 
-### M0 status — Done, with one owed load run
+### M0 status — In progress (functional gates pass; full load run owed)
 
 | Gate | Evidence |
 |---|---|
@@ -42,7 +45,7 @@ to it as automated tests; a load scenario with thresholds under `perf/`.
 | First load scenario | `perf/scenarios/m0-probes.js`. Smoke at 1,000/s × 20 s on commit `530e7ae` + working tree: 20,001 requests, 0 failed, p99 9.2 ms — **machine busy (load average 462 → see `perf/README.md`), a smoke observation only** |
 | **Owed** | The full 1,000,000-request `m0-probes` run on a quiet machine, committed under `perf/results/` |
 
-### M1 status — Done, with one owed load run
+### M1 status — In progress (functional gates pass; full load run owed)
 
 | Gate | Evidence |
 |---|---|
@@ -54,7 +57,7 @@ to it as automated tests; a load scenario with thresholds under `perf/`.
 | Load scenario | `perf/scenarios/m1-auth.js` (hash + key lookup + project read per request). Smoke 500/s × 20 s on `bbb8104` + working tree: 10,005 requests, 0 failed, p99 21.4 ms — **machine busy (load average 130–256), a smoke observation only** |
 | **Owed** | The full 1,000,000-request `m1-auth` run on a quiet machine |
 
-### M2 status — Done, with owed full load runs and a latency miss on a busy machine
+### M2 status — In progress (functional gates pass; full load run owed)
 
 | Gate | Evidence |
 |---|---|
@@ -72,7 +75,7 @@ to it as automated tests; a load scenario with thresholds under `perf/`.
 | Load | `perf/scenarios/m2-refund-race.js` smoke: 2,065 requests, exactly 630 admitted / 1,370 refused / 0 shed, refund p99 39 ms, 0 lock waits over 50 ms, reconciliation clean — passed. `perf/scenarios/m2-lifecycle.js` smoke: 3,121 requests, 0 failed, reconciliation clean, **latency thresholds missed** (p95 512 ms, p99 635 ms against 100/250 ms) with the machine at load average 33–43 — both busy-machine observations on commit `d6228f5` + working tree |
 | **Owed** | Full `m2-lifecycle` (≈1.17 M requests) and `m2-refund-race` runs on a quiet machine; the lifecycle latency thresholds are decided by that run |
 
-### M3 status — Done, with an owed full load run
+### M3 status — In progress (functional gates pass; full load run owed)
 
 | Gate | Evidence |
 |---|---|
@@ -86,7 +89,7 @@ to it as automated tests; a load scenario with thresholds under `perf/`.
 | Load | `perf/scenarios/m3-uncertain.js` smoke on `8fd1338` + working tree: 1,091 requests, 120 honest `202 uncertain` answers (lost replies and an unavailable network), every one resolved by the reconciler, both projects clean in both directions (0 network operations unknown to the server), approve-path p95 72 ms / p99 98 ms, 0 lock waits — **machine busy (load average 163–218), a smoke observation only** |
 | **Owed** | The full `m3-uncertain` run on a quiet machine; a `pg_dump` logical-restore rehearsal script (D-026) |
 
-### M4 status — Done, with an owed full load run
+### M4 status — In progress (functional gates pass; full load run owed)
 
 | Gate | Evidence |
 |---|---|
@@ -101,7 +104,7 @@ to it as automated tests; a load scenario with thresholds under `perf/`.
 | Load | `perf/scenarios/m4-webhooks.js` smoke: 1,008 requests, 501 payments → 501 fulfillments, 1,002 events in the store's inbox, 0 rejected, 0 duplicates, reconciliation clean, 0 lock waits; API p95 120 ms (**threshold 100 ms missed**), p99 152 ms — machine busy (load average 33–38), a smoke observation. The first smoke found D-037 |
 | **Owed** | The full `m4-webhooks` run (1,000,000 API requests and 1,000,000 deliveries) on a quiet machine |
 
-### M5 status — Done, with an owed full load run
+### M5 status — In progress (functional gates pass; full load run owed)
 
 | Gate | Evidence |
 |---|---|

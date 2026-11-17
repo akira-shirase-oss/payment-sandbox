@@ -3,13 +3,10 @@
 > **SIMULATED MONEY ONLY.** No real cards, balances or banking connection,
 > ever. Every response carries `Sandbox-Simulated: true`.
 >
-> **Status — M0 (the spine), M1 (projects and sandbox keys), M2 (payment
-> lifecycle on a separate simulated network) and M3 (uncertain outcomes and
-> recovery: fenced readback, the reconciler, the crash, clock-jump and
-> restore drills), M4 (signed webhooks to `fixtures/dev-store`) and M5
-> (reconciliation and explain-balance) done; M6 (checkout and dashboard)
-> next.** Full million-request load runs are owed (the
-> development machine was busy); see `docs/ROADMAP.md`. Milestones, proof gates and the
+> **Status — M0 to M5 in progress: their functional gates pass (tests, drills,
+> reconciliation), and every full ≥1,000,000-request load run is still owed;
+> only smoke runs exist, failures included (`perf/results/smoke/`). M6
+> (checkout and dashboard) not started.** Milestones, proof gates and the
 > evidence behind each status live in `docs/ROADMAP.md`.
 
 ## Run it

@@ -12,8 +12,9 @@ database and (from M2) the simulated network all listen on loopback.
   thresholds passed, requests, rate, failures, dropped iterations, latency percentiles and
   the raw k6 metrics.
 - Full runs go to `perf/results/` and are committed, pass or fail. A miss is evidence; it
-  is never rerun until green. Smoke runs go to `target/perf/` and are never presented as
-  capacity.
+  is never rerun until green. Smoke runs are written to `target/perf/` and are never
+  presented as capacity; every one so far, failures and reruns included, is committed in
+  `perf/results/smoke/` with an annotated index (`perf/results/smoke/README.md`).
 - Run full runs only on a quiet machine (`uptime` load average below about 6 on the 12-core
   development Mac). Same-machine numbers are development observations, not capacity.
 
