@@ -341,6 +341,22 @@ review found. Each states the choice, the alternative and the cost.
   (the reviewer's R1). The report flags the resulting server/network
   disagreement from D-041 on.
 
+- **D-041 — Agreement with the network: per project, to completion, both
+  ways, field by field.** Review finding: reverse reconciliation paged
+  through *every* project's network operations, stopped after 100 pages
+  without saying so, checked presence only, and only in one direction. It
+  reported clean with 100,000 other-project records in front of the one
+  that mattered. Now the simulator keeps a per-project index and lists by
+  project. The server reads the project's pages to the end, or up to
+  `PS_RECONCILE_NETWORK_MAX_PAGES` (1,000 pages of 1,000), and reports
+  `complete: false` when it stops early; an incomplete scan is never
+  clean. Every network operation must be recorded by the server with the
+  same kind, amount and outcome, and every operation the server says the
+  network answered must be on the network. Disagreements are listed (at
+  most 1,000 each), never applied. This replaces the reverse-only check in
+  D-036. Tests: `network_agreement_is_project_scoped_complete_and_checked_both_ways`
+  (100,001 records) and the extended R1 test.
+
 ## Open questions (still open)
 
 - **Dashboard authentication** — per-project-owner session login is the

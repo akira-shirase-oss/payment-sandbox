@@ -354,7 +354,7 @@ async fn drill_c_restoring_an_older_server_backup_reconciles_without_a_second_ch
     let (_, report) = restored.get("/v1/reconciliation?network=true", &key).await;
     assert_eq!(report["clean"], false, "{report}");
     assert_eq!(
-        report["network_operations_unknown_to_server"]
+        report["network"]["unknown_to_server"]
             .as_array()
             .unwrap()
             .len(),
@@ -392,7 +392,7 @@ async fn drill_c_restoring_an_older_server_backup_reconciles_without_a_second_ch
     let (_, report) = restored.get("/v1/reconciliation?network=true", &key).await;
     assert_eq!(report["clean"], true, "{report}");
     assert_eq!(
-        report["network_operations_unknown_to_server"]
+        report["network"]["unknown_to_server"]
             .as_array()
             .unwrap()
             .len(),
@@ -430,7 +430,7 @@ async fn reverse_reconciliation_pages_through_more_than_one_full_listing_page() 
     assert_eq!(status, StatusCode::OK, "{report}");
     assert_eq!(report["clean"], false);
     assert_eq!(
-        report["network_operations_unknown_to_server"]
+        report["network"]["unknown_to_server"]
             .as_array()
             .unwrap()
             .len(),
@@ -445,6 +445,10 @@ async fn reverse_reconciliation_pages_through_more_than_one_full_listing_page() 
 /// with a different amount must be a conflict — never the network's outcome applied to the
 /// server's new amount.
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one restore scenario, read top to bottom"
+)]
 async fn after_a_restore_the_same_key_with_another_amount_is_a_conflict_not_a_reinterpretation() {
     let sim = TestSim::start().await;
     let vars = sim_vars(&sim, &[]);
@@ -520,7 +524,141 @@ async fn after_a_restore_the_same_key_with_another_amount_is_a_conflict_not_a_re
         3,
         "the network executed nothing new"
     );
+    let (_, report) = restored.get("/v1/reconciliation?network=true", &key).await;
+    assert_eq!(
+        report["clean"], false,
+        "server 500/700 vs network 100/100 is not clean: {report}"
+    );
+    // Each conflicted operation differs on its amount and on its outcome.
+    let fields: std::collections::BTreeSet<(String, String)> = report["network"]["disagreements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| {
+            (
+                d["field"].as_str().unwrap().to_owned(),
+                d["server"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        fields,
+        [
+            ("amount_minor", "500"),
+            ("amount_minor", "700"),
+            ("outcome", "conflict")
+        ]
+        .into_iter()
+        .map(|(a, b)| (a.to_owned(), b.to_owned()))
+        .collect(),
+        "{report}"
+    );
     after.cleanup().await;
     restored.cleanup().await;
     sim.remove().await;
+}
+
+async fn fill_network(sim: &TestSim, project_id: uuid::Uuid, count: u128, base: u128) {
+    let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(2_000));
+    let mut tasks = tokio::task::JoinSet::new();
+    for n in 0..count {
+        let store = sim.store.clone();
+        let permit = permits.clone().acquire_owned().await.unwrap();
+        tasks.spawn(async move {
+            let request = ExecuteRequest {
+                id: uuid::Uuid::from_u128(base + n),
+                project_id,
+                kind: OperationKind::Authorize,
+                parent_id: None,
+                amount_minor: 100,
+                currency: Currency::Usd,
+                token: Some("tok_sim_approve".to_owned()),
+            };
+            loop {
+                match store.execute(&request).await {
+                    Err(sandbox_sim::store::StoreError::Overloaded) => {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                    other => {
+                        other.unwrap();
+                        break;
+                    }
+                }
+            }
+            drop(permit);
+        });
+    }
+    while let Some(done) = tasks.join_next().await {
+        done.unwrap();
+    }
+}
+
+/// Review finding 4 (experiment N1): agreement with the network is scoped to the project,
+/// scanned to completion (or reported incomplete, never clean), and checked both ways,
+/// field by field.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn network_agreement_is_project_scoped_complete_and_checked_both_ways() {
+    let sim = TestSim::start().await;
+    let app = TestApp::with_sim(&sim, &[]).await;
+    let (_, key) = app.project("store").await;
+    let (_, project) = app.get("/v1/project", &key).await;
+    let project_id: uuid::Uuid = project["project"]["id"].as_str().unwrap().parse().unwrap();
+    // 100,000 operations of another project, then one of this project the server never saw.
+    fill_network(&sim, uuid::Uuid::from_u128(0xb), 100_000, 0x1_0000_0000).await;
+    fill_network(&sim, project_id, 1, 0x9_0000_0000).await;
+    let (status, report) = app.get("/v1/reconciliation?network=true", &key).await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    assert_eq!(report["clean"], false, "{report}");
+    assert_eq!(report["network"]["complete"], true, "{report}");
+    assert_eq!(
+        report["network"]["unknown_to_server"],
+        json!([uuid::Uuid::from_u128(0x9_0000_0000)]),
+        "{report}"
+    );
+
+    // Server successes the network never recorded: point the same database at an empty network.
+    let (_, auth) = app
+        .authorize(&key, "a", 300, "USD", "tok_sim_approve")
+        .await;
+    let pid = id(&auth);
+    app.post(
+        &format!("/v1/payments/{pid}/captures"),
+        &key,
+        Some("c"),
+        json!({"amount": 300}),
+    )
+    .await;
+    let empty = TestSim::start().await;
+    let TestApp { db, .. } = app;
+    let elsewhere = TestApp::on(db, &sim_vars(&empty, &[]));
+    let (_, report) = elsewhere.get("/v1/reconciliation?network=true", &key).await;
+    assert_eq!(report["clean"], false, "{report}");
+    assert_eq!(
+        report["network"]["unknown_to_network"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2,
+        "{report}"
+    );
+
+    // A scan that runs out of pages says so and is never clean.
+    let TestApp { db, .. } = elsewhere;
+    let capped = TestApp::on(
+        db,
+        &sim_vars(&sim, &[("PS_RECONCILE_NETWORK_MAX_PAGES", "1")]),
+    );
+    fill_network(&sim, project_id, 1_000, 0xa_0000_0000).await;
+    let (_, report) = capped.get("/v1/reconciliation?network=true", &key).await;
+    assert_eq!(
+        (
+            report["clean"].as_bool(),
+            report["network"]["complete"].as_bool()
+        ),
+        (Some(false), Some(false)),
+        "{report}"
+    );
+    capped.cleanup().await;
+    sim.remove().await;
+    empty.remove().await;
 }

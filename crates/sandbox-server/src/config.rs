@@ -73,6 +73,9 @@ pub struct Config {
     pub reconcile_grace: Duration,
     /// Most operations one sweep examines.
     pub reconcile_batch: i64,
+    /// Most pages of 1,000 a network-agreement report reads before it reports itself
+    /// incomplete.
+    pub reconcile_network_max_pages: usize,
     /// Key that encrypts webhook signing secrets (64 hex); webhooks are off without it.
     pub secret_key: Option<Secret>,
     /// How often the deliverer looks for due deliveries when idle.
@@ -129,6 +132,8 @@ impl Config {
             u64::try_from(sim_timeout.as_millis().saturating_add(1_000)).unwrap_or(u64::MAX);
         let reconcile_grace = parse.millis("PS_RECONCILE_GRACE_MS", grace_default);
         let reconcile_batch: i64 = parse.value("PS_RECONCILE_BATCH", Some(200));
+        let reconcile_network_max_pages: usize =
+            parse.value("PS_RECONCILE_NETWORK_MAX_PAGES", Some(1_000));
         let delivery_poll = parse.millis("PS_DELIVERY_POLL_MS", 250);
         let secret_key = lookup("PS_SECRET_KEY");
         if let Some(key) = &secret_key
@@ -177,6 +182,7 @@ impl Config {
             reconcile_interval,
             reconcile_grace,
             reconcile_batch: reconcile_batch.clamp(1, 10_000),
+            reconcile_network_max_pages: reconcile_network_max_pages.clamp(1, 100_000),
             secret_key: secret_key.map(Secret::new),
             delivery_poll,
         };

@@ -33,6 +33,8 @@ pub const CLOCK_EPOCH: i64 = 1_767_225_600;
 
 const OPERATIONS: TableDefinition<'_, u128, &[u8]> = TableDefinition::new("operations");
 const BY_SEQ: TableDefinition<'_, u64, u128> = TableDefinition::new("operations_by_seq");
+const BY_PROJECT: TableDefinition<'_, (u128, u64), u128> =
+    TableDefinition::new("operations_by_project");
 const TOMBSTONES: TableDefinition<'_, u128, i64> = TableDefinition::new("tombstones");
 const AUTHORIZATIONS: TableDefinition<'_, u128, &[u8]> = TableDefinition::new("authorizations");
 const META: TableDefinition<'_, &str, i64> = TableDefinition::new("meta");
@@ -104,7 +106,12 @@ enum Command {
         oneshot::Sender<Result<Executed, StoreError>>,
     ),
     Readback(Uuid, bool, oneshot::Sender<Result<Readback, StoreError>>),
-    List(i64, i64, oneshot::Sender<Result<OperationPage, StoreError>>),
+    List(
+        Option<Uuid>,
+        i64,
+        i64,
+        oneshot::Sender<Result<OperationPage, StoreError>>,
+    ),
     Advance(i64, oneshot::Sender<Result<i64, StoreError>>),
     Now(oneshot::Sender<Result<i64, StoreError>>),
     Count(oneshot::Sender<Result<i64, StoreError>>),
@@ -185,9 +192,21 @@ impl Store {
         self.ask(|tx| Command::Readback(id, fence, tx)).await
     }
 
-    /// Lists recorded operations after `after` (allocation order), at most `limit`.
+    /// Lists recorded operations after `after` (allocation order), at most `limit`, of
+    /// one project when `project` is given.
     pub async fn list(&self, after: i64, limit: i64) -> Result<OperationPage, StoreError> {
-        self.ask(|tx| Command::List(after, limit, tx)).await
+        self.ask(|tx| Command::List(None, after, limit, tx)).await
+    }
+
+    /// Lists one project's recorded operations after `after`, at most `limit`.
+    pub async fn list_project(
+        &self,
+        project: Uuid,
+        after: i64,
+        limit: i64,
+    ) -> Result<OperationPage, StoreError> {
+        self.ask(|tx| Command::List(Some(project), after, limit, tx))
+            .await
     }
 
     /// The virtual clock, in Unix seconds.
@@ -214,6 +233,7 @@ fn open_database(path: &Path) -> Result<Database, StoreError> {
         // Create every table, so readers never meet a missing one.
         txn.open_table(OPERATIONS).map_err(storage)?;
         txn.open_table(BY_SEQ).map_err(storage)?;
+        txn.open_table(BY_PROJECT).map_err(storage)?;
         txn.open_table(TOMBSTONES).map_err(storage)?;
         txn.open_table(AUTHORIZATIONS).map_err(storage)?;
         let mut meta = txn.open_table(META).map_err(storage)?;
@@ -270,6 +290,7 @@ fn writer(db: Database, mut receiver: mpsc::Receiver<Command>) {
 struct Tables<'t> {
     operations: Table<'t, u128, &'static [u8]>,
     by_seq: Table<'t, u64, u128>,
+    by_project: Table<'t, (u128, u64), u128>,
     tombstones: Table<'t, u128, i64>,
     authorizations: Table<'t, u128, &'static [u8]>,
     meta: Table<'t, &'static str, i64>,
@@ -285,6 +306,7 @@ fn run_batch(
         let mut t = Tables {
             operations: txn.open_table(OPERATIONS).map_err(storage)?,
             by_seq: txn.open_table(BY_SEQ).map_err(storage)?,
+            by_project: txn.open_table(BY_PROJECT).map_err(storage)?,
             tombstones: txn.open_table(TOMBSTONES).map_err(storage)?,
             authorizations: txn.open_table(AUTHORIZATIONS).map_err(storage)?,
             meta: txn.open_table(META).map_err(storage)?,
@@ -299,8 +321,8 @@ fn run_batch(
                     let result = readback(&mut t, id, fence);
                     replies.push(Box::new(move || drop(sender.send(result))));
                 }
-                Command::List(after, limit, sender) => {
-                    let result = list(&t, after, limit);
+                Command::List(project, after, limit, sender) => {
+                    let result = list(&t, project, after, limit);
                     replies.push(Box::new(move || drop(sender.send(result))));
                 }
                 Command::Advance(seconds, sender) => {
@@ -412,6 +434,9 @@ fn execute(t: &mut Tables<'_>, request: &ExecuteRequest) -> Result<Executed, Sto
         .insert(key, bytes.as_slice())
         .map_err(storage)?;
     t.by_seq.insert(stored.seq, key).map_err(storage)?;
+    t.by_project
+        .insert((request.project_id.as_u128(), stored.seq), key)
+        .map_err(storage)?;
     if outcome == Outcome::Approved {
         match (request.kind, parent) {
             (OperationKind::Authorize, _) => {
@@ -532,16 +557,42 @@ fn readback(t: &mut Tables<'_>, id: Uuid, fence: bool) -> Result<Readback, Store
     })
 }
 
-fn list(t: &Tables<'_>, after: i64, limit: i64) -> Result<OperationPage, StoreError> {
+fn list(
+    t: &Tables<'_>,
+    project: Option<Uuid>,
+    after: i64,
+    limit: i64,
+) -> Result<OperationPage, StoreError> {
     let limit = usize::try_from(limit.clamp(1, 1_000)).unwrap_or(1_000);
     let start = u64::try_from(after.max(0)).unwrap_or(0).saturating_add(1);
-    let mut operations = Vec::with_capacity(limit);
-    for entry in t.by_seq.range(start..).map_err(storage)? {
-        if operations.len() == limit {
-            break;
+    let mut keys: Vec<(u64, u128)> = Vec::with_capacity(limit);
+    match project {
+        Some(project) => {
+            let p = project.as_u128();
+            for entry in t
+                .by_project
+                .range((p, start)..=(p, u64::MAX))
+                .map_err(storage)?
+            {
+                if keys.len() == limit {
+                    break;
+                }
+                let (k, v) = entry.map_err(storage)?;
+                keys.push((k.value().1, v.value()));
+            }
         }
-        let (seq, key) = entry.map_err(storage)?;
-        let (seq, key) = (seq.value(), key.value());
+        None => {
+            for entry in t.by_seq.range(start..).map_err(storage)? {
+                if keys.len() == limit {
+                    break;
+                }
+                let (k, v) = entry.map_err(storage)?;
+                keys.push((k.value(), v.value()));
+            }
+        }
+    }
+    let mut operations = Vec::with_capacity(keys.len());
+    for (seq, key) in keys {
         let id = Uuid::from_u128(key);
         let stored = get_stored(t, id)?.ok_or(StoreError::Invalid("index without record"))?;
         operations.push(ListedOperation {

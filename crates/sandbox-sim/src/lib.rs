@@ -140,6 +140,7 @@ async fn readback(
 
 #[derive(Debug, Deserialize)]
 struct ListQuery {
+    project_id: Option<Uuid>,
     #[serde(default)]
     after: i64,
     #[serde(default = "default_limit")]
@@ -151,7 +152,11 @@ const fn default_limit() -> i64 {
 }
 
 async fn list(State(state): State<SimState>, Query(q): Query<ListQuery>) -> Response {
-    match state.store.list(q.after, q.limit).await {
+    let page = match q.project_id {
+        Some(project) => state.store.list_project(project, q.after, q.limit).await,
+        None => state.store.list(q.after, q.limit).await,
+    };
+    match page {
         Ok(page) => Json(page).into_response(),
         Err(e) => store_error(&e),
     }

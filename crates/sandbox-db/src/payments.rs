@@ -794,3 +794,66 @@ pub async fn unknown_operations(
     .fetch_all(pool)
     .await?)
 }
+
+/// What the server recorded for an operation, for comparison with the network's record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedOperation {
+    /// Identity.
+    pub id: Uuid,
+    /// Kind code.
+    pub kind: String,
+    /// Amount.
+    pub amount_minor: i64,
+    /// State code.
+    pub state: String,
+    /// Decline code.
+    pub decline_code: Option<String>,
+}
+
+/// The server's records of `ids` in `project_id` (any epoch).
+pub async fn recorded_operations(
+    pool: &PgPool,
+    project_id: Uuid,
+    ids: &[Uuid],
+) -> Result<Vec<RecordedOperation>, DbError> {
+    let rows = sqlx::query(
+        "SELECT id, kind, amount_minor, state, decline_code FROM operations
+          WHERE project_id = $1 AND id = ANY($2)",
+    )
+    .bind(project_id)
+    .bind(ids)
+    .fetch_all(pool)
+    .await?;
+    rows.iter()
+        .map(|row| {
+            Ok(RecordedOperation {
+                id: row.try_get("id")?,
+                kind: row.try_get("kind")?,
+                amount_minor: row.try_get("amount_minor")?,
+                state: row.try_get("state")?,
+                decline_code: row.try_get("decline_code")?,
+            })
+        })
+        .collect()
+}
+
+/// A page of the ids of operations the network answered (succeeded or declined), in id
+/// order after `after`.
+pub async fn answered_operation_ids(
+    pool: &PgPool,
+    project_id: Uuid,
+    after: Option<Uuid>,
+    limit: i64,
+) -> Result<Vec<Uuid>, DbError> {
+    Ok(sqlx::query_scalar(
+        "SELECT id FROM operations
+          WHERE project_id = $1 AND state IN ('succeeded', 'declined')
+            AND ($2::uuid IS NULL OR id > $2)
+          ORDER BY id LIMIT $3",
+    )
+    .bind(project_id)
+    .bind(after)
+    .bind(limit.clamp(1, 10_000))
+    .fetch_all(pool)
+    .await?)
+}

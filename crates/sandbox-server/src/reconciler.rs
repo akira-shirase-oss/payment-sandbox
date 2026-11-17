@@ -146,39 +146,144 @@ pub async fn run(state: AppState, mut shutdown: watch::Receiver<bool>) {
     }
 }
 
-/// Network operations of `scope`'s project that the server has no record of — what a
-/// restore of the server's database to an older backup leaves behind. Reported, never
-/// applied blindly: a client retry under the same key re-derives the same identity and
-/// applies the network's record once. Pages through at most `max_pages` × 1,000.
-pub async fn unknown_to_server(
+/// One field on which the server and the network disagree about an operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Disagreement {
+    /// The operation.
+    pub id: Uuid,
+    /// `kind`, `amount_minor` or `outcome`.
+    pub field: &'static str,
+    /// What the server recorded.
+    pub server: String,
+    /// What the network recorded.
+    pub network: String,
+}
+
+/// Agreement between the server's records and the network's, for one project, both ways.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct Agreement {
+    /// True only if the network's listing was read to its end.
+    pub complete: bool,
+    /// Network operations read.
+    pub network_operations_scanned: usize,
+    /// On the network, unknown to the server (what a restore of an older backup leaves).
+    pub unknown_to_server: Vec<Uuid>,
+    /// Answered on the server (succeeded or declined), unknown to the network.
+    pub unknown_to_network: Vec<Uuid>,
+    /// Known to both, recorded differently.
+    pub disagreements: Vec<Disagreement>,
+}
+
+impl Agreement {
+    /// True when the scan completed and found nothing.
+    pub fn is_clean(&self) -> bool {
+        self.complete
+            && self.unknown_to_server.is_empty()
+            && self.unknown_to_network.is_empty()
+            && self.disagreements.is_empty()
+    }
+}
+
+/// Most entries kept in each list of an [`Agreement`].
+const LIST_BOUND: usize = 1_000;
+
+fn push_bounded<T>(list: &mut Vec<T>, item: T) {
+    if list.len() < LIST_BOUND {
+        list.push(item);
+    }
+}
+
+/// Compares `scope`'s project with the network, both ways and field by field (review
+/// finding 4): every network operation of the project must be recorded by the server with
+/// the same kind, amount and outcome, and every operation the server says the network
+/// answered must be on the network. Reads at most `PS_RECONCILE_NETWORK_MAX_PAGES` pages of
+/// 1,000; a scan that runs out reports `complete: false` and is never clean. Disagreements
+/// are reported, never applied.
+pub async fn network_agreement(
     state: &AppState,
     scope: ProjectScope,
-    max_pages: usize,
-) -> Result<Vec<Uuid>, ApiError> {
-    let mut unknown = Vec::new();
+) -> Result<Agreement, ApiError> {
+    let mut agreement = Agreement::default();
+    let mut on_network = std::collections::HashSet::new();
     let mut after = 0;
-    for _ in 0..max_pages {
-        let page = state.network.list(after, 1_000).await.map_err(|e| {
-            ApiError::Unavailable(anyhow::anyhow!("listing the network's operations: {e}"))
-        })?;
-        let ids: Vec<Uuid> = page
-            .operations
-            .iter()
-            .filter(|o| o.project_id == scope.project_id)
-            .map(|o| o.id)
-            .collect();
-        if !ids.is_empty() {
-            unknown.extend(payments::unknown_operations(&state.db, scope.project_id, &ids).await?);
-        }
-        match page.next_after {
-            Some(next) => after = next,
-            None => break,
-        }
-        if unknown.len() >= 1_000 {
+    let mut pages = 0;
+    loop {
+        if pages == state.config.reconcile_network_max_pages {
             break;
         }
+        pages += 1;
+        let page = state
+            .network
+            .list(scope.project_id, after, 1_000)
+            .await
+            .map_err(|e| {
+                ApiError::Unavailable(anyhow::anyhow!("listing the network's operations: {e}"))
+            })?;
+        agreement.network_operations_scanned += page.operations.len();
+        let ids: Vec<Uuid> = page.operations.iter().map(|o| o.id).collect();
+        let recorded = payments::recorded_operations(&state.db, scope.project_id, &ids).await?;
+        let recorded: std::collections::HashMap<Uuid, payments::RecordedOperation> =
+            recorded.into_iter().map(|r| (r.id, r)).collect();
+        for op in &page.operations {
+            on_network.insert(op.id);
+            let Some(server) = recorded.get(&op.id) else {
+                push_bounded(&mut agreement.unknown_to_server, op.id);
+                continue;
+            };
+            let network_outcome = match op.outcome {
+                Outcome::Approved => "succeeded",
+                Outcome::Declined => "declined",
+            };
+            let mut differ = |field, server: String, network: String| {
+                if server != network {
+                    push_bounded(
+                        &mut agreement.disagreements,
+                        Disagreement {
+                            id: op.id,
+                            field,
+                            server,
+                            network,
+                        },
+                    );
+                }
+            };
+            differ("kind", server.kind.clone(), op.kind.code().to_owned());
+            differ(
+                "amount_minor",
+                server.amount_minor.to_string(),
+                op.amount_minor.to_string(),
+            );
+            let server_outcome =
+                if server.decline_code.as_deref() == Some(lifecycle::IDENTITY_CONFLICT) {
+                    "conflict".to_owned()
+                } else {
+                    server.state.clone()
+                };
+            differ("outcome", server_outcome, network_outcome.to_owned());
+        }
+        let Some(next) = page.next_after else {
+            agreement.complete = true;
+            break;
+        };
+        after = next;
     }
-    Ok(unknown)
+    if agreement.complete {
+        let mut cursor = None;
+        loop {
+            let ids = payments::answered_operation_ids(&state.db, scope.project_id, cursor, 10_000)
+                .await?;
+            let Some(last) = ids.last().copied() else {
+                break;
+            };
+            for id in ids {
+                if !on_network.contains(&id) {
+                    push_bounded(&mut agreement.unknown_to_network, id);
+                }
+            }
+            cursor = Some(last);
+        }
+    }
+    Ok(agreement)
 }
 
 /// A shutdown signal for [`run`].

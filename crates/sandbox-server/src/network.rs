@@ -129,12 +129,17 @@ impl Network {
             .ok_or_else(|| NetworkError("malformed readback".to_owned()))
     }
 
-    /// Lists the network's recorded operations after `after`.
-    pub async fn list(&self, after: i64, limit: i64) -> Result<OperationPage, NetworkError> {
+    /// Lists one project's recorded operations after `after`.
+    pub async fn list(
+        &self,
+        project: Uuid,
+        after: i64,
+        limit: i64,
+    ) -> Result<OperationPage, NetworkError> {
         let response = self
             .http
             .get(format!(
-                "{}/v1/operations?after={after}&limit={limit}",
+                "{}/v1/operations?project_id={project}&after={after}&limit={limit}",
                 self.base
             ))
             .header("sandbox-network-protocol", PROTOCOL_VERSION)

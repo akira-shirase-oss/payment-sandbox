@@ -79,6 +79,6 @@ export function teardown(data) {
       'every uncertain operation resolved by the reconciler': (b) => b !== null && b.report.open_operations === 0,
       'journal balanced, payments equal their entries, network fully known': (b) => b !== null && b.clean === true,
     }, { phase: 'reconcile' });
-    if (body) console.log(`reconciliation: ${JSON.stringify(body.report)} unknown=${body.network_operations_unknown_to_server.length}`);
+    if (body) console.log(`reconciliation: ${JSON.stringify(body.report)} network=${JSON.stringify(body.network)}`);
   }
 }

@@ -240,9 +240,9 @@ pub async fn reconciliation(
     let mut clean = report.is_clean();
     let mut body = json!({"report": report, "simulated": true});
     if q.network {
-        let unknown = crate::reconciler::unknown_to_server(&state, auth.scope(), 100).await?;
-        clean = clean && unknown.is_empty();
-        body["network_operations_unknown_to_server"] = json!(unknown);
+        let agreement = crate::reconciler::network_agreement(&state, auth.scope()).await?;
+        clean = clean && agreement.is_clean();
+        body["network"] = json!(agreement);
     }
     body["clean"] = json!(clean);
     Ok(Json(body).into_response())
