@@ -1330,6 +1330,22 @@ closes one of its findings, with the test that failed before the fix.
   in view. Before the fix the 360 px runs failed (`scrollable-region-focusable` on the
   payment page among others) and the 1440 px runs passed.
 
+- **D-086 — Dashboard errors in plain words, with a way on; foreign keys never leave the
+  page.** The dashboard showed the server's message and nothing else ("payment not found";
+  "missing or invalid sandbox key"), sent a pasted `sk_live_…` key to the server, and put
+  decision ids in its copy ("(D-028)", "(D-006)"). Now every page that loads data shows a
+  failure as the kit's destructive Alert (`LoadError`): a title and plain words for the
+  common codes (not found, archived by a reset, no answer, report budget, missing scope,
+  busy), the next step (Try again, Back to payments / the ledger; an explanation whose
+  cursor a restore invalidated starts over), and the code with the server's message behind
+  a Details toggle. Sign-in refuses anything that is not `sk_sim_` and 64 hex characters in
+  the page, never sending it, and an unaccepted key says to check the paste or create a new
+  one with `POST /v1/keys`. Empty tables say what fills them. The copy carries no decision
+  ids. Tests: `e2e/tests/dashboard.spec.ts` (a live-key shape refused with no POST sent; an
+  unaccepted key's words; a missing payment's words, its Back link and its code shown only
+  after Details; no "(D-NNN)" on the ledger or webhooks pages); the old pages failed each
+  of these by construction (raw text, the key sent, no link, ids in the copy).
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

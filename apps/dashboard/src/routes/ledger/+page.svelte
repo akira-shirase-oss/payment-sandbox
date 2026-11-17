@@ -3,25 +3,29 @@
 	import * as Table from '@sandbox/ui/ui/table';
 	import { get, type Balance } from '#lib/api.js';
 	import { account, money } from '#lib/format.js';
+	import LoadError from '#lib/LoadError.svelte';
+	import { problem, type Problem } from '#lib/problem.js';
 
 	let balances = $state<Balance[]>([]);
-	let error = $state('');
-	onMount(async () => {
+	let error = $state<Problem | null>(null);
+	async function load() {
+		error = null;
 		try {
 			balances = (await get<{ balances: Balance[] }>('/v1/balances')).balances;
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Loading failed.';
+			error = problem(e, 'the ledger');
 		}
-	});
+	}
+	onMount(load);
 </script>
 
 <svelte:head><title>Ledger · Sandbox dashboard</title></svelte:head>
 
 <h1 class="display-2 mb-2">Ledger</h1>
 <p class="mb-6 text-sm text-muted-foreground">
-	Every balance is summed from the journal (D-028). Open one to see the postings that make it up.
+	Every balance is summed from the journal. Open one to see the postings that make it up.
 </p>
-{#if error}<p role="alert" class="mb-4 text-sm text-destructive">{error}</p>{/if}
+{#if error}<LoadError problem={error} retry={load} />{/if}
 <!-- At 360 px the balance stays beside its account: currency and side fold under the name. -->
 <div class="rounded-xl border bg-card">
 	<Table.Root label="Balances">
@@ -40,7 +44,7 @@
 					<Table.Cell class="tabular text-right whitespace-nowrap" data-testid="balance">{money(b.balance_minor, b.currency)}</Table.Cell>
 				</Table.Row>
 			{:else}
-				<Table.Row><Table.Cell colspan={4} class="text-muted-foreground">No postings yet.</Table.Cell></Table.Row>
+				<Table.Row><Table.Cell colspan={4} class="text-muted-foreground">No postings yet. Every payment posts here: make one from your store, or with <code>sandbox-cli payments create</code>.</Table.Cell></Table.Row>
 			{/each}
 		</Table.Body>
 	</Table.Root>

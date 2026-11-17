@@ -5,20 +5,22 @@
 	import { Button } from '@sandbox/ui/ui/button';
 	import { Card, CardContent, CardHeader, CardTitle } from '@sandbox/ui/ui/card';
 	import { get, type Report, type TaskStatus } from '#lib/api.js';
+	import LoadError from '#lib/LoadError.svelte';
+	import { problem, type Problem } from '#lib/problem.js';
 
 	let report = $state<Report | null>(null);
 	let tasks = $state<TaskStatus[]>([]);
-	let error = $state('');
+	let error = $state<Problem | null>(null);
 	let checking = $state(false);
 
 	async function check(network = false) {
 		checking = true;
-		error = '';
+		error = null;
 		try {
 			report = await get<Report>(`/v1/reconciliation${network ? '?network=true' : ''}`);
 			tasks = (await get<{ tasks: TaskStatus[] }>('/status')).tasks;
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'The check failed.';
+			error = problem(e, 'the reconciliation report');
 		} finally {
 			checking = false;
 		}
@@ -31,7 +33,7 @@
 <svelte:head><title>Overview · Sandbox dashboard</title></svelte:head>
 
 <h1 class="display-2 mb-6">Overview</h1>
-{#if error}<p role="alert" class="mb-4 text-sm text-destructive">{error}</p>{/if}
+{#if error}<LoadError problem={error} retry={() => void check()} />{/if}
 <div class="grid gap-4 md:grid-cols-2">
 	<Card>
 		<CardHeader><CardTitle><h2 class="title">Reconciliation</h2></CardTitle></CardHeader>

@@ -5,18 +5,22 @@
 	import * as Table from '@sandbox/ui/ui/table';
 	import { get, type Endpoint, type EventRecord } from '#lib/api.js';
 	import { short, when } from '#lib/format.js';
+	import LoadError from '#lib/LoadError.svelte';
+	import { problem, type Problem } from '#lib/problem.js';
 
 	let endpoints = $state<Endpoint[]>([]);
 	let events = $state<EventRecord[]>([]);
-	let error = $state('');
-	onMount(async () => {
+	let error = $state<Problem | null>(null);
+	async function load() {
+		error = null;
 		try {
 			endpoints = (await get<{ endpoints: Endpoint[] }>('/v1/webhook_endpoints?limit=100')).endpoints;
 			events = (await get<{ events: EventRecord[] }>('/v1/events?limit=100')).events;
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Loading failed.';
+			error = problem(e, 'the webhooks');
 		}
-	});
+	}
+	onMount(load);
 
 	function health(e: Endpoint): Outcome {
 		if (e.disabled_at) return { tone: 'none', word: 'Disabled', detail: '' };
@@ -30,7 +34,7 @@
 <svelte:head><title>Webhooks · Sandbox dashboard</title></svelte:head>
 
 <h1 class="display-2 mb-6">Webhooks</h1>
-{#if error}<p role="alert" class="mb-4 text-sm text-destructive">{error}</p>{/if}
+{#if error}<LoadError problem={error} retry={load} />{/if}
 <h2 class="title mb-2">Endpoints</h2>
 <div class="mb-8 rounded-xl border bg-card">
 	<Table.Root label="Endpoints">
@@ -46,13 +50,13 @@
 					<Table.Cell>{e.rotating ? 'rotating (two secrets sign)' : 'one secret'}</Table.Cell>
 				</Table.Row>
 			{:else}
-				<Table.Row><Table.Cell colspan={4} class="text-muted-foreground">No endpoints registered.</Table.Cell></Table.Row>
+				<Table.Row><Table.Cell colspan={4} class="text-muted-foreground">No endpoints registered. Add one with <code>sandbox-cli webhooks create --url http://127.0.0.1:&lt;port&gt;/webhooks</code>.</Table.Cell></Table.Row>
 			{/each}
 		</Table.Body>
 	</Table.Root>
 </div>
 <h2 class="title mb-2">Recent events</h2>
-<p class="mb-2 text-sm text-muted-foreground">Delivery is at least once: a receiver may see an event twice and must deduplicate (D-006).</p>
+<p class="mb-2 text-sm text-muted-foreground">Delivery is at least once: a receiver may see an event twice and must deduplicate it by its id.</p>
 <div class="rounded-xl border bg-card">
 	<Table.Root label="Recent events">
 		<Table.Header>

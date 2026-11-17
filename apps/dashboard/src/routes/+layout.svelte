@@ -9,10 +9,12 @@
 	import { Input } from '@sandbox/ui/ui/input';
 	import { Label } from '@sandbox/ui/ui/label';
 	import { load, session, signIn, signOut } from '#lib/session.svelte.js';
+	import { ApiError } from '#lib/api.js';
+	import { KEY_SHAPE, signInProblem, type Problem } from '#lib/problem.js';
 
 	let { children } = $props();
 	let key = $state('');
-	let error = $state('');
+	let error = $state<Problem | null>(null);
 	let busy = $state(false);
 
 	onMount(load);
@@ -31,13 +33,19 @@
 	async function submit(event: SubmitEvent) {
 		event.preventDefault();
 		if (busy) return;
+		error = null;
+		// Anything that is not a sandbox key never leaves the page (a real processor's key
+		// pasted by mistake must not travel, D-068).
+		if (!KEY_SHAPE.test(key.trim())) {
+			error = signInProblem(new ApiError(0, 'not_a_sandbox_key', 'the key was refused in the page and not sent'));
+			return;
+		}
 		busy = true;
-		error = '';
 		try {
 			await signIn(key);
 			key = '';
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Sign-in failed.';
+			error = signInProblem(e);
 		} finally {
 			busy = false;
 		}
@@ -107,7 +115,16 @@
 							aria-invalid={error ? 'true' : undefined}
 							aria-describedby={error ? 'key-error' : undefined}
 						/>
-						{#if error}<p id="key-error" role="alert" class="text-sm text-destructive">{error}</p>{/if}
+						{#if error}
+							<div id="key-error" role="alert" class="space-y-1 text-sm text-destructive" data-testid="sign-in-error">
+								<p class="font-medium">{error.title}</p>
+								<p>{error.words}</p>
+								<details class="text-muted-foreground">
+									<summary class="cursor-pointer rounded-sm focus-visible:ring-4 focus-visible:ring-ring/25 focus-visible:outline-none">Details</summary>
+									<p class="mt-1 font-mono text-xs">{error.code}: {error.detail}</p>
+								</details>
+							</div>
+						{/if}
 						<Button type="submit" disabled={busy || key.trim() === ''}>Sign in</Button>
 					</form>
 				</CardContent>

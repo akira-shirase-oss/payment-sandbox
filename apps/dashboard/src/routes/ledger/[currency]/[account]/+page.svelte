@@ -9,6 +9,8 @@
 	import { get, type ExplainedLine, type Explanation } from '#lib/api.js';
 	import { account, money, short } from '#lib/format.js';
 	import VirtualRows from '#lib/VirtualRows.svelte';
+	import LoadError from '#lib/LoadError.svelte';
+	import { problem, type Problem } from '#lib/problem.js';
 
 	const currency = $derived(page.params['currency'] ?? '');
 	const code = $derived(page.params['account'] ?? '');
@@ -21,12 +23,12 @@
 	let pages = $state(0);
 	let done = $state(false);
 	let loading = $state(false);
-	let error = $state('');
+	let error = $state<Problem | null>(null);
 
 	async function more() {
 		if (loading || done) return;
 		loading = true;
-		error = '';
+		error = null;
 		try {
 			const next = cursor ? `&cursor=${encodeURIComponent(cursor)}` : '';
 			const answer = await get<Explanation>(
@@ -39,7 +41,11 @@
 			pages += 1;
 			done = cursor === null;
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Loading failed.';
+			error = problem(e, 'this explanation');
+			// A cursor from before a restore, or not this server's, cannot continue: start over.
+			if (error.code === 'stale_cursor' || error.code === 'invalid_cursor') {
+				error = { ...error, title: 'The explanation has to start again', words: 'The database changed under it (a restore), so its place in the journal is gone. Start again from the first page.' };
+			}
 		} finally {
 			loading = false;
 		}
@@ -73,7 +79,21 @@
 
 <p class="eyebrow mb-1"><a href="/ledger" class="underline">Ledger</a> / {currency}</p>
 <h1 class="display-2 mb-2 capitalize">{account(code)}</h1>
-{#if error}<p role="alert" class="mb-4 text-sm text-destructive">{error}</p>{/if}
+{#if error}
+	<LoadError
+		problem={error}
+		retry={error.code === 'stale_cursor' || error.code === 'invalid_cursor'
+			? () => {
+					lines = [];
+					cursor = null;
+					pages = 0;
+					done = false;
+					void more();
+				}
+			: () => void more()}
+		back={{ href: '/ledger', label: 'Back to the ledger' }}
+	/>
+{/if}
 {#if balance !== null}
 	<div class="mb-4 flex flex-wrap items-center gap-3 text-sm" data-testid="explain-summary">
 		<OutcomeBadge outcome={verdict} />

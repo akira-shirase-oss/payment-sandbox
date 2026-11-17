@@ -6,17 +6,20 @@
 	import { get, type Payment } from '#lib/api.js';
 	import { money, short, when } from '#lib/format.js';
 	import VirtualRows from '#lib/VirtualRows.svelte';
+	import LoadError from '#lib/LoadError.svelte';
+	import { problem, type Problem } from '#lib/problem.js';
 
 	const PAGE = 200;
 	let rows = $state<Payment[]>([]);
 	let next = $state<string | null>(null);
 	let done = $state(false);
 	let loading = $state(false);
-	let error = $state('');
+	let error = $state<Problem | null>(null);
 
 	async function more() {
 		if (loading || done) return;
 		loading = true;
+		error = null;
 		try {
 			const before = next ? `&before=${encodeURIComponent(next)}` : '';
 			const page = await get<{ payments: Payment[]; next_before: string | null }>(`/v1/payments?limit=${PAGE}${before}`);
@@ -24,7 +27,7 @@
 			next = page.next_before;
 			done = next === null;
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Loading failed.';
+			error = problem(e, 'the payments');
 		} finally {
 			loading = false;
 		}
@@ -40,7 +43,7 @@
 		{rows.length} loaded{done ? '' : ', more on scroll'}
 	</p>
 </div>
-{#if error}<p role="alert" class="mb-4 text-sm text-destructive">{error}</p>{/if}
+{#if error}<LoadError problem={error} retry={() => void more()} />{/if}
 {#if rows.length === 0 && done}
 	<p class="text-sm text-muted-foreground" data-testid="payments-empty">
 		No payments in this epoch yet. Make one from your store, with

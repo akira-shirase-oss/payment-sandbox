@@ -6,12 +6,14 @@
 	import * as Table from '@sandbox/ui/ui/table';
 	import { get, type Entry, type EventRecord, type Operation, type Payment } from '#lib/api.js';
 	import { account, money, short, when } from '#lib/format.js';
+	import LoadError from '#lib/LoadError.svelte';
+	import { problem, type Problem } from '#lib/problem.js';
 
 	let payment = $state<Payment | null>(null);
 	let operations = $state<Operation[]>([]);
 	let entries = $state<Entry[]>([]);
 	let events = $state<EventRecord[]>([]);
-	let error = $state('');
+	let error = $state<Problem | null>(null);
 
 	$effect(() => {
 		const id = page.params['id'] ?? '';
@@ -26,7 +28,7 @@
 				entries = found.entries;
 				events = (await get<{ events: EventRecord[] }>(`/v1/events?payment_id=${encodeURIComponent(id)}&limit=200`)).events;
 			} catch (e) {
-				error = e instanceof Error ? e.message : 'Loading failed.';
+				error = problem(e, 'this payment');
 			}
 		})();
 	});
@@ -48,7 +50,7 @@
 
 <svelte:head><title>Payment · Sandbox dashboard</title></svelte:head>
 
-{#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}
+{#if error}<LoadError problem={error} back={{ href: '/payments', label: 'Back to payments' }} />{/if}
 {#if payment}
 	<div class="mb-6 space-y-2">
 		<p class="eyebrow"><a href="/payments" class="underline">Payments</a> / <span class="font-mono">{payment.id}</span></p>

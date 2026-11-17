@@ -29,9 +29,22 @@ test('signing in gives a host-only session cookie, and signing out ends it on th
 	const shop = await project(request);
 	const violations = await watchPolicy(page);
 	await page.goto(env.dashboard);
-	await page.getByLabel('Sandbox key').fill('sk_sim_not-a-key');
+	// Not a sandbox key's shape: refused in the page, never sent (v1 review L4).
+	const sent: string[] = [];
+	page.on('request', (r) => {
+		if (r.method() === 'POST' && r.url().includes('/api/session')) sent.push(r.url());
+	});
+	await page.getByLabel('Sandbox key').fill(['sk', 'live', '0123456789abcdef'.repeat(4)].join('_'));
 	await page.getByRole('button', { name: 'Sign in' }).click();
-	await expect(page.getByRole('alert')).toContainText('missing or invalid sandbox key');
+	await expect(page.getByRole('alert')).toContainText('That is not a Payment Sandbox key');
+	await expect(page.getByRole('alert')).toContainText('It was not sent');
+	expect(sent).toEqual([]);
+	// The right shape, but no such key: plain words and what to do, the code behind Details.
+	await page.getByLabel('Sandbox key').fill(`sk_sim_${'0'.repeat(64)}`);
+	await page.getByRole('button', { name: 'Sign in' }).click();
+	await expect(page.getByRole('alert')).toContainText('That key was not accepted');
+	await expect(page.getByRole('alert')).toContainText('POST /v1/keys');
+	await expect(page.getByRole('alert').getByText('unauthorized: missing or invalid sandbox key')).toBeHidden();
 	await page.getByLabel('Sandbox key').fill(shop.read);
 	await page.getByRole('button', { name: 'Sign in' }).click();
 	await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
@@ -52,6 +65,29 @@ test('signing in gives a host-only session cookie, and signing out ends it on th
 	const after = await page.evaluate(async () => (await fetch('/api/v1/payments')).status);
 	expect(after).toBe(401);
 	expect(await violations()).toEqual([]);
+});
+
+test('a page that cannot load says so in plain words, with the way back and the code behind Details', async ({ page, request }) => {
+	const shop = await project(request);
+	await page.goto(env.dashboard);
+	await page.getByLabel('Sandbox key').fill(shop.read);
+	await page.getByRole('button', { name: 'Sign in' }).click();
+	await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
+	await page.goto(`${env.dashboard}/payments/019a0000-0000-7000-8000-000000000000`);
+	const problem = page.getByTestId('load-error');
+	await expect(problem).toContainText('This payment was not found');
+	await expect(problem).toContainText("current dataset");
+	await expect(problem.getByText('not_found:')).toBeHidden();
+	await problem.getByText('Details').click();
+	await expect(problem.getByText('not_found:')).toBeVisible();
+	await problem.getByRole('link', { name: 'Back to payments' }).click();
+	await expect(page.getByRole('heading', { name: 'Payments' })).toBeVisible();
+	// No decision ids in what people read.
+	for (const path of ['/ledger', '/webhooks']) {
+		await page.goto(`${env.dashboard}${path}`);
+		await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+		await expect(page.locator('main')).not.toContainText(/\(D-\d{3}\)/);
+	}
 });
 
 test('an explanation pages through the journal until its lines sum to the balance', async ({ page, request }) => {
