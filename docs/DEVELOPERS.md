@@ -30,7 +30,10 @@ curl -s -X POST http://127.0.0.1:56080/v1/projects \
 export PS_API_KEY=sk_sim_...                      # the api_key.secret it printed
 ```
 
-For a sandbox somewhere else (a deployed one, see `docs/OPERATING.md`) set `PS_API_URL` too.
+For a sandbox somewhere else (a deployed one, see `docs/OPERATING.md`) set `PS_API_URL` to
+its `https://` name too, and pass `--allow-non-local`; if its proxy's certificate comes from
+a private authority, give the CLI that authority's certificate with `--ca-cert` (or
+`PS_CA_CERT`).
 
 ## 2. The CLI
 

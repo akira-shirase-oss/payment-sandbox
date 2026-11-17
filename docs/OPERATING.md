@@ -81,6 +81,13 @@ sandbox-cli --allow-non-local status
 sandbox-cli --allow-non-local scenarios run --all --check
 ```
 
+The CLI speaks HTTPS with rustls and trusts the machine's own certificate authorities, so a
+certificate Caddy obtained from a public authority just works. If your proxy uses a private
+authority (Caddy's `tls internal`, a company CA), give the CLI that authority's certificate:
+`--ca-cert /path/to/root.crt` (or `PS_CA_CERT`). A certificate the CLI cannot trust is
+reported as such (exit 5), and nothing is sent. CI runs this path: the release smoke puts
+the API behind Caddy with its local authority and pays over `https` (D-074).
+
 Sign in to `https://dashboard.sandbox.example.com` with a key. The checkout's pages are on
 `https://pay.sandbox.example.com`.
 
@@ -159,6 +166,8 @@ explanation again.
 | Everyone is signed out | the server restarted (sessions are in memory, D-062) | sign in again |
 | `429 rate_limited` on reports | a project spent its report budget (D-047) | wait `Retry-After` seconds; raise `PS_REPORT_BURST` only with a measurement |
 | `sandbox-cli` says `is not this machine` | the API is on the shared host | pass `--allow-non-local` (or `PS_ALLOW_NON_LOCAL=1`) |
+| `sandbox-cli` says `could not open a secure (TLS) connection ... not trusted` | the proxy's certificate comes from an authority this machine does not trust | pass that authority's certificate with `--ca-cert` (or `PS_CA_CERT`) |
+| `sandbox-cli` says `does not speak TLS on this port` / `the answer was not HTTP` | `https://` to a plain port, or `http://` to the proxy's TLS port | use the proxy's `https://` name, or `http://127.0.0.1:56080` on the host |
 
 Logs: `journalctl -u payment-sandbox-server -u payment-sandbox-sim`. They carry operation
 ids, codes and route templates, never keys, tokens or card-like input.

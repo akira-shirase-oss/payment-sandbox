@@ -49,6 +49,29 @@ impl fmt::Debug for SandboxKey {
     }
 }
 
+/// Certificate authorities trusted in addition to this machine's own (a shared sandbox
+/// behind a proxy with a private CA, D-074).
+#[derive(Clone, Default)]
+pub struct ExtraRoots(pub(crate) Vec<reqwest::Certificate>);
+
+impl ExtraRoots {
+    /// How many certificates are trusted in addition to the system's.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// True when only the system's own authorities are trusted.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl fmt::Debug for ExtraRoots {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ExtraRoots({} certificate(s))", self.0.len())
+    }
+}
+
 /// A checked client configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -56,6 +79,8 @@ pub struct Config {
     pub api_url: String,
     /// The project's sandbox key.
     pub key: SandboxKey,
+    /// Extra certificate authorities for an `https://` API (`--ca-cert`).
+    pub extra_roots: ExtraRoots,
 }
 
 /// Why a configuration was refused. Every message says what is wrong and what to do.
@@ -66,6 +91,11 @@ pub enum ConfigError {
         "no sandbox key: set PS_API_KEY or pass --key (sandbox keys start with sk_sim_; create one with POST /v1/keys)"
     )]
     MissingKey,
+    /// The `--ca-cert` file holds no certificate.
+    #[error(
+        "{0} holds no PEM certificate (-----BEGIN CERTIFICATE-----): --ca-cert (PS_CA_CERT) takes the certificate of the authority that signed the sandbox's HTTPS certificate"
+    )]
+    BadCaCert(String),
     /// Not a Payment Sandbox key. The value is never echoed.
     #[error(
         "that is not a Payment Sandbox key: sandbox keys are sk_sim_ followed by 64 hex characters. Never use a real processor's key (sk_live_, sk_test_, rk_...) with the sandbox"
@@ -113,7 +143,19 @@ impl Config {
         Ok(Self {
             api_url: api_url.trim_end_matches('/').to_owned(),
             key: SandboxKey(key.to_owned()),
+            extra_roots: ExtraRoots::default(),
         })
+    }
+
+    /// Also trusts the certificate authorities in `pem` (read from `source`, named in the
+    /// error) for an `https://` API, on top of this machine's own.
+    pub fn trusting(mut self, source: &str, pem: &[u8]) -> Result<Self, ConfigError> {
+        let certificates = reqwest::Certificate::from_pem_bundle(pem)
+            .ok()
+            .filter(|c| !c.is_empty())
+            .ok_or_else(|| ConfigError::BadCaCert(source.to_owned()))?;
+        self.extra_roots.0.extend(certificates);
+        Ok(self)
     }
 }
 
@@ -260,6 +302,22 @@ mod tests {
                 "{url}"
             );
         }
+    }
+
+    #[test]
+    fn a_ca_file_must_hold_a_certificate() {
+        let config = Config::new("https://localhost", Some(KEY), false).unwrap();
+        for junk in [
+            &b""[..],
+            b"not a certificate",
+            b"-----BEGIN PRIVATE KEY-----\n-----END PRIVATE KEY-----\n",
+        ] {
+            assert_eq!(
+                config.clone().trusting("ca.pem", junk).unwrap_err(),
+                ConfigError::BadCaCert("ca.pem".to_owned())
+            );
+        }
+        assert!(config.extra_roots.is_empty());
     }
 
     #[test]

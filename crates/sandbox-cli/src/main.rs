@@ -72,6 +72,10 @@ struct Global {
     /// Never allows a real processor's host or key.
     #[arg(long, env = "PS_ALLOW_NON_LOCAL", global = true)]
     allow_non_local: bool,
+    /// Also trust this certificate authority (a PEM file) for an https:// API: a shared
+    /// sandbox whose proxy uses a private CA. The machine's own authorities stay trusted.
+    #[arg(long, env = "PS_CA_CERT", global = true, value_name = "FILE.pem")]
+    ca_cert: Option<std::path::PathBuf>,
     /// Print the API's JSON instead of plain words.
     #[arg(long, global = true)]
     json: bool,
@@ -291,6 +295,7 @@ impl From<ClientError> for Failure {
             ClientError::Refused { .. } => Ended::Refused,
             ClientError::Unknown { .. } => Ended::Uncertain,
             ClientError::Unreachable { .. }
+            | ClientError::Tls { .. }
             | ClientError::NotASandbox { .. }
             | ClientError::Unreadable { .. } => Ended::Unreachable,
         };
@@ -340,12 +345,21 @@ impl Ctx {
 }
 
 async fn run(cli: Cli) -> Result<Ended, Failure> {
-    let config = Config::new(
+    let mut config = Config::new(
         &cli.global.api_url,
         cli.global.key.as_deref(),
         cli.global.allow_non_local,
     )
     .map_err(|e| usage(e.to_string()))?;
+    if let Some(path) = &cli.global.ca_cert {
+        let shown = path.display().to_string();
+        let pem = tokio::fs::read(path)
+            .await
+            .map_err(|e| usage(format!("cannot read --ca-cert {shown}: {e}")))?;
+        config = config
+            .trusting(&shown, &pem)
+            .map_err(|e| usage(e.to_string()))?;
+    }
     let retry = RetryPolicy {
         deadline: Duration::from_secs(cli.global.timeout),
         ..RetryPolicy::default()

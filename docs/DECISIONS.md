@@ -1135,6 +1135,31 @@ refused. These fix the smallest version that meets it.
   requests in the full run, thresholds per step, and a gate of clean reconciliation with
   nothing open; its smoke and full runs are owed.
 
+## v1 readiness fixes (2026-11-17)
+
+The independent v1 readiness review of `895a421` answered "fix first"; each entry below
+closes one of its findings, with the test that failed before the fix.
+
+- **D-074 — `sandbox-cli` speaks HTTPS.** D-071 put a shared sandbox behind a TLS proxy and
+  the operator guide checks it with the CLI over `https://`, but the CLI was built without a
+  TLS stack: against an `https://` API it sent nothing and said the server was not running.
+  The CLI now builds `reqwest` with rustls (its default provider, aws-lc-rs; no OpenSSL,
+  which `deny.toml` still bans) and the platform's certificate verifier, so the machine's
+  own authorities are trusted; `--ca-cert <file.pem>` (`PS_CA_CERT`) adds a private one (a
+  proxy with Caddy's `tls internal`, a company CA). A failed handshake is its own error
+  (`ClientError::Tls`, exit 5) in plain words: an untrusted certificate names `--ca-cert`,
+  a wrong name or an expired certificate says so, `https://` to a plain port says to use
+  `http://`, and `http://` to a TLS port says to use `https://`. Nothing was sent, so it is
+  never retried and never reported as an unknown outcome. Only the CLI asks for TLS; the
+  server and the network still talk only to loopback over plain HTTP (D-023), although a
+  workspace build unifies the feature into their `reqwest` too. Tests:
+  `tests/tls.rs::the_cli_speaks_https_and_says_plainly_when_tls_fails` (a TLS-terminating
+  proxy with a test CA from `rcgen` in front of a real sandbox; it failed before the fix with
+  "did not answer (connect …); check that sandbox-server is running"),
+  `config::tests::a_ca_file_must_hold_a_certificate`; and the release smoke's new step 6:
+  the release API behind Caddy (pinned, checksummed, `scripts/install-caddy.sh`) with its
+  local authority, `status` and a payment over `https`, and the untrusted case refused.
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

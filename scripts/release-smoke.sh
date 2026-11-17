@@ -12,15 +12,18 @@
 #    public https origins for the checkout and the dashboard, as behind deploy/Caddyfile;
 # 5. checks: readiness; the test control planes absent; the dashboard answering only its
 #    own host name; checkout URLs on the public origin; then the CLI quickstart
-#    (examples/cli-quickstart.sh) run against it as written.
+#    (examples/cli-quickstart.sh) run against it as written;
+# 6. the API behind Caddy over https (its own local CA), the CLI trusting it with --ca-cert,
+#    and refusing it plainly without (D-074).
 #
-# Ports 56470-56473 on 127.0.0.1. Everything started is stopped by PID, and the database
+# Ports 56470-56475 on 127.0.0.1. Everything started is stopped by PID, and the database
 # and files are removed, on exit. CI also installs the systemd units and starts them
 # (.github/workflows/ci.yml, job "release").
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 api_port=56470 sim_port=56471 checkout_port=56472 dashboard_port=56473
+https_port=56474 caddy_http_port=56475
 pay_host=pay.sandbox.test dash_host=dashboard.sandbox.test
 
 if [ -z "${PS_ADMIN_DATABASE_URL:-}" ]; then
@@ -158,8 +161,50 @@ jq -e --arg origin "https://$pay_host/c/" '.url | startswith($origin)' <<<"$sess
 # The CLI quickstart, as written, against the release.
 PATH="$root/opt/bin:$PATH" PS_API_URL="$api" PS_API_KEY="$key" examples/cli-quickstart.sh >"$root/quickstart.log" 2>&1 \
   || { cat "$root/quickstart.log"; fail "the CLI quickstart failed against the release"; }
+# 6. The API behind an HTTPS proxy, as on a shared host (D-074): Caddy with its own local
+# certificate authority, and the CLI over https, trusting that authority with --ca-cert.
+scripts/install-caddy.sh "$root/bin" >/dev/null
+for p in "$https_port" "$caddy_http_port"; do
+  if curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$p/"; then
+    fail "port $p is already in use; stop what holds it"
+  fi
+done
+cat >"$root/Caddyfile" <<EOF
+{
+	admin off
+	skip_install_trust
+	storage file_system $root/caddy
+	http_port $caddy_http_port
+	https_port $https_port
+	auto_https disable_redirects
+}
+https://localhost:$https_port {
+	tls internal
+	reverse_proxy 127.0.0.1:$api_port
+}
+EOF
+XDG_DATA_HOME="$root/xdg" XDG_CONFIG_HOME="$root/xdg" HOME="$root" \
+  "$root/bin/caddy" run --config "$root/Caddyfile" --adapter caddyfile >"$root/caddy.log" 2>&1 &
+pids+=($!)
+ca="$root/caddy/pki/authorities/local/root.crt"
+https_api="https://localhost:$https_port"
+cli() { PS_API_URL="$https_api" PS_API_KEY="$key" "$root/opt/bin/sandbox-cli" "$@"; }
+for _ in $(seq 1 100); do
+  [ -f "$ca" ] && cli --ca-cert "$ca" status >/dev/null 2>&1 && break
+  sleep 0.2
+done
+cli --ca-cert "$ca" status >"$root/https.log" 2>&1 || { cat "$root/https.log"; fail "the CLI could not use the API over https"; }
+cli --ca-cert "$ca" payments create --amount 5.00 --currency USD >>"$root/https.log" 2>&1 \
+  || { cat "$root/https.log"; fail "a payment over https failed"; }
+# Without the authority: the CLI says the certificate is not trusted (exit 5), sends nothing.
+set +e
+cli status >"$root/untrusted.log" 2>&1
+untrusted=$?
+set -e
+[ "$untrusted" = 5 ] && grep -q -- "--ca-cert" "$root/untrusted.log" \
+  || { cat "$root/untrusted.log"; fail "an untrusted certificate was not reported plainly (exit $untrusted)"; }
 # Nothing secret reached the logs.
 if grep -qE "$bootstrap|$sim_token|sk_sim_[0-9a-f]{16}" "$root/server.log" "$root/sim.log"; then
   fail "a secret reached a log"
 fi
-echo "release smoke ok: release binaries, env files, the shared profile and the CLI quickstart"
+echo "release smoke ok: release binaries, env files, the shared profile, the CLI quickstart and the CLI over https"

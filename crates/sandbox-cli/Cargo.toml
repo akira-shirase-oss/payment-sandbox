@@ -14,15 +14,24 @@ path = "src/main.rs"
 [dependencies]
 clap.workspace = true
 getrandom.workspace = true
-reqwest.workspace = true
+# Only to recognise a parse error (an http:// URL on a TLS port) in a failure's sources.
+hyper.workspace = true
+# TLS to a shared sandbox behind an HTTPS proxy (D-074): rustls with its default provider and
+# the platform's certificate verifier; no OpenSSL. `rustls` itself only to name its errors.
+reqwest = { workspace = true, features = ["rustls"] }
+rustls.workspace = true
 sandbox-domain.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["fs"] }
 
 [dev-dependencies]
 axum.workspace = true
+rcgen.workspace = true
+rustls = { workspace = true, features = ["aws_lc_rs"] }
+time.workspace = true
+tokio-rustls.workspace = true
 sandbox-db = { workspace = true, features = ["test-support"] }
 sandbox-dev-store.workspace = true
 sandbox-server.workspace = true

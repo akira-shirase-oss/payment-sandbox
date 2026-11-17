@@ -9,6 +9,9 @@
 //!   success; a money-moving request that got no answer at all is [`ClientError::Unknown`],
 //!   naming the key to retry with, never "failed".
 //! - Every answer must come from a sandbox (`Sandbox-Simulated: true`), or the client stops.
+//! - `https://` APIs are spoken to with rustls, trusting this machine's certificate
+//!   authorities plus any given with `--ca-cert` (D-074). A failed TLS handshake is its own
+//!   error, in plain words: nothing was sent, so it is never retried or reported as unknown.
 
 use std::time::{Duration, Instant};
 
@@ -97,9 +100,17 @@ pub enum ClientError {
         /// The last failure.
         cause: String,
     },
+    /// The TLS handshake with an `https://` API failed; nothing was sent.
+    #[error("could not open a secure (TLS) connection to {url}: {problem}")]
+    Tls {
+        /// The API URL.
+        url: String,
+        /// What went wrong and what to do, in plain words.
+        problem: String,
+    },
     /// Something answered, but not a sandbox.
     #[error(
-        "{url} answered without Sandbox-Simulated: true, so it is not a Payment Sandbox; check the API URL"
+        "{url} answered without Sandbox-Simulated: true, so it is not a Payment Sandbox; check the API URL (and its scheme: a sandbox behind an HTTPS proxy needs https://)"
     )]
     NotASandbox {
         /// The API URL.
@@ -123,6 +134,41 @@ impl ClientError {
     }
 }
 
+/// Why an attempt got no answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoAnswer {
+    /// The connection was refused or never made: the request was not sent.
+    NotConnected,
+    /// The attempt's time ran out; the request may have arrived.
+    TimedOut,
+    /// The connection broke after the request may have been sent, or the answer was cut off.
+    Broken,
+    /// Something answered, but not in HTTP (a TLS port spoken to with `http://`?).
+    NotHttp,
+    /// The answer was larger than any the API sends.
+    TooLarge,
+}
+
+impl NoAnswer {
+    /// True when the request cannot have reached the server.
+    fn never_sent(self) -> bool {
+        self == Self::NotConnected
+    }
+
+    fn describe(self, api_url: &str) -> String {
+        match self {
+            Self::NotConnected => "the connection was refused or failed".to_owned(),
+            Self::TimedOut => "the attempt timed out".to_owned(),
+            Self::Broken => "the connection closed before the answer was complete".to_owned(),
+            Self::NotHttp if api_url.starts_with("http://") => {
+                "the answer was not HTTP: if the sandbox is behind an HTTPS proxy, use its https:// URL".to_owned()
+            }
+            Self::NotHttp => "the answer was not HTTP".to_owned(),
+            Self::TooLarge => "the answer exceeded 4 MiB".to_owned(),
+        }
+    }
+}
+
 /// One attempt's result, before the retry decision.
 enum Attempt {
     Answered {
@@ -130,7 +176,7 @@ enum Attempt {
         body: Value,
         retry_after: Option<Duration>,
     },
-    Failed(String),
+    Failed(NoAnswer),
 }
 
 /// The client.
@@ -144,7 +190,11 @@ pub struct Client {
 impl Client {
     /// A client for a checked configuration.
     pub fn new(config: Config, retry: RetryPolicy) -> Result<Self, ClientError> {
-        let http = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder();
+        for root in config.extra_roots.0.iter().cloned() {
+            builder = builder.add_root_certificate(root);
+        }
+        let http = builder
             .connect_timeout(Duration::from_secs(2).min(retry.attempt_timeout))
             .timeout(retry.attempt_timeout)
             // Shorter than the server's read timeout (D-054), so a pooled connection is never
@@ -232,12 +282,10 @@ impl Client {
                     }
                     (retry_after, refusal.to_string())
                 }
-                Attempt::Failed(cause) => {
+                Attempt::Failed(no_answer) => {
+                    let cause = no_answer.describe(&self.config.api_url);
                     // A plain POST that may have reached the server is never re-sent.
-                    if method == reqwest::Method::POST
-                        && key.is_none()
-                        && !cause.starts_with("connect")
-                    {
+                    if method == reqwest::Method::POST && key.is_none() && !no_answer.never_sent() {
                         return Err(ClientError::Unreachable {
                             url: self.config.api_url.clone(),
                             cause,
@@ -287,7 +335,15 @@ impl Client {
         }
         let response = match request.send().await {
             Ok(response) => response,
-            Err(error) => return Ok(Attempt::Failed(describe(&error))),
+            Err(error) => {
+                if let Some(problem) = tls_problem(&error) {
+                    return Err(ClientError::Tls {
+                        url: self.config.api_url.clone(),
+                        problem,
+                    });
+                }
+                return Ok(Attempt::Failed(classify(&error)));
+            }
         };
         let status = response.status().as_u16();
         let simulated = response
@@ -322,18 +378,18 @@ impl Client {
     }
 }
 
-async fn read_bounded(mut response: reqwest::Response) -> Result<Vec<u8>, String> {
+async fn read_bounded(mut response: reqwest::Response) -> Result<Vec<u8>, NoAnswer> {
     let mut bytes = Vec::new();
     loop {
         match response.chunk().await {
             Ok(Some(chunk)) => {
                 if bytes.len() + chunk.len() > MAX_BODY {
-                    return Err("the answer exceeded 4 MiB".to_owned());
+                    return Err(NoAnswer::TooLarge);
                 }
                 bytes.extend_from_slice(&chunk);
             }
             Ok(None) => return Ok(bytes),
-            Err(error) => return Err(describe(&error)),
+            Err(error) => return Err(classify(&error)),
         }
     }
 }
@@ -397,17 +453,60 @@ pub fn new_idempotency_key() -> String {
     format!("cli_{}", sandbox_domain::letters::encode(&bytes))
 }
 
-/// A short, safe description of a transport failure (never a URL with a key, never a body).
-fn describe(error: &reqwest::Error) -> String {
+/// What kind of "no answer" a transport failure is (never a URL with a key, never a body).
+fn classify(error: &reqwest::Error) -> NoAnswer {
     if error.is_connect() {
-        "connect: the connection was refused or failed".to_owned()
+        NoAnswer::NotConnected
     } else if error.is_timeout() {
-        "the attempt timed out".to_owned()
-    } else if error.is_body() || error.is_decode() {
-        "the answer was cut off".to_owned()
+        NoAnswer::TimedOut
+    } else if chain(error).any(|e| {
+        e.downcast_ref::<hyper::Error>()
+            .is_some_and(hyper::Error::is_parse)
+    }) {
+        NoAnswer::NotHttp
     } else {
-        "the connection failed".to_owned()
+        NoAnswer::Broken
     }
+}
+
+/// `error` and its sources, looking inside `io::Error`s too (their `source()` skips the
+/// error they wrap, which is where rustls puts its own).
+fn chain<'a>(
+    error: &'a (dyn std::error::Error + 'static),
+) -> impl Iterator<Item = &'a (dyn std::error::Error + 'static)> {
+    let mut next = Some(error);
+    std::iter::from_fn(move || {
+        let current = next?;
+        next = current
+            .downcast_ref::<std::io::Error>()
+            .and_then(|io| io.get_ref())
+            .map(|inner| inner as &(dyn std::error::Error + 'static))
+            .or_else(|| current.source());
+        Some(current)
+    })
+}
+
+/// Plain words for a failed TLS handshake, if that is what `error` is.
+fn tls_problem(error: &reqwest::Error) -> Option<String> {
+    use rustls::{CertificateError, Error};
+    let tls = chain(error).find_map(|e| e.downcast_ref::<Error>())?;
+    Some(match tls {
+        Error::InvalidCertificate(
+            CertificateError::NotValidForName | CertificateError::NotValidForNameContext { .. },
+        ) => "its certificate is not for this host name: use the name the certificate was issued for".to_owned(),
+        Error::InvalidCertificate(
+            CertificateError::Expired | CertificateError::ExpiredContext { .. },
+        ) => "its certificate has expired: renew it on the proxy".to_owned(),
+        Error::InvalidCertificate(other) => format!(
+            "its certificate is not trusted on this machine ({other}). If the sandbox's proxy uses a private certificate authority, pass that authority's certificate with --ca-cert <file.pem> (or PS_CA_CERT)"
+        ),
+        Error::InvalidMessage(_)
+        | Error::InappropriateMessage { .. }
+        | Error::InappropriateHandshakeMessage { .. } => {
+            "it does not speak TLS on this port: if the sandbox is not behind HTTPS, use its http:// URL (loopback only)".to_owned()
+        }
+        other => format!("the TLS handshake failed ({other})"),
+    })
 }
 
 #[cfg(test)]

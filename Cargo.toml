@@ -20,7 +20,8 @@ sandbox-http = { path = "crates/sandbox-http" }
 sandbox-server = { path = "crates/sandbox-server" }
 
 # External crates: versions live here only. Minimal features; one async runtime (Tokio);
-# no TLS stack (everything this sandbox talks to is on loopback, D-023).
+# one TLS stack, rustls, and only where TLS is needed: sandbox-cli talks to a shared sandbox
+# behind an HTTPS proxy (D-071, D-074); the server and the network stay on loopback (D-023).
 anyhow = "1.0.104"
 # sandbox-cli's command line (D-068): derive, help and error context only; no colour, no
 # terminal probing.
@@ -37,6 +38,11 @@ proptest = "1.12.0"
 redb = "4.5.0"
 # HTTP client to the simulated network: plain HTTP on loopback, no TLS, no proxies.
 reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
+# TLS for sandbox-cli (D-074) and its HTTPS test: rustls with its default provider (no
+# OpenSSL), the test's server side and its private test CA.
+rustls = { version = "0.23.40", default-features = false, features = ["std", "tls12"] }
+tokio-rustls = { version = "0.26.5", default-features = false, features = ["tls12"] }
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11"
