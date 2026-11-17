@@ -89,7 +89,8 @@ async fn every_balance_is_explained_line_by_line_across_pages() {
             let next = &page["explanation"]["next"];
             if next.is_object() {
                 cursor = format!(
-                    "&as_of={}&after_seq={}&running={}",
+                    "&generation={}&as_of={}&after_seq={}&running={}",
+                    next["generation"].as_str().unwrap(),
                     next["as_of"].as_str().unwrap(),
                     next["after_seq"],
                     next["running"]
@@ -213,8 +214,9 @@ async fn explain_pages_stay_consistent_while_entries_commit_out_of_order() {
     for _ in 0..100 {
         let path = if cursor.is_object() {
             format!(
-                "/v1/balances/USD/merchant_pending/explain?limit={}&as_of={}&after_seq={}&running={}",
+                "/v1/balances/USD/merchant_pending/explain?limit={}&generation={}&as_of={}&after_seq={}&running={}",
                 committed + 1,
+                cursor["generation"].as_str().unwrap(),
                 cursor["as_of"].as_str().unwrap(),
                 cursor["after_seq"],
                 cursor["running"]
@@ -249,5 +251,56 @@ async fn explain_pages_stay_consistent_while_entries_commit_out_of_order() {
         committed + 2
     );
     app.cleanup().await;
+    sim.remove().await;
+}
+
+/// Review finding 16: after a restore, the sequence restarts at the backup's value, so the
+/// numbers after the backup point are handed out again to other entries, and the first
+/// page's snapshot belongs to another history. An explanation cursor names the database's
+/// restore generation; one from before a restore is refused, never silently continued.
+#[tokio::test]
+async fn an_explanation_cursor_from_before_a_restore_is_refused() {
+    let sim = TestSim::start().await;
+    let vars = common::sim_vars(&sim, &[]);
+    let first = TestApp::on(sandbox_db::testing::TestDb::new().await, &vars);
+    let (_, key) = first.project("store").await;
+    for n in 0..3 {
+        let (status, _) = first
+            .authorize(&key, &format!("g-{n}"), 100, "USD", "tok_sim_approve")
+            .await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+    let path = "/v1/balances/USD/payer_held/explain?limit=1";
+    let (status, page) = first.get(path, &key).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let next = page["explanation"]["next"].as_object().unwrap().clone();
+    let mut cursor = String::new();
+    for (k, v) in &next {
+        let v = v.as_str().map_or_else(|| v.to_string(), str::to_owned);
+        cursor.extend(["&", k.as_str(), "=", v.as_str()]);
+    }
+    let (status, _) = first.get(&format!("{path}{cursor}"), &key).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the cursor works where it was issued"
+    );
+
+    first.state.db.close().await;
+    let common::TestApp { db: mut live, .. } = first;
+    let backup = live.snapshot().await;
+    let restored = TestApp::on(backup, &vars);
+    let (status, body) = restored.get(&format!("{path}{cursor}"), &key).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "stale_cursor", "{body}");
+    let (status, fresh) = restored.get(path, &key).await;
+    assert_eq!(status, StatusCode::OK, "{fresh}");
+    assert!(fresh["explanation"]["generation"].is_string(), "{fresh}");
+    assert_ne!(
+        fresh["explanation"]["generation"],
+        page["explanation"]["generation"]
+    );
+    restored.cleanup().await;
+    live.cleanup().await;
     sim.remove().await;
 }

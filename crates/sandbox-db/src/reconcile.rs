@@ -174,9 +174,27 @@ pub struct ExplainedLine {
     pub running_minor: i64,
 }
 
+/// The database's restore generation (D-050, review finding 16): its cluster's system
+/// identifier, the cluster's timeline and the database's OID. A logical restore (`pg_dump`
+/// into a fresh database, D-026) creates a new database, so a new OID; a physical restore
+/// that is promoted starts a new timeline; a restore into another cluster has another
+/// system identifier. Sequence numbers handed out after a restore can repeat ones from the
+/// lost history, so a cursor is valid only in the generation it was taken in.
+pub async fn generation(pool: &PgPool) -> Result<String, DbError> {
+    Ok(sqlx::query_scalar(
+        "SELECT concat_ws('.', s.system_identifier, c.timeline_id, d.oid)
+           FROM pg_control_system() s, pg_control_checkpoint() c, pg_database d
+          WHERE d.datname = current_database()",
+    )
+    .fetch_one(pool)
+    .await?)
+}
+
 /// Where the next page of an explanation starts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExplainCursor {
+    /// The restore generation the explanation began in (D-050); any other is refused.
+    pub generation: String,
     /// The first page's snapshot (`xmin:xmax:xip,…`): only entries of transactions it saw
     /// as committed count.
     pub as_of: String,
@@ -194,6 +212,8 @@ pub struct ExplainCursor {
 /// explanation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Explanation {
+    /// The database's restore generation (D-050).
+    pub generation: String,
     /// The snapshot this explanation is of.
     pub as_of: String,
     /// The account's signed balance at the horizon (every line, not just this page).
@@ -216,7 +236,9 @@ pub async fn explain(
     limit: i64,
 ) -> Result<Explanation, DbError> {
     let limit = limit.clamp(1, 1_000);
+    let generation = generation(pool).await?;
     let (as_of, after_seq, running) = match cursor {
+        Some(c) if c.generation != generation => return Err(DbError::StaleCursor),
         Some(c) => (c.as_of, c.after_seq, c.running),
         None => (
             sqlx::query_scalar("SELECT pg_current_snapshot()::text")
@@ -279,6 +301,7 @@ pub async fn explain(
     let next = (lines.len() == usize::try_from(limit).unwrap_or(0))
         .then(|| {
             lines.last().map(|l| ExplainCursor {
+                generation: generation.clone(),
                 as_of: as_of.clone(),
                 after_seq: l.seq,
                 running: total,
@@ -286,6 +309,7 @@ pub async fn explain(
         })
         .flatten();
     Ok(Explanation {
+        generation,
         as_of,
         balance_minor,
         line_count,

@@ -11,6 +11,10 @@ pub enum DbError {
     /// A row the caller needs does not exist (in this project).
     #[error("not found")]
     NotFound,
+    /// A cursor taken before the database was restored (D-050): its sequence numbers and
+    /// snapshot belong to another history.
+    #[error("the cursor is from before a restore of the database")]
+    StaleCursor,
     /// A unique or check constraint refused the write.
     #[error("constraint refused the write: {0}")]
     Constraint(String),

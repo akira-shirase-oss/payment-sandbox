@@ -316,9 +316,11 @@ pub fn operation_json(o: &Operation) -> Value {
 }
 
 /// `GET /v1/balances/{currency}/{account}/explain` query: a first page has none of the
-/// cursor fields; later pages pass back `as_of`, `after_seq` and `running` from `next`.
+/// cursor fields; later pages pass back `generation`, `as_of`, `after_seq` and `running`
+/// from `next`.
 #[derive(Debug, Deserialize)]
 pub struct ExplainQuery {
+    generation: Option<String>,
     as_of: Option<String>,
     after_seq: Option<i64>,
     running: Option<i64>,
@@ -340,23 +342,27 @@ pub async fn explain(
     let currency = Currency::from_code(&currency).map_err(|_| ApiError::NotFound("currency"))?;
     let account = sandbox_domain::AccountKind::from_code(&account)
         .map_err(|_| ApiError::NotFound("account"))?;
-    let cursor = match (q.as_of, q.after_seq, q.running) {
-        (Some(as_of), Some(after_seq), Some(running))
+    let cursor = match (q.generation, q.as_of, q.after_seq, q.running) {
+        (Some(generation), Some(as_of), Some(after_seq), Some(running))
             if as_of.len() <= 16_384
                 && as_of
                     .bytes()
-                    .all(|b| b.is_ascii_digit() || b == b':' || b == b',') =>
+                    .all(|b| b.is_ascii_digit() || b == b':' || b == b',')
+                && generation.len() <= 64
+                && generation.bytes().all(|b| b.is_ascii_digit() || b == b'.') =>
         {
             Some(sandbox_db::reconcile::ExplainCursor {
+                generation,
                 as_of,
                 after_seq,
                 running,
             })
         }
-        (None, None, None) => None,
+        (None, None, None, None) => None,
         _ => {
             return Err(ApiError::BadRequest(
-                "pass as_of, after_seq and running together, as returned in `next`".to_owned(),
+                "pass generation, as_of, after_seq and running together, as returned in `next`"
+                    .to_owned(),
             ));
         }
     };

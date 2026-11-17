@@ -498,6 +498,24 @@ review found. Each states the choice, the alternative and the cost.
   `a_black_holed_endpoint_cannot_hold_the_deliverers_capacity`,
   `an_endpoint_that_keeps_failing_opens_its_circuit_and_is_probed_once`.
 
+- **D-050 — An explanation cursor is valid only in its restore generation.**
+  Review finding: after a restore, the journal's sequence restarts at the
+  backup's value, so the numbers after the backup point are handed out
+  again to other entries, and the replayed requests re-post that history
+  with new `posted_at` values (entry ids and amounts are re-derived
+  identically). A cursor taken before the restore would page a different
+  history. Now every explanation names the database's restore generation
+  (the cluster's system identifier, its timeline and the database's OID:
+  a logical restore makes a new database, a promoted physical restore a
+  new timeline, another cluster another identifier), its `next` cursor
+  carries it, and a cursor from another generation is refused with
+  `409 stale_cursor`, never continued. A cursor must now pass `generation`
+  with `as_of`, `after_seq` and `running`. Restore semantics, stated
+  plainly: history up to the backup is restored byte for byte (D-026, the
+  rehearsal in D-053); what happened after it is reconciled from the
+  network's newer record (D-015) and re-posted under new sequence numbers.
+  Test: `an_explanation_cursor_from_before_a_restore_is_refused`.
+
 ## Open questions (still open)
 
 - **Dashboard authentication** — per-project-owner session login is the

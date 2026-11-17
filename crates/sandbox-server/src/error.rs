@@ -55,6 +55,8 @@ pub enum ErrorCode {
     InsufficientCapacity,
     /// The request conflicts with the resource's current state.
     InvalidState,
+    /// A cursor from before a restore of the database (D-050); start again.
+    StaleCursor,
     /// A unique name is already taken.
     Conflict,
     /// Too many requests in flight.
@@ -168,6 +170,9 @@ pub enum ApiError {
     /// Uniqueness refusal.
     #[error("{0}")]
     Conflict(String),
+    /// A cursor from another restore generation (D-050).
+    #[error("the database was restored since this cursor was issued; start the explanation again")]
+    StaleCursor,
     /// Shed.
     #[error("too many requests in flight; retry shortly")]
     Overloaded,
@@ -221,7 +226,8 @@ impl ApiError {
             Self::IdempotencyKeyConflict
             | Self::InsufficientCapacity(_)
             | Self::InvalidState(_)
-            | Self::Conflict(_) => StatusCode::CONFLICT,
+            | Self::Conflict(_)
+            | Self::StaleCursor => StatusCode::CONFLICT,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
@@ -254,6 +260,7 @@ impl ApiError {
             Self::InsufficientCapacity(_) => ErrorCode::InsufficientCapacity,
             Self::InvalidState(_) => ErrorCode::InvalidState,
             Self::Conflict(_) => ErrorCode::Conflict,
+            Self::StaleCursor => ErrorCode::StaleCursor,
             Self::Overloaded => ErrorCode::Overloaded,
             Self::RateLimited { .. } => ErrorCode::RateLimited,
             Self::PaymentBusy => ErrorCode::PaymentBusy,
@@ -296,6 +303,7 @@ impl From<DbError> for ApiError {
     fn from(error: DbError) -> Self {
         match error {
             DbError::NotFound => Self::NotFound("resource"),
+            DbError::StaleCursor => Self::StaleCursor,
             DbError::Unavailable(_) => Self::Unavailable(error.into()),
             DbError::Timeout(_) | DbError::Retryable(_) => Self::DatabaseTimeout(error.into()),
             other => Self::Internal(other.into()),
