@@ -1408,6 +1408,21 @@ closes one of its findings, with the test that failed before the fix.
   into the `name` tag (`/v1/payments/{id}/captures`). The workflow takes a comma-separated
   list of scenarios, so the misses re-run together.
 
+- **D-091 — A pooled connection never carries a transaction to its next user.** The gate
+  after D-076 failed once: a journey's `POST /v1/keys` answered 500, "cannot execute
+  INSERT in a read-only transaction". sqlx's `begin`, when its future is cancelled after
+  `BEGIN` reached the server but before sqlx counted the transaction (a client that
+  disconnects mid-request, as a page that navigates away does), leaves the server inside a
+  transaction that sqlx's own rollback guard does not see (its depth is still 0), and the
+  pool hands the connection on. D-076's `BEGIN ... READ ONLY` made it visible; a plain
+  `BEGIN` left behind is worse, since the next user's writes would wait for someone else's
+  `COMMIT`. The pool now runs one `ROLLBACK` in `after_release`, off the request's path
+  (before sqlx's own release ping), which ends whatever is left and changes nothing
+  otherwise; `client_min_messages=error` keeps it from drawing a warning each time. Test:
+  `crates/sandbox-db/tests/pool.rs` leaves a `READ ONLY` and a plain transaction on the only
+  connection and requires the next user to be outside both (it inherited `transaction_read_only
+  = on` before the fix).
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

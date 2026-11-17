@@ -48,6 +48,9 @@ pub fn connect_options(url: &str, settings: &PoolSettings) -> Result<PgConnectOp
         // A connection left idle inside a transaction (a crashed handler) is cut off
         // instead of holding row locks forever.
         ("idle_in_transaction_session_timeout", "10000ms".to_owned()),
+        // The pool's release ROLLBACK (below) would otherwise draw a "no transaction in
+        // progress" warning on every release.
+        ("client_min_messages", "error".to_owned()),
     ]))
 }
 
@@ -59,5 +62,17 @@ pub fn connect_lazy(url: &str, settings: &PoolSettings) -> Result<PgPool, DbErro
         .max_connections(settings.max_connections)
         .acquire_timeout(settings.acquire_timeout)
         .idle_timeout(Some(Duration::from_secs(300)))
+        // A connection never carries a transaction to its next user (D-091). sqlx's `begin`,
+        // cancelled after `BEGIN` reached the server but before sqlx counted it (a client
+        // that disconnects mid-request), leaves the server inside a transaction that sqlx's
+        // own rollback guard does not see; the next request then ran inside it (a
+        // `READ ONLY` snapshot refused an INSERT). One `ROLLBACK` on release, off the
+        // request's path, ends whatever is left; when nothing is, it changes nothing.
+        .after_release(|conn, _meta| {
+            Box::pin(async move {
+                sqlx::Executor::execute(&mut *conn, "ROLLBACK").await?;
+                Ok(true)
+            })
+        })
         .connect_lazy_with(options))
 }
