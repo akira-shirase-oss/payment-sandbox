@@ -3,11 +3,12 @@
 > **SIMULATED MONEY ONLY.** No real cards, balances or banking connection,
 > ever. Every response carries `Sandbox-Simulated: true`.
 >
-> **Status — M0 to M6 in progress: their functional gates pass (tests, drills,
-> reconciliation, and for M6 the browser journeys in Chromium), and every full
+> **Status — M0 to M7 in progress: their functional gates pass (tests, drills,
+> reconciliation, the browser journeys in Chromium, and for M7 the CLI, the TypeScript SDK,
+> the scenario library's reproducibility and the release path), and every full
 > ≥1,000,000-request load run is still owed; only smoke runs exist, failures included
-> (`perf/results/smoke/`), and M6's checkout scenario has not run yet.** Milestones, proof
-> gates and the evidence behind each status live in `docs/ROADMAP.md`.
+> (`perf/results/smoke/`), and the M6 and M7 scenarios have not run at full scale.**
+> Milestones, proof gates and the evidence behind each status live in `docs/ROADMAP.md`.
 
 ## Run it
 
@@ -66,6 +67,9 @@ banking connection.
 - `docs/DEVELOPERS.md` — the developer guide: the CLI, the TypeScript SDK
   (`packages/sdk-ts`), webhooks, the failure-scenario library, reset; its examples run in CI
   as written
+- `docs/OPERATING.md` — the operator guide for a shared host: install (release build,
+  `deploy/systemd`, `deploy/env`, `deploy/Caddyfile`), first run, upgrade, backup and
+  restore, troubleshooting
 - `docs/END_GOAL.md` — what the system is when shipped, scope in/out, the
   non-negotiable invariants, the four required failure cases, the ship gate
 - `docs/ARCHITECTURE.md` — sources of truth, authorize/capture/refund/webhook/

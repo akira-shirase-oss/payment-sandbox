@@ -353,3 +353,22 @@ pub async fn raw(
         serde_json::from_slice(&bytes).unwrap_or(Value::Null),
     )
 }
+
+/// Adds an `admin` key with a known secret to a project already in the database (a restored
+/// one, whose own keys are only hashes); returns the secret.
+pub async fn insert_test_key(app: &TestApp, project_id: &Value) -> String {
+    let secret = sandbox_domain::keys::key_from_bytes([7; 32]);
+    let hash = sandbox_domain::keys::hash_presented(&secret).unwrap();
+    sqlx::query(
+        "INSERT INTO api_keys (project_id, id, key_hash, key_prefix, scopes, label)
+         VALUES ($1, $2, $3, $4, ARRAY['admin'], 'restore probe')",
+    )
+    .bind(uuid::Uuid::parse_str(project_id.as_str().unwrap()).unwrap())
+    .bind(uuid::Uuid::now_v7())
+    .bind(hash.0.as_slice())
+    .bind(sandbox_domain::keys::display_prefix(&secret))
+    .execute(&app.db.pool)
+    .await
+    .unwrap();
+    secret
+}

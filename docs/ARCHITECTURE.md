@@ -117,6 +117,8 @@ transient database failures with exponential backoff and full jitter.
 | 56084 | the dashboard origin (`PS_DASHBOARD_LISTEN`, on with `PS_DASHBOARD_DIR`), reached as `http://dashboard.localhost:56084` (D-065) |
 | 56460–56465 | `scripts/e2e.sh`: API, network, checkout, dashboard, store, the test merchant page |
 | 56090 / 56091 | server / simulator during load runs (`scripts/load.sh`) |
+| 56466 | the SDK live tests' webhook receiver (`scripts/e2e.sh`) |
+| 56470–56473 | `scripts/release-smoke.sh`: API, network, checkout, dashboard |
 
 ## Consistency story
 
@@ -145,6 +147,8 @@ apps/          checkout, dashboard (SvelteKit + Tailwind v4 + shadcn-svelte,
 packages/      ui (this repository's copy of the Colophon UI package); sdk-ts (the
                TypeScript SDK, D-070)
 examples/      the developer guide's examples, run as written by scripts/e2e.sh
+deploy/        compose.yaml (the local stack), systemd units, env templates and a
+               Caddyfile for a shared host (D-071, docs/OPERATING.md)
 e2e/           Playwright journeys in Chromium (scripts/e2e.sh)
 docs/          END_GOAL, ARCHITECTURE, ROADMAP, DECISIONS
 fixtures/      dev-store (the reference fulfillment consumer and the

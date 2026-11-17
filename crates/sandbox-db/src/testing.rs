@@ -121,6 +121,20 @@ impl TestDb {
     /// When `PS_TEST_DATABASE_URL` is unset or the server is unreachable: a database test
     /// that cannot run must fail, not pass.
     pub async fn new() -> Self {
+        Self::create(true).await
+    }
+
+    /// Creates `ps_test_<uuid>` without migrating it: a test applies migrations itself
+    /// (`MIGRATOR.run_to`, the per-release restore tests, D-072).
+    ///
+    /// # Panics
+    ///
+    /// As [`TestDb::new`].
+    pub async fn unmigrated() -> Self {
+        Self::create(false).await
+    }
+
+    async fn create(migrate: bool) -> Self {
         let admin_url = std::env::var(ENV).unwrap_or_else(|_| {
             panic!("{ENV} is not set; start the stack with `scripts/stack.sh up` and export it")
         });
@@ -151,10 +165,12 @@ impl TestDb {
             .connect_with(options)
             .await
             .expect("connecting to the test database");
-        crate::MIGRATOR
-            .run(&pool)
-            .await
-            .expect("migrating the test database");
+        if migrate {
+            crate::MIGRATOR
+                .run(&pool)
+                .await
+                .expect("migrating the test database");
+        }
         Self {
             pool,
             admin_url,

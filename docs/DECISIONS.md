@@ -1067,6 +1067,74 @@ refused. These fix the smallest version that meets it.
   `examples/sdk-purchase.mjs` verbatim (`scripts/check-doc-examples.mjs` fails on any
   difference), and `scripts/e2e.sh` runs both, as written, on every check and in CI.
 
+- **D-071 — The production path: one shared host, systemd, loopback behind a TLS proxy.**
+  Maintainer request, 2026-11-17: the maintainer will deploy and use the sandbox, so M7 adds
+  a tested production path and an operator guide (`docs/OPERATING.md`: install, first run,
+  upgrade, backup and restore, troubleshooting). It is the smallest one D-023 allows: one
+  Linux host for a team, PostgreSQL, `sandbox-sim` and `sandbox-server` as systemd services
+  (`deploy/systemd/`: hardened units, `Restart=on-failure`, a one-shot
+  `payment-sandbox-migrate` unit that migrates as the owner, since the server does not own
+  the schema, D-038), configuration only through environment files rendered from
+  `deploy/env/*.env.example` (every setting the server, the network and the migrate unit
+  read, secrets left empty so a forgotten one stops the process with its name), and a
+  reverse proxy (`deploy/Caddyfile`) giving the API, the checkout and the dashboard their
+  HTTPS names. Every listener stays on loopback; webhooks still reach only loopback
+  receivers on listed ports (D-023, D-059), so a store elsewhere reads `GET /v1/events` or
+  runs its receiver on the host; clients elsewhere opt in with `allowNonLocal` /
+  `--allow-non-local` (D-068). Two changes make this safe. *Public origins:* in the `shared`
+  profile only, `PS_CHECKOUT_ORIGIN` and `PS_DASHBOARD_ORIGIN` may be `https://` DNS names
+  (written as browsers send them, no `:443`; IP literals and `localhost` refused), because
+  browsers reach the sites through the proxy; the dashboard's own-host rule (D-065), its
+  `__Host-` cookie (Secure, so HTTPS only) and the Origin checks work unchanged with them;
+  `dev` and `ci` keep loopback origins only. *Role passwords:* `sandbox-server setup` used to
+  reset `ps_owner`'s and `ps_app`'s passwords to the public development values on every run,
+  so re-running it on a deployed host (a restore needs it) reopened the database to the
+  development credentials; now a role is created with `PS_OWNER_PASSWORD` /
+  `PS_APP_PASSWORD` when given (16–128 of letters, digits and `._~-`) or the development
+  value otherwise, and an existing role's password changes only when one is given. Tests:
+  `config::tests::the_sites_may_have_public_https_origins_only_in_the_shared_profile`,
+  `checkout::tests::public_origins_are_https_names_written_as_browsers_send_them`,
+  `roles::tests` (2); `scripts/release-smoke.sh` (release builds installed from the
+  templates, the `shared` profile with public origins, the control planes absent, the
+  dashboard answering only its own name, checkout URLs on the public origin, the CLI
+  quickstart as written, no secret in a log) locally and in CI's `release` job, which then
+  installs the units as root and starts, uses and SIGKILLs the server under systemd
+  (`scripts/release-systemd.sh`, `systemd-analyze verify` first). Not tested: the Caddyfile
+  against a live certificate authority (the proxy is the operator's), and a hosted mode for
+  strangers, which stays an open question.
+
+- **D-072 — Migration and restore tests per release: each release leaves its data behind.**
+  END_GOAL asks for "migration/restore tests per release"; D-030 gave migrations restore
+  tests from M3 on, but only of the current schema. Now each release commits a fixture,
+  `fixtures/releases/<version>.json`: every row of a database that release's code wrote
+  (two projects, purchases, a decline, a lost reply resolved by readback, a partial capture
+  and void, refunds, webhook events and deliveries, a checkout session, a dataset reset and
+  a purchase in the new epoch), its last migration and every balance per project and
+  epoch. `tests/releases.rs` restores each fixture into a database migrated only as far as
+  its release (`MIGRATOR.run_to`), through the journal's own triggers (none switched off),
+  applies this release's remaining migrations, and requires: the server's role and
+  protections check passes, every project and epoch reconciles with the same balances, a
+  request repeated under an old idempotency key replays its stored answer, and new money
+  moves. The first fixture is 0.1.0's (migrations 1–13); the next release adds its own and
+  keeps every earlier one, so a migration that cannot apply to an earlier release's data
+  fails before it ships. The network's store is not part of a fixture (its format is
+  redb's; the drills cover its restarts and restores).
+
+- **D-073 — Sandbox labels end to end, and M7's load scenario.** Every binary says what it
+  is: `sandbox-server`, `sandbox-sim` and `sandbox-cli` answer `--version` with the notice
+  (the CLI also prints it first on standard error on every run, and the services log it at
+  startup); every API answer carries `Sandbox-Simulated: true` and every body
+  `simulated: true`, which both clients require; the SDK exports the same notice and its
+  live test compares it with the server's; the env templates, units and README of the
+  release say SIMULATED MONEY ONLY. Tests: the binaries' `--version` tests, the release
+  smoke. M7's load scenario is `perf/scenarios/m7-developer.js` (written and parsed with
+  `k6 inspect`, not run: other builders share the machine): test stores as the clients
+  drive them (an authorization, its replayed retry, a conflicting reuse of its key, a
+  capture, a partial refund, a refund past the capacity, a read; a tenth declined; a fifth
+  on a project whose dataset is reset every 30 s under that traffic), about 1,008,000
+  requests in the full run, thresholds per step, and a gate of clean reconciliation with
+  nothing open; its smoke and full runs are owed.
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is
@@ -1074,4 +1142,5 @@ refused. These fix the smallest version that meets it.
   each later scenario reads settled balances; each gets its own contract
   when reached.
 - **Hosted mode** — quotas per project, the private-range egress guard and
-  sign-up abuse limits, if a hosted instance is ever offered.
+  sign-up abuse limits, if a hosted instance is ever offered. (D-071's shared host is not
+  one: a team's own host, behind its proxy, with loopback-only egress.)

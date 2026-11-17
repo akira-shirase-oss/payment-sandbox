@@ -26,6 +26,11 @@ test('an admin resets the dataset by typing the slug, with the keyboard alone, a
 	const violations = await watchPolicy(page);
 	await signIn(page, shop.admin);
 	await expect(page.getByTestId('header-epoch')).toHaveText('epoch 1');
+	// The payment page this milestone touched (its operation's state first, for phones).
+	await page.goto(`${env.dashboard}/payments/${old}`);
+	await expect(page.locator('main [data-slot="outcome"]').first()).toBeVisible();
+	await screens(page, 'dashboard-payment');
+	await page.goto(env.dashboard);
 	await page.getByRole('navigation', { name: 'Sections' }).getByRole('link', { name: 'Dataset' }).click();
 	await expect(page.getByRole('heading', { name: 'Dataset', level: 1 })).toBeVisible();
 	await expect(page.getByTestId('epoch')).toHaveText('1');
@@ -60,6 +65,8 @@ test('an admin resets the dataset by typing the slug, with the keyboard alone, a
 	expect((await gone.json()).error.code).toBe('dataset_archived');
 	await page.getByRole('navigation', { name: 'Sections' }).getByRole('link', { name: 'Payments' }).click();
 	await expect(page.getByTestId('payments-empty')).toContainText('No payments in this epoch yet');
+	expect(await seriousViolations(page)).toEqual([]);
+	await screens(page, 'dashboard-payments-empty');
 	expect(await violations()).toEqual([]);
 });
 
