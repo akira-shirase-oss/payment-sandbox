@@ -1,0 +1,261 @@
+{
+  "scenario": "web-m6",
+  "started_utc": "20261117T071210Z",
+  "commit": "b8f4d7b56ca8244b9bcc06c9a14df009ea85d8e2",
+  "tree_dirty": false,
+  "machine": {
+    "cpu": "Apple M2 Pro",
+    "cores": 12,
+    "memory_gb": 32,
+    "os": "macOS 27.2.1",
+    "load_average_before": "9.15 7.59 5.69",
+    "load_average_after": "9.69 7.82 5.82",
+    "note": "browser, servers and database on one machine: a development observation, not capacity"
+  },
+  "browser": "Version 1.64.1",
+  "server_build": "debug (scripts/e2e.sh)",
+  "bundles": {
+    "budgets_gzip_bytes": {
+      "checkout": {
+        "initialJs": 90000,
+        "totalJs": 100000,
+        "css": 11000
+      },
+      "dashboard": {
+        "initialJs": 100000,
+        "totalJs": 125000,
+        "css": 11000
+      }
+    },
+    "results": [
+      {
+        "app": "checkout",
+        "html": {
+          "raw": 2247,
+          "gzip": 953
+        },
+        "initial_js": {
+          "files": 10,
+          "raw": 230644,
+          "gzip": 73951
+        },
+        "total_js": {
+          "files": 16,
+          "raw": 246802,
+          "gzip": 81051
+        },
+        "css": {
+          "files": 1,
+          "raw": 39920,
+          "gzip": 8427
+        },
+        "fonts": {
+          "files": 13,
+          "raw": 426500,
+          "gzip": 426836
+        },
+        "largest_js": [
+          {
+            "file": "_app/immutable/chunks/DeQXOKae.js",
+            "raw": 60839,
+            "gzip": 20083
+          },
+          {
+            "file": "_app/immutable/chunks/Ds7clJwG.js",
+            "raw": 50249,
+            "gzip": 19070
+          },
+          {
+            "file": "_app/immutable/chunks/Dk9EzeY3.js",
+            "raw": 71042,
+            "gzip": 15834
+          },
+          {
+            "file": "_app/immutable/chunks/Dp4ZzMrO.js",
+            "raw": 39723,
+            "gzip": 14528
+          },
+          {
+            "file": "_app/immutable/nodes/3.B33dGeB5.js",
+            "raw": 11576,
+            "gzip": 4874
+          }
+        ]
+      },
+      {
+        "app": "dashboard",
+        "html": {
+          "raw": 2532,
+          "gzip": 995
+        },
+        "initial_js": {
+          "files": 14,
+          "raw": 252100,
+          "gzip": 82750
+        },
+        "total_js": {
+          "files": 27,
+          "raw": 295810,
+          "gzip": 100660
+        },
+        "css": {
+          "files": 1,
+          "raw": 41887,
+          "gzip": 8804
+        },
+        "fonts": {
+          "files": 13,
+          "raw": 426500,
+          "gzip": 426836
+        },
+        "largest_js": [
+          {
+            "file": "_app/immutable/chunks/BTTN9YBt.js",
+            "raw": 51910,
+            "gzip": 19641
+          },
+          {
+            "file": "_app/immutable/chunks/CAHXp6wA.js",
+            "raw": 72433,
+            "gzip": 16467
+          },
+          {
+            "file": "_app/immutable/chunks/-r-sLBTV.js",
+            "raw": 39732,
+            "gzip": 14538
+          },
+          {
+            "file": "_app/immutable/chunks/HDpb2wW6.js",
+            "raw": 42714,
+            "gzip": 13638
+          },
+          {
+            "file": "_app/immutable/chunks/DM8ycmjr.js",
+            "raw": 18149,
+            "gzip": 6675
+          }
+        ]
+      }
+    ]
+  },
+  "page_load": {
+    "samples": 25,
+    "unit": "milliseconds from navigation start; transferred_bytes in bytes (the sandbox serves identity on loopback; fonts included)",
+    "ready": "the first moment the button the visitor acts on is in the document (a MutationObserver on the page clock)",
+    "cold": "a fresh browser context: nothing cached",
+    "warm": "the same context again: hashed assets from the HTTP cache",
+    "note": "loopback, Chromium headless, same machine as the servers: a development observation",
+    "checkout": {
+      "cold": {
+        "ttfb": {
+          "p50": 2.5,
+          "p95": 3.9,
+          "max": 9.3
+        },
+        "dom_content_loaded": {
+          "p50": 43.1,
+          "p95": 49.6,
+          "max": 70.7
+        },
+        "load": {
+          "p50": 43.2,
+          "p95": 49.6,
+          "max": 70.7
+        },
+        "ready": {
+          "p50": 91.4,
+          "p95": 101.5,
+          "max": 146.5
+        },
+        "transferred_bytes": {
+          "p50": 366104,
+          "p95": 366104,
+          "max": 366104
+        }
+      },
+      "warm": {
+        "ttfb": {
+          "p50": 2.6,
+          "p95": 4.2,
+          "max": 4.8
+        },
+        "dom_content_loaded": {
+          "p50": 39.8,
+          "p95": 47,
+          "max": 49.3
+        },
+        "load": {
+          "p50": 40.5,
+          "p95": 47.6,
+          "max": 50
+        },
+        "ready": {
+          "p50": 89.1,
+          "p95": 96.4,
+          "max": 98.6
+        },
+        "transferred_bytes": {
+          "p50": 3811,
+          "p95": 3811,
+          "max": 3811
+        }
+      }
+    },
+    "dashboard": {
+      "cold": {
+        "ttfb": {
+          "p50": 1.1,
+          "p95": 1.3,
+          "max": 1.3
+        },
+        "dom_content_loaded": {
+          "p50": 42.9,
+          "p95": 44.9,
+          "max": 45.1
+        },
+        "load": {
+          "p50": 42.9,
+          "p95": 45,
+          "max": 45.1
+        },
+        "ready": {
+          "p50": 89.4,
+          "p95": 95.7,
+          "max": 96.3
+        },
+        "transferred_bytes": {
+          "p50": 424310,
+          "p95": 424310,
+          "max": 424310
+        }
+      },
+      "warm": {
+        "ttfb": {
+          "p50": 0.8,
+          "p95": 0.9,
+          "max": 0.9
+        },
+        "dom_content_loaded": {
+          "p50": 38.9,
+          "p95": 50.9,
+          "max": 53.7
+        },
+        "load": {
+          "p50": 39.6,
+          "p95": 51.7,
+          "max": 54.4
+        },
+        "ready": {
+          "p50": 87.6,
+          "p95": 100.1,
+          "max": 104
+        },
+        "transferred_bytes": {
+          "p50": 3277,
+          "p95": 3277,
+          "max": 3277
+        }
+      }
+    }
+  }
+}
