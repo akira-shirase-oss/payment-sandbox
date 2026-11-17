@@ -691,6 +691,12 @@ review found. Each states the choice, the alternative and the cost.
   `the_server_refuses_a_database_whose_protections_were_weakened` (five
   weakenings, each alone), `the_rehearsal_fails_when_the_source_itself_was_weakened`.
 
+- **D-059 — The second review's low findings.** Each closed with a test that
+  failed first.
+  - *N6:* a set-but-empty `PS_SIM_TOKEN` is refused like a weak one (it
+    used to pass, leaving every operation uncertain while readiness was
+    green). Test: `config::tests::the_network_credential_is_required_and_strong`.
+
 ## Open questions (still open)
 
 - **Dashboard authentication** — per-project-owner session login is the

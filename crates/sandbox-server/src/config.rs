@@ -197,7 +197,11 @@ impl Config {
                     .to_owned(),
             );
         }
-        if !sim_token.is_empty() && sandbox_domain::access::Credential::new(&sim_token).is_err() {
+        // Set but empty is not a credential (review N6): only an unset variable was missing
+        // before, and an empty one left every operation uncertain while readiness was green.
+        if lookup("PS_SIM_TOKEN").is_some()
+            && sandbox_domain::access::Credential::new(&sim_token).is_err()
+        {
             errors.push("PS_SIM_TOKEN must be at least 32 visible characters".to_owned());
         }
         let bootstrap_token = lookup("PS_BOOTSTRAP_TOKEN");
@@ -420,6 +424,9 @@ mod tests {
         );
         let weak = config(&[("PS_DATABASE_URL", "x"), ("PS_SIM_TOKEN", "short")]).unwrap_err();
         assert!(weak.to_string().contains("PS_SIM_TOKEN must be"), "{weak}");
+        // Review N6: set but empty is not a credential either.
+        let empty = config(&[("PS_DATABASE_URL", "x"), ("PS_SIM_TOKEN", "")]).unwrap_err();
+        assert!(empty.to_string().contains("PS_SIM_TOKEN"), "{empty}");
     }
 
     #[test]
