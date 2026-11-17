@@ -13,7 +13,7 @@
 
 ```sh
 export PATH="$(brew --prefix rustup)/bin:$PATH"   # the pinned toolchain (rust-toolchain.toml)
-scripts/stack.sh up                                # PostgreSQL on 127.0.0.1:56432 (compose project payment-sandbox)
+scripts/stack.sh up                                # PostgreSQL on 127.0.0.1:56432, a second (empty) cluster on 56450 for the cross-cluster restore test
 eval "$(scripts/stack.sh env)"                     # database URLs, PS_PROFILE=dev and dev credentials (D-046)
 cargo run -p sandbox-server -- setup               # roles ps_owner / ps_runtime / ps_app + database (D-038)
 cargo run -p sandbox-server -- migrate             # migrations, as the owner

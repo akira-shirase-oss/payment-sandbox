@@ -4,8 +4,10 @@
 #
 #   scripts/restore-rehearsal.sh <source database> <new database>
 #
-# 1. pg_dump --format=custom of the source (a consistent snapshot; the server may keep
-#    running);
+# 1. pg_dump --format=custom of the source. The source must be quiescent: the dump is a
+#    consistent snapshot, but the source's fingerprint below is taken after the restore,
+#    so a write in between fails the comparison (stop the server, or point no traffic at
+#    it, while rehearsing);
 # 2. a fresh database made the way `sandbox-server setup` makes one (owner ps_owner, only
 #    ps_runtime may connect, nobody may create temporary tables);
 # 3. pg_restore in one transaction, stopping at the first error;

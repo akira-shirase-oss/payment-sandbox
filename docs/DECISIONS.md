@@ -451,7 +451,9 @@ review found. Each states the choice, the alternative and the cost.
   routes never spend the budget. In the simulator, listings, clock reads
   and counts run in their own redb read transactions on blocking threads
   (at most 4 at once, a 2 s wait before `overloaded`), over the last
-  committed state; they never enter the writer's queue. Load runs lift the
+  committed state; they never enter the writer's queue. Every number here
+  (600/600, 2, 8, the costs, 4 readers, 2 s) is chosen, not measured: the
+  owed load runs set them (review N13). Load runs lift the
   report budget (`scripts/load.sh`), so a one-project explain scenario
   measures explain rather than the limiter. Tests:
   `tests/reports.rs` (`reports_are_rate_limited_per_project`),
@@ -473,7 +475,9 @@ review found. Each states the choice, the alternative and the cost.
   sweep interval doubling to `PS_RECONCILE_BACKOFF_MAX_MS`, default 5 min;
   `checks` counts them, migration 0007); a full batch is followed at once by
   the next sweep; and every sweep reports the oldest open operation's age,
-  logging WARN past `PS_RECONCILE_ALERT_AGE_MS` (default 10 min). Tests:
+  logging WARN past `PS_RECONCILE_ALERT_AGE_MS` (default 10 min). These
+  defaults (8, 5 min, 10 min) are chosen, not measured; the owed load runs
+  set them (review N13). Tests:
   `tests/reconciler.rs`.
 
 - **D-049 — One endpoint cannot hold the deliverer: per-endpoint caps, fair
@@ -488,7 +492,9 @@ review found. Each states the choice, the alternative and the cost.
   failures in a row open an endpoint's circuit (`webhook_endpoints.
   consecutive_failures`, `circuit_opens`, `circuit_open_until`, migration
   0008): its deliveries are not claimed, and no attempts are spent, for
-  30 s doubling with each opening up to 10 minutes; then one probe at a
+  30 s doubling with each opening up to 10 minutes (4, 16, 5 failures,
+  30 s and 10 min are chosen, not measured; the owed load runs set them,
+  review N13); then one probe at a
   time; a success closes it. The breaker is updated in the same statement
   that records the attempt, only by the current lease holder, and from the
   endpoint row itself, so concurrent failures open it once. The caps count
@@ -552,7 +558,9 @@ review found. Each states the choice, the alternative and the cost.
 - **D-053 — The logical restore is rehearsed by a script and a test.** The
   review restored faithfully by hand; D-026 owed the scripted rehearsal.
   `scripts/restore-rehearsal.sh <source> <new>` takes a `pg_dump` custom
-  backup of a live database, creates a fresh database the way `setup`
+  backup of a *quiescent* database (the fingerprint of the source is taken
+  after the restore, so a write in between fails the comparison; review
+  N13), creates a fresh database the way `setup`
   does (owner `ps_owner`, only `ps_runtime` may connect, no `TEMP`),
   restores it with `pg_restore --single-transaction --exit-on-error`, and
   fails unless a fingerprint of both is identical (every table's row
@@ -567,7 +575,7 @@ review found. Each states the choice, the alternative and the cost.
   version matches the server's. Test:
   `a_logical_restore_is_the_same_ledger_with_the_same_protections` — a
   ledger with captures, a refund, a void and a decline, backed up while the
-  server's pool is open; on the copy the role check passes, the
+  server's pool is open but idle; on the copy the role check passes, the
   reconciliation report, balances and explanation are the same, the
   generation differs (D-050), the owner's `UPDATE` of a line is refused
   (`PSJ01`), and a new posting takes a sequence number after every
@@ -737,6 +745,11 @@ review found. Each states the choice, the alternative and the cost.
     and `ps_shadow_*` roles older than one, by the UUIDv7 time in their
     names. Tests: `a_test_database_is_dropped_even_when_its_test_never_cleans_up`,
     `stale_test_databases_and_roles_are_swept`.
+  - *N13:* every budget, breaker, reconciler, reader and transport default
+    is labelled "chosen, not measured" where it is stated (D-047, D-048,
+    D-049, D-054, D-057); the owed load runs set them. The rehearsal needs
+    a quiescent source (D-053 and the script said the server "may keep
+    running", but the source's fingerprint is taken after the restore).
 
 ## Open questions (still open)
 
