@@ -58,6 +58,10 @@ jobs:
       - name: The architecture check can fail
         run: "! ARCH_BANNED=sha2 scripts/check-architecture.sh"
       - run: cargo test --workspace --locked
+        env:
+          # The restore rehearsal (scripts/restore-rehearsal.sh) runs pg_dump and pg_restore
+          # inside the PostgreSQL container, so their version matches the server's.
+          PS_PG_CONTAINER: ${{ job.services.postgres.id }}
       - name: Recovery drills (the real server binary killed at fault points)
         run: cargo test -p sandbox-server --features fault-injection --test drills --locked
       - name: Load smoke (short runs; full runs are local, committed under perf/results/)

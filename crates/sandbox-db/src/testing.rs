@@ -182,6 +182,22 @@ impl TestDb {
         }
     }
 
+    /// Adopts a database created next to this one by something else (a restore, D-053),
+    /// owned by `ps_owner`; [`TestDb::cleanup`] drops it like any other.
+    pub async fn attach(&self, name: &str) -> Self {
+        let owner = Self::url_as(
+            &self.admin_url,
+            name,
+            crate::roles::OWNER,
+            crate::roles::OWNER_PASSWORD,
+        );
+        Self {
+            pool: Self::pool_for(&owner).await,
+            admin_url: self.admin_url.clone(),
+            name: name.to_owned(),
+        }
+    }
+
     async fn pool_for(url: &str) -> PgPool {
         let options = crate::pool::connect_options(url, &crate::PoolSettings::default())
             .expect("invariant: test url parses");

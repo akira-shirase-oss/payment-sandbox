@@ -187,8 +187,8 @@ review found. Each states the choice, the alternative and the cost.
   taken before an operation, with a newer simulator store; a client retry
   must reconcile without a second charge (M3). The automated drill takes
   the backup as a `CREATE DATABASE … TEMPLATE` copy (a consistent snapshot
-  of every committed row, taken with no connection open); a `pg_dump`
-  logical-restore rehearsal against the local stack remains to be scripted.
+  of every committed row, taken with no connection open); the `pg_dump`
+  logical-restore rehearsal is `scripts/restore-rehearsal.sh` (D-053).
 - **D-027 — Two hot races.** "Hot-account refund race" means one
   merchant account receiving many concurrent partial refunds across many
   payments; "hot-payment race" means many concurrent partial refunds
@@ -548,6 +548,30 @@ review found. Each states the choice, the alternative and the cost.
   clock and now compared on it in claims too, as the endpoint listing
   already did. Test:
   `a_new_delivery_is_due_at_once_whatever_the_deliverers_clock_says`.
+
+- **D-053 — The logical restore is rehearsed by a script and a test.** The
+  review restored faithfully by hand; D-026 owed the scripted rehearsal.
+  `scripts/restore-rehearsal.sh <source> <new>` takes a `pg_dump` custom
+  backup of a live database, creates a fresh database the way `setup`
+  does (owner `ps_owner`, only `ps_runtime` may connect, no `TEMP`),
+  restores it with `pg_restore --single-transaction --exit-on-error`, and
+  fails unless a fingerprint of both is identical (every table's row
+  count; digests of every journal entry, line and operation; every
+  trigger, enabled, with its function; every function's pinned
+  `search_path` and owner; every object's owner; the runtime role's
+  grants; every sequence's position) and the copy's invariants hold (every
+  entry balances per currency, none lacks lines, no trigger is disabled,
+  the journal has its triggers, the runtime role can neither `TRUNCATE`
+  nor create temporary tables). The tools run inside the PostgreSQL
+  container (`PS_PG_CONTAINER`; CI passes its service container), so their
+  version matches the server's. Test:
+  `a_logical_restore_is_the_same_ledger_with_the_same_protections` — a
+  ledger with captures, a refund, a void and a decline, backed up while the
+  server's pool is open; on the copy the role check passes, the
+  reconciliation report, balances and explanation are the same, the
+  generation differs (D-050), the owner's `UPDATE` of a line is refused
+  (`PSJ01`), and a new posting takes a sequence number after every
+  restored one.
 
 ## Open questions (still open)
 

@@ -87,7 +87,10 @@ to it as automated tests; a load scenario with thresholds under `perf/`.
 | **Drill (c)**: older server backup restored, newer network store | `drill_c_restoring_an_older_server_backup_reconciles_without_a_second_charge` — reverse reconciliation reports exactly the 2 missing operations; client retries under the same keys re-derive the same identities; the network still holds 3 operations; the report is clean afterwards |
 | Reverse-reconciliation paging (regression found by the first M3 smoke) | `reverse_reconciliation_pages_through_more_than_one_full_listing_page` — failed without its fix (a full 1,000-operation page exceeded the single-answer size cap) |
 | Load | `perf/scenarios/m3-uncertain.js` smoke on `8fd1338` + working tree: 1,091 requests, 120 honest `202 uncertain` answers (lost replies and an unavailable network), every one resolved by the reconciler, both projects clean in both directions (0 network operations unknown to the server), approve-path p95 72 ms / p99 98 ms, 0 lock waits — **machine busy (load average 163–218), a smoke observation only** |
-| **Owed** | The full `m3-uncertain` run on a quiet machine; a `pg_dump` logical-restore rehearsal script (D-026) |
+| `pg_dump` logical-restore rehearsal (D-026, D-053) | `scripts/restore-rehearsal.sh` (fingerprint of source and copy identical; invariants on the copy); `tests/restore.rs`: `a_logical_restore_is_the_same_ledger_with_the_same_protections`; a cursor from before a restore is refused (`an_explanation_cursor_from_before_a_restore_is_refused`, D-050) |
+| Fair, concurrent, backed-off recovery (review 11, D-048) | `tests/reconciler.rs`: one project's backlog cannot starve another's; a failed check backs off; readbacks run concurrently within their bound |
+| Supervised background tasks (review 19, D-051) | `supervisor::tests`; drill `a_panicking_reconciler_is_restarted_and_still_resolves_uncertain_operations` |
+| **Owed** | The full `m3-uncertain` run on a quiet machine |
 
 ### M4 status — In progress (functional gates pass; full load run owed)
 
@@ -102,7 +105,9 @@ to it as automated tests; a load scenario with thresholds under `perf/`.
 | **Drill (b)**, wall-clock half | `drill_b_a_lease_clock_jump_causes_at_most_a_duplicate_delivery` — a jumped deliverer clock steals an expired lease and delivers again (one duplicate at the receiver); the stale worker's result is discarded by the fencing token; the row ends `delivered`, 1 attempt, no lease |
 | `fixtures/dev-store` (D-024): inbox dedup, thin-event re-read, unique fulfillment key | `fixtures/dev-store/src/lib.rs`; every test above uses it as the consumer |
 | Load | `perf/scenarios/m4-webhooks.js` smoke: 1,008 requests, 501 payments → 501 fulfillments, 1,002 events in the store's inbox, 0 rejected, 0 duplicates, reconciliation clean, 0 lock waits; API p95 120 ms (**threshold 100 ms missed**), p99 152 ms — machine busy (load average 33–38), a smoke observation. The first smoke found D-037 |
-| **Owed** | The full `m4-webhooks` run (1,000,000 API requests and 1,000,000 deliveries) on a quiet machine |
+| One endpoint cannot hold the deliverer (review 12, D-049); one clock per timestamp (review 20, D-052) | `a_black_holed_endpoint_cannot_hold_the_deliverers_capacity`; `an_endpoint_that_keeps_failing_opens_its_circuit_and_is_probed_once`; `a_new_delivery_is_due_at_once_whatever_the_deliverers_clock_says` |
+| The network's and the store's internal routes need credentials (review 10, D-046) | `sandbox-sim/tests/access.rs`, `fixtures/dev-store/tests/control.rs` (the real binaries); `another_projects_authorization_cannot_be_captured_voided_or_refunded` |
+| **Owed** | The full `m4-webhooks` run (1,000,000 API requests and 1,000,000 deliveries) on a quiet machine; a saturation run of a black-holed endpoint beside healthy ones (the fairness above is tested, not yet measured under load) |
 
 ### M5 status — In progress (functional gates pass; full load run owed)
 
@@ -113,7 +118,8 @@ to it as automated tests; a load scenario with thresholds under `perf/`.
 | A planted drift is detected | `a_planted_drift_is_detected_exactly` — 50 minor units of refund planted on one payment: the report names exactly that payment and the two accounts it moves, and is clean again once it is undone |
 | After load runs, zero mismatches | the teardowns of `m2-lifecycle`, `m2-refund-race`, `m3-uncertain`, `m4-webhooks` and `m5-explain` require a clean report |
 | Load | `perf/scenarios/m5-explain.js` smoke: 4,306 requests, balances p99 9 ms, explain p95 14 ms / p99 26 ms, each account's explanation walked to its end summing exactly to its balance, report clean — passed, machine busy (load average 22–29), a smoke observation |
-| **Owed** | The full `m5-explain` run on the guide's 100,000 seeded postings and 1,000,000 reads, on a quiet machine |
+| Reports are bounded per project (review 9, D-047) | `tests/reports.rs`: `reports_are_rate_limited_per_project`; `reports::tests`; the network's listings run outside its writer (`listings_and_the_clock_are_served_while_the_writer_is_busy`) |
+| **Owed** | The full `m5-explain` run on the guide's 100,000 seeded postings and 1,000,000 reads, on a quiet machine (load runs lift the report budget, D-047); a load run of the report budget itself (429 under saturation) |
 
 ## Load plan and ship gate
 
