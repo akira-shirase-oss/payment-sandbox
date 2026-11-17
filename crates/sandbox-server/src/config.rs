@@ -499,8 +499,14 @@ impl<F: Fn(&str) -> Option<String>> Parser<'_, F> {
                 default_listen
             }),
         };
-        let raw_origin = (self.lookup)(&format!("PS_{name}_ORIGIN"))
-            .unwrap_or_else(|| format!("http://{listen}"));
+        // The dashboard defaults to a host name of its own (D-065): a cookie set there is
+        // never sent to the checkout or any other port of 127.0.0.1.
+        let default_origin = if name == "DASHBOARD" {
+            format!("http://dashboard.localhost:{}", listen.port())
+        } else {
+            format!("http://{listen}")
+        };
+        let raw_origin = (self.lookup)(&format!("PS_{name}_ORIGIN")).unwrap_or(default_origin);
         let origin = sandbox_domain::checkout::canonical_origin(&raw_origin).unwrap_or_else(|_| {
             self.errors.push(format!(
                 "PS_{name}_ORIGIN must be an origin like http://127.0.0.1:{default_port} (loopback, D-023)"
@@ -682,13 +688,15 @@ mod tests {
         vars.extend([
             ("PS_CHECKOUT_DIR", "apps/checkout/build"),
             ("PS_DASHBOARD_DIR", "apps/dashboard/build"),
-            ("PS_DASHBOARD_ORIGIN", "http://LOCALHOST:56084"),
             ("PS_PROFILE", "dev"),
         ]);
         let c = config(&vars).unwrap();
         let checkout = c.checkout.clone().unwrap();
         assert_eq!(checkout.listen, "127.0.0.1:56083".parse().unwrap());
-        assert_eq!(c.dashboard.unwrap().origin, "http://localhost:56084");
+        assert_eq!(
+            c.dashboard.unwrap().origin,
+            "http://dashboard.localhost:56084"
+        );
         assert_eq!(c.profile, Profile::Dev);
         // Webhooks may never target the sites' ports (D-059 extended).
         assert!(!c.webhook_ports.permits(56083) && !c.webhook_ports.permits(56084));

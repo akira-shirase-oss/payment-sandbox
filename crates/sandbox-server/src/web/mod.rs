@@ -48,6 +48,24 @@ pub fn require_same_origin(
     }
 }
 
+/// Refuses an API read unless a browser says this origin started it (`Sec-Fetch-Site:
+/// same-origin`) or, without fetch metadata, it carries exactly this `Origin` (D-065):
+/// cookies reach every port of a host, so a cookie alone proves nothing. Non-browser
+/// clients use `/v1` with their key instead.
+pub fn require_same_origin_read(headers: &HeaderMap, origin: &str) -> Result<(), ApiError> {
+    match headers.get(SEC_FETCH_SITE) {
+        Some(value) if value.as_bytes() == b"same-origin" => Ok(()),
+        Some(_) => Err(ApiError::CrossOrigin),
+        None => {
+            let mut origins = headers.get_all(header::ORIGIN).iter();
+            match (origins.next(), origins.next()) {
+                (Some(value), None) if value.as_bytes() == origin.as_bytes() => Ok(()),
+                _ => Err(ApiError::CrossOrigin),
+            }
+        }
+    }
+}
+
 /// The policy of a site's pages. `script_hashes` lists the inline scripts' hashes and
 /// `style_hashes` the exact static style attributes the app inserts (allowed under
 /// `'unsafe-hashes'`, which admits those values only); fonts, images and connections are

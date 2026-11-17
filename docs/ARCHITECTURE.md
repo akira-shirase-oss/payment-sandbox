@@ -52,7 +52,7 @@ applies the result: balanced postings + released reservation + outbox
 event. A decline or a fenced "never executed" releases the reservation;
 `uncertain` keeps it until readback.
 
-**Checkout (D-060):** the merchant `POST /v1/checkout_sessions` (amount, currency,
+**Checkout (D-060, D-065):** the merchant `POST /v1/checkout_sessions` (amount, currency,
 description fixed) → the payer opens `{checkout origin}/c/{id}#cs_sim_…` (the secret in the
 fragment) → the page reads `GET /api/sessions/{id}` with the secret as a bearer token → "Pay"
 is `POST /api/sessions/{id}/attempts {token}` with an `Idempotency-Key`: the attempt row
@@ -61,11 +61,13 @@ then the authorize path above, then, with automatic capture, the capture path un
 derived key → the page shows the state derived from the recorded operations and the
 journal-backed sums. A new attempt waits for the last to end without money; the same key
 re-drives its own attempt; `POST …/continue` finishes the latest one after the reconciler
-resolved it.
+resolved it. An attempt the network answered differently (a restore lost it) closes the
+session: it can never charge twice.
 
 **Dashboard (D-062):** `POST /api/session` with a sandbox key → a host-only
 `__Host-ps_dashboard` session (in memory, the key's hash re-resolved per request) → the API's
-own read handlers under `/api/v1/…`, read-only; state changes need the dashboard's `Origin`
+own read handlers under `/api/v1/…`, read-only, on the dashboard's own host name, with
+fetch metadata (or its `Origin`) on every read; state changes need the dashboard's `Origin`
 and the session's CSRF token; simulator controls (dev profile) forward the operator's
 credential to the network's control plane.
 
@@ -108,7 +110,7 @@ transient database failures with exponential backoff and full jitter.
 | 56081 | `sandbox-sim` |
 | 56082 | `sandbox-dev-store` (`fixtures/dev-store`) |
 | 56083 | the checkout origin (`PS_CHECKOUT_LISTEN`, on with `PS_CHECKOUT_DIR`) |
-| 56084 | the dashboard origin (`PS_DASHBOARD_LISTEN`, on with `PS_DASHBOARD_DIR`) |
+| 56084 | the dashboard origin (`PS_DASHBOARD_LISTEN`, on with `PS_DASHBOARD_DIR`), reached as `http://dashboard.localhost:56084` (D-065) |
 | 56460–56465 | `scripts/e2e.sh`: API, network, checkout, dashboard, store, the test merchant page |
 | 56090 / 56091 | server / simulator during load runs (`scripts/load.sh`) |
 

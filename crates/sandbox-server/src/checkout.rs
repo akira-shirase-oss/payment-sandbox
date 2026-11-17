@@ -76,6 +76,9 @@ fn facts(recorded: &Recorded) -> AttemptFacts {
         capture: recorded.captures.last().map(|o| o.state),
         capture_tries: i32::try_from(recorded.captures.len()).unwrap_or(i32::MAX),
         captured_minor: recorded.payment.as_ref().map_or(0, |p| p.sums.captured),
+        conflict: recorded.authorize.as_ref().is_some_and(|o| {
+            o.decline_code.as_deref() == Some(checkout::NETWORK_IDENTITY_CONFLICT)
+        }),
     }
 }
 

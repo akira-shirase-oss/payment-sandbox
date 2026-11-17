@@ -50,7 +50,13 @@ const CHECKOUT: Record<string, Outcome> = {
 		word: 'Authorized',
 		detail: 'A hold was placed on simulated funds; it is not captured.'
 	},
-	paid: { tone: 'ok', word: 'Paid', detail: 'The whole amount was captured (simulated money).' }
+	paid: { tone: 'ok', word: 'Paid', detail: 'The whole amount was captured (simulated money).' },
+	conflict: {
+		tone: 'uncertain',
+		word: 'Needs review',
+		detail:
+			'The simulated network holds a different record of this payment than the sandbox does (its database was restored). This checkout is closed so it can never charge twice; the merchant’s reconciliation lists it.'
+	}
 };
 
 /** The client's own state when the checkout could not reach the sandbox at all. */

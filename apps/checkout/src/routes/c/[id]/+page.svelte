@@ -78,8 +78,9 @@
 	}
 
 	function fail(error: unknown) {
-		if (error instanceof Refused && error.code === 'checkout_attempt_open') {
-			// Another press already started an attempt: show that one, never a second.
+		if (error instanceof Refused && (error.code === 'checkout_attempt_open' || error.code === 'checkout_closed')) {
+			// Another press already started an attempt, or the session closed: show what is
+			// recorded, never start a second charge.
 			void refresh();
 			return;
 		}

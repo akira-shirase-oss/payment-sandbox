@@ -24,7 +24,7 @@ cargo run -p sandbox-server                        # API on 127.0.0.1:56080, as 
 cargo run -p sandbox-dev-store                     # the development store on 127.0.0.1:56082
 npm ci && npm run build                            # the checkout and the dashboard (Node 22.17+)
 PS_CHECKOUT_DIR=apps/checkout/build PS_DASHBOARD_DIR=apps/dashboard/build \
-  cargo run -p sandbox-server                      # ... with the checkout on :56083, the dashboard on :56084
+  cargo run -p sandbox-server                      # ... checkout on 127.0.0.1:56083, dashboard on http://dashboard.localhost:56084
 scripts/e2e.sh                                     # the browser journeys (Chromium, ports 56460-56465)
 ```
 
@@ -34,7 +34,9 @@ field) and the page shows what really happened, `uncertain` included. The dashbo
 in with a project's sandbox key and shows payments, holds, journal entries, every balance
 explained line by line, reconciliation, webhook deliveries and (dev profile) the
 simulator's controls. Each is its own origin under a strict Content-Security-Policy
-(D-060–D-064).
+(D-060–D-065); the dashboard answers on its own host name, `dashboard.localhost`, so its
+session cookie never reaches another port, and its API is for its own page only (scripts
+and `curl` use `/v1` with a key).
 
 Ports (all loopback): 56432 PostgreSQL, 56080 API, 56081 simulator (M2),
 56090 load-test server. Loopback is not a credential: the simulator answers

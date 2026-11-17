@@ -18,7 +18,9 @@ use common::{SIM_CONTROL_TOKEN, TestApp, TestSim, raw, test_site};
 use sandbox_server::web::dashboard::Sessions;
 use serde_json::{Value, json};
 
-const ORIGIN: &str = "http://127.0.0.1:56084";
+const ORIGIN: &str = "http://dashboard.localhost:56084";
+/// The dashboard's own host name (D-065): its cookie is never sent to another port's site.
+const HOST: &str = "dashboard.localhost:56084";
 
 struct Dash {
     router: Router,
@@ -45,26 +47,46 @@ impl Dash {
     /// Signs in with `key`; returns the cookie pair and the CSRF token.
     async fn sign_in(&self, key: &str) -> (String, String) {
         let bearer = format!("Bearer {key}");
-        let (status, headers, body) = raw(
-            &self.router,
-            Method::POST,
-            "/api/session",
-            &[
-                ("authorization", &bearer),
-                ("origin", ORIGIN),
-                ("sec-fetch-site", "same-origin"),
-            ],
-            None,
-        )
-        .await;
+        let (status, headers, body) = self
+            .raw(
+                Method::POST,
+                "/api/session",
+                &[
+                    ("authorization", &bearer),
+                    ("origin", ORIGIN),
+                    ("sec-fetch-site", "same-origin"),
+                ],
+                None,
+            )
+            .await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
         let set = headers["set-cookie"].to_str().unwrap().to_owned();
         let pair = set.split(';').next().unwrap().to_owned();
         (pair, body["csrf_token"].as_str().unwrap().to_owned())
     }
 
+    /// One request on the dashboard's own host name.
+    async fn raw(
+        &self,
+        method: Method,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: Option<Value>,
+    ) -> (StatusCode, HeaderMap, Value) {
+        let mut all = vec![("host", HOST)];
+        all.extend_from_slice(headers);
+        raw(&self.router, method, path, &all, body).await
+    }
+
+    /// A read as the dashboard's page makes it (a browser sends fetch metadata).
     async fn get(&self, path: &str, cookie: &str) -> (StatusCode, HeaderMap, Value) {
-        raw(&self.router, Method::GET, path, &[("cookie", cookie)], None).await
+        self.raw(
+            Method::GET,
+            path,
+            &[("cookie", cookie), ("sec-fetch-site", "same-origin")],
+            None,
+        )
+        .await
     }
 
     async fn post(
@@ -73,7 +95,7 @@ impl Dash {
         headers: &[(&str, &str)],
         body: Option<Value>,
     ) -> (StatusCode, HeaderMap, Value) {
-        raw(&self.router, Method::POST, path, headers, body).await
+        self.raw(Method::POST, path, headers, body).await
     }
 
     fn remove(self) {
@@ -154,18 +176,25 @@ async fn sign_in_gives_a_host_only_session_and_every_state_change_needs_origin_a
     // No session, no reads; a key is no credential on this origin; a doubled cookie is
     // trusted by neither copy; a browser's cross-site read is refused.
     assert_eq!(
-        raw(&dash.router, Method::GET, "/api/v1/payments", &[], None)
-            .await
-            .0,
+        dash.raw(
+            Method::GET,
+            "/api/v1/payments",
+            &[("sec-fetch-site", "same-origin")],
+            None
+        )
+        .await
+        .0,
         StatusCode::UNAUTHORIZED
     );
     let key_bearer = format!("Bearer {admin}");
     assert_eq!(
-        raw(
-            &dash.router,
+        dash.raw(
             Method::GET,
             "/api/v1/payments",
-            &[("authorization", &key_bearer)],
+            &[
+                ("authorization", &key_bearer),
+                ("sec-fetch-site", "same-origin")
+            ],
             None
         )
         .await
@@ -177,14 +206,14 @@ async fn sign_in_gives_a_host_only_session_and_every_state_change_needs_origin_a
         dash.get("/api/v1/payments", &doubled).await.0,
         StatusCode::UNAUTHORIZED
     );
-    let (status, _, _) = raw(
-        &dash.router,
-        Method::GET,
-        "/api/v1/payments",
-        &[("cookie", &cookie), ("sec-fetch-site", "same-site")],
-        None,
-    )
-    .await;
+    let (status, _, _) = dash
+        .raw(
+            Method::GET,
+            "/api/v1/payments",
+            &[("cookie", &cookie), ("sec-fetch-site", "same-site")],
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     // Nothing that moves money is mounted here.
     for path in ["/api/v1/payments", "/api/v1/checkout_sessions"] {
@@ -416,14 +445,18 @@ async fn simulator_controls_need_the_dev_profile_and_the_operators_own_credentia
         dash.post("/api/sim/faults/clear", &no_csrf, None).await.0,
         StatusCode::FORBIDDEN
     );
-    let (status, _, clock) = raw(
-        &dash.router,
-        Method::GET,
-        "/api/sim/clock",
-        &[("cookie", &cookie), ("x-operator-token", SIM_CONTROL_TOKEN)],
-        None,
-    )
-    .await;
+    let (status, _, clock) = dash
+        .raw(
+            Method::GET,
+            "/api/sim/clock",
+            &[
+                ("cookie", &cookie),
+                ("x-operator-token", SIM_CONTROL_TOKEN),
+                ("sec-fetch-site", "same-origin"),
+            ],
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK, "{clock}");
     assert!(clock["network"]["now_seconds"].is_i64());
     dash.remove();
@@ -462,7 +495,7 @@ async fn the_dashboard_is_never_framed_and_its_scripts_are_pinned_by_hash() {
     let app = TestApp::new(&[]).await;
     let dash = Dash::new(&app);
     for path in ["/", "/payments", "/ledger/USD/payer_funding"] {
-        let (status, headers, _) = raw(&dash.router, Method::GET, path, &[], None).await;
+        let (status, headers, _) = dash.raw(Method::GET, path, &[], None).await;
         assert_eq!(status, StatusCode::OK, "{path}");
         let csp = headers["content-security-policy"].to_str().unwrap();
         assert!(
@@ -473,9 +506,107 @@ async fn the_dashboard_is_never_framed_and_its_scripts_are_pinned_by_hash() {
         assert_eq!(headers["x-frame-options"], "DENY");
         assert_eq!(headers["cross-origin-opener-policy"], "same-origin");
     }
-    let (status, headers, _) = raw(&dash.router, Method::GET, "/api/nothing", &[], None).await;
+    let (status, headers, _) = dash
+        .raw(
+            Method::GET,
+            "/api/nothing",
+            &[("sec-fetch-site", "same-origin")],
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(headers["x-frame-options"], "DENY");
+    dash.remove();
+    app.cleanup().await;
+}
+
+/// Review M2: browsers send a cookie to every port of its host, and a request that carries
+/// the cookie but no fetch metadata (an older client, a non-browser) used to be answered.
+/// Now every API request needs fetch metadata saying same-origin, or this exact Origin; a
+/// non-browser client uses `/v1` with its key instead.
+#[tokio::test]
+async fn reads_need_fetch_metadata_or_this_origin_even_with_the_cookie() {
+    let app = TestApp::new(&[]).await;
+    let (_, admin) = app.project("shop").await;
+    let dash = Dash::new(&app);
+    let (cookie, _) = dash.sign_in(&admin).await;
+    let bare = dash
+        .raw(
+            Method::GET,
+            "/api/v1/balances",
+            &[("cookie", &cookie)],
+            None,
+        )
+        .await;
+    assert_eq!(bare.0, StatusCode::FORBIDDEN, "{}", bare.2);
+    assert_eq!(bare.2["error"]["code"], "cross_origin_refused");
+    let other = dash
+        .raw(
+            Method::GET,
+            "/api/v1/balances",
+            &[("cookie", &cookie), ("origin", "http://127.0.0.1:56083")],
+            None,
+        )
+        .await;
+    assert_eq!(other.0, StatusCode::FORBIDDEN);
+    let with_origin = dash
+        .raw(
+            Method::GET,
+            "/api/v1/balances",
+            &[("cookie", &cookie), ("origin", ORIGIN)],
+            None,
+        )
+        .await;
+    assert_eq!(with_origin.0, StatusCode::OK, "{}", with_origin.2);
+    assert_eq!(
+        dash.get("/api/v1/balances", &cookie).await.0,
+        StatusCode::OK
+    );
+    dash.remove();
+    app.cleanup().await;
+}
+
+/// Review M2: the dashboard answers on its own host name only, so its cookie is never set
+/// for (and so never sent to) the host the checkout and every other loopback port share.
+#[tokio::test]
+async fn the_dashboard_answers_only_on_its_own_host_name() {
+    let app = TestApp::new(&[]).await;
+    let dash = Dash::new(&app);
+    for host in [
+        "127.0.0.1:56084",
+        "localhost:56084",
+        "dashboard.localhost:56085",
+    ] {
+        let (status, headers, _) = raw(
+            &dash.router,
+            Method::GET,
+            "/payments?x=1",
+            &[("host", host)],
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::PERMANENT_REDIRECT, "{host}");
+        assert_eq!(
+            headers["location"],
+            format!("{ORIGIN}/payments?x=1"),
+            "{host}"
+        );
+        let (status, _, refused) = raw(
+            &dash.router,
+            Method::POST,
+            "/api/session",
+            &[
+                ("host", host),
+                ("origin", ORIGIN),
+                ("authorization", "Bearer sk_sim_x"),
+            ],
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::MISDIRECTED_REQUEST, "{host}: {refused}");
+    }
+    let (status, _, _) = dash.raw(Method::GET, "/payments", &[], None).await;
+    assert_eq!(status, StatusCode::OK);
     dash.remove();
     app.cleanup().await;
 }

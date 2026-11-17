@@ -6,8 +6,9 @@
 #   scripts/e2e.sh                 build the apps and the binaries, run every journey
 #   scripts/e2e.sh -g "keyboard"   extra arguments go to `playwright test`
 #
-# Ports 56460-56465 on 127.0.0.1: API, network, checkout, dashboard, store, and a merchant
-# page that frames the checkout (e2e/merchant.mjs, reached as localhost). Everything
+# Ports 56460-56465 on 127.0.0.1: API, network, checkout, dashboard (reached on its own
+# host name, dashboard.localhost, D-065), store, and a merchant page that frames the
+# checkout (e2e/merchant.mjs, reached as localhost). Everything
 # this starts is stopped by PID, and its database and stores are removed, when it exits.
 # PS_E2E_PERF_OUT=<file> also runs the page-load measurement (scripts/web-perf.sh uses it).
 set -euo pipefail
@@ -85,7 +86,7 @@ curl -fsS "http://127.0.0.1:${api_port}/readyz" >/dev/null
 
 (cd e2e && \
   E2E_API="http://127.0.0.1:${api_port}" E2E_CHECKOUT="http://127.0.0.1:${checkout_port}" \
-  E2E_DASHBOARD="http://127.0.0.1:${dashboard_port}" E2E_STORE="http://127.0.0.1:${store_port}" \
+  E2E_DASHBOARD="http://dashboard.localhost:${dashboard_port}" E2E_STORE="http://127.0.0.1:${store_port}" \
   E2E_MERCHANT="http://localhost:${merchant_port}" E2E_BOOTSTRAP="$bootstrap" \
   E2E_STORE_TOKEN="$store_control" E2E_SIM_CONTROL="$sim_control" \
   npx playwright test "$@")

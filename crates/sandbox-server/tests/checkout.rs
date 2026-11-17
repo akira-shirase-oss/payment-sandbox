@@ -762,3 +762,152 @@ async fn payments_are_listed_newest_first_in_pages() {
     app.cleanup().await;
     sim.remove().await;
 }
+
+/// Restores `source`'s database, as it is now, into the second cluster (D-055) with the
+/// restore rehearsal (`pg_dump`, `pg_restore`), and returns the restored database.
+async fn backup_into_the_restore_cluster(source: &TestApp) -> sandbox_db::testing::TestDb {
+    let other = std::env::var("PS_TEST_RESTORE_DATABASE_URL").expect(
+        "PS_TEST_RESTORE_DATABASE_URL names the second cluster's administrator (scripts/stack.sh env)",
+    );
+    let container = std::env::var("PS_PG_RESTORE_CONTAINER")
+        .unwrap_or_else(|_| "payment-sandbox-postgres-restore-1".to_owned());
+    let mut admin = <sqlx::PgConnection as sqlx::Connection>::connect(&other)
+        .await
+        .unwrap();
+    sandbox_db::roles::bootstrap(&mut admin).await.unwrap();
+    let target = format!("ps_test_{}", uuid::Uuid::now_v7().simple());
+    let script = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../scripts/restore-rehearsal.sh"
+    );
+    let rehearsal = std::process::Command::new(script)
+        .arg(source.db.name())
+        .arg(&target)
+        .env("PS_PG_TARGET_CONTAINER", &container)
+        .output()
+        .unwrap();
+    assert!(
+        rehearsal.status.success(),
+        "the rehearsal failed: {}{}",
+        String::from_utf8_lossy(&rehearsal.stdout),
+        String::from_utf8_lossy(&rehearsal.stderr)
+    );
+    sandbox_db::testing::TestDb::existing(&other, &target).await
+}
+
+/// Review M1: after a restore the server reuses an attempt number the network already
+/// answered. A different scenario under that number is a network conflict; it must close
+/// the session, never count as a decline that admits a second, charging attempt.
+#[tokio::test]
+async fn after_a_restore_a_conflicting_attempt_closes_the_session_and_never_charges_twice() {
+    let sim = TestSim::start().await;
+    let vars = common::sim_vars(&sim, &[]);
+    let source = TestApp::on(sandbox_db::testing::TestDb::new().await, &vars);
+    let (_, key) = source.project("shop").await;
+    let (id, secret, _) = session(&source, &key, json!({"amount": 2_500, "currency": "USD"})).await;
+    // The backup is older than the payment.
+    let backup = backup_into_the_restore_cluster(&source).await;
+    let page = Page::new(&source);
+    let (_, paid) = page
+        .pay(
+            &id,
+            &secret,
+            "c1e6c8a0-7f42-4c1e-9d3a-5be1f00d0001",
+            "tok_sim_approve",
+        )
+        .await;
+    assert_eq!(state(&paid), ("paid", None), "{paid}");
+    assert_eq!(sim.store.count().await.unwrap(), 2);
+    page.remove();
+    source.cleanup().await;
+
+    // The server comes back from the older backup: it has the session, not the attempt.
+    let restored = TestApp::on(backup, &vars);
+    let page = Page::new(&restored);
+    let (_, open) = page.view(&id, &secret).await;
+    assert_eq!(state(&open), ("open", Some("pay")), "{open}");
+    // A declining scenario reuses attempt 1's identity; the network holds the approval.
+    let (status, conflict) = page
+        .pay(
+            &id,
+            &secret,
+            "c1e6c8a0-7f42-4c1e-9d3a-5be1f00d0002",
+            "tok_sim_decline_do_not_honor",
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{conflict}");
+    assert_eq!(state(&conflict), ("conflict", None), "{conflict}");
+    // Nothing can start another attempt, so nothing can charge again.
+    let (status, refused) = page
+        .pay(
+            &id,
+            &secret,
+            "c1e6c8a0-7f42-4c1e-9d3a-5be1f00d0003",
+            "tok_sim_approve",
+        )
+        .await;
+    assert_eq!(
+        (status, refused["error"]["code"].as_str()),
+        (StatusCode::CONFLICT, Some("checkout_closed")),
+        "{refused}"
+    );
+    assert_eq!(
+        sim.store.count().await.unwrap(),
+        2,
+        "one authorization and one capture at the network, never a second charge"
+    );
+    // And the disagreement is reported, not hidden.
+    let (_, report) = restored.get("/v1/reconciliation?network=true", &key).await;
+    assert_eq!(report["clean"], false, "{report}");
+    page.remove();
+    restored.cleanup().await;
+    sim.remove().await;
+}
+
+/// The reason attempt keys keep their numbers across a restore (D-015, D-065): the same
+/// payer paying again after a restore reaches the network's record of the payment, which
+/// is recovered once, instead of becoming a second, new charge.
+#[tokio::test]
+async fn after_a_restore_paying_again_recovers_the_payment_without_a_second_charge() {
+    let sim = TestSim::start().await;
+    let vars = common::sim_vars(&sim, &[]);
+    let first = TestApp::on(sandbox_db::testing::TestDb::new().await, &vars);
+    let (_, key) = first.project("shop").await;
+    let (id, secret, _) = session(&first, &key, json!({"amount": 2_500, "currency": "USD"})).await;
+    first.state.db.close().await;
+    let TestApp { db: mut live, .. } = first;
+    let backup = live.snapshot().await;
+    let after = TestApp::on(live, &vars);
+    let page = Page::new(&after);
+    let (_, paid) = page
+        .pay(
+            &id,
+            &secret,
+            "d1e6c8a0-7f42-4c1e-9d3a-5be1f00d0001",
+            "tok_sim_approve",
+        )
+        .await;
+    assert_eq!(state(&paid), ("paid", None), "{paid}");
+    page.remove();
+    after.cleanup().await;
+
+    let restored = TestApp::on(backup, &vars);
+    let page = Page::new(&restored);
+    // A fresh tab (a new key), the same scenario: attempt 1 again, answered from the
+    // network's record.
+    let (_, recovered) = page
+        .pay(
+            &id,
+            &secret,
+            "d1e6c8a0-7f42-4c1e-9d3a-5be1f00d0002",
+            "tok_sim_approve",
+        )
+        .await;
+    assert_eq!(state(&recovered), ("paid", None), "{recovered}");
+    assert_eq!(sim.store.count().await.unwrap(), 2, "no second charge");
+    let (_, report) = restored.get("/v1/reconciliation?network=true", &key).await;
+    assert_eq!(report["clean"], true, "{report}");
+    page.remove();
+    restored.cleanup().await;
+    sim.remove().await;
+}

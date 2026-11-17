@@ -48,6 +48,9 @@ pub const CSRF_HEADER: HeaderName = HeaderName::from_static("x-csrf-token");
 pub const OPERATOR_HEADER: HeaderName = HeaderName::from_static("x-operator-token");
 /// Most sessions held at once.
 pub const MAX_SESSIONS: usize = 4_096;
+/// Most sessions one key holds; a further sign-in ends that key's oldest (review M3,
+/// D-065), so no key can fill the table and lock others out.
+pub const MAX_SESSIONS_PER_KEY: usize = 8;
 /// A session unused this long ends.
 pub const IDLE: Duration = Duration::from_mins(30);
 /// A session ends this long after sign-in, used or not.
@@ -100,6 +103,19 @@ impl Sessions {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if map.len() >= MAX_SESSIONS {
             map.retain(|_, entry| entry.live(now));
+        }
+        // This key's oldest sessions make room for its new one.
+        let mut own: Vec<([u8; 32], Instant)> = map
+            .iter()
+            .filter(|(_, entry)| entry.key == key)
+            .map(|(digest, entry)| (*digest, entry.created))
+            .collect();
+        if own.len() >= MAX_SESSIONS_PER_KEY {
+            own.sort_by_key(|(_, created)| *created);
+            let surplus = own.len() + 1 - MAX_SESSIONS_PER_KEY;
+            for (digest, _) in own.into_iter().take(surplus) {
+                map.remove(&digest);
+            }
         }
         if map.len() >= MAX_SESSIONS {
             return Ok(Err(Full));
@@ -281,14 +297,45 @@ async fn harden(mut response: Response) -> Response {
     response
 }
 
-/// Every `/api` request: no browser request another origin started; state changes from
-/// this exact origin only.
+/// Every request: the dashboard's own host name only (D-065) — a page on another is
+/// redirected there, anything else is misdirected — so its cookie is only ever set for that
+/// host. Every `/api` request: reads need fetch metadata saying same-origin or this exact
+/// Origin, state changes this exact Origin.
 async fn guard(State(ctx): State<Dashboard>, request: Request, next: Next) -> Response {
-    if request.uri().path().starts_with("/api")
-        && let Err(error) =
+    let authority = ctx
+        .origin
+        .split_once("://")
+        .map_or(&*ctx.origin, |(_, a)| a);
+    let host_ok = request
+        .headers()
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|host| host.eq_ignore_ascii_case(authority));
+    let api = request.uri().path().starts_with("/api");
+    let read = request.method() == Method::GET || request.method() == Method::HEAD;
+    if !host_ok {
+        let target = request
+            .uri()
+            .path_and_query()
+            .map_or("/", axum::http::uri::PathAndQuery::as_str);
+        return match HeaderValue::from_str(&format!("{}{target}", ctx.origin)) {
+            Ok(location) if read && !api => (
+                StatusCode::PERMANENT_REDIRECT,
+                [(header::LOCATION, location)],
+            )
+                .into_response(),
+            _ => ApiError::Misdirected.into_response(),
+        };
+    }
+    if api {
+        let checked = if read {
+            super::require_same_origin_read(request.headers(), &ctx.origin)
+        } else {
             super::require_same_origin(request.method(), request.headers(), &ctx.origin)
-    {
-        return error.into_response();
+        };
+        if let Err(error) = checked {
+            return error.into_response();
+        }
     }
     next.run(request).await
 }
@@ -577,18 +624,41 @@ mod tests {
     fn a_full_table_evicts_expired_sessions_and_refuses_when_all_are_live() {
         let sessions = Sessions::default();
         let t0 = Instant::now();
-        for _ in 0..MAX_SESSIONS {
-            sessions.create(KeyHash([1; 32]), t0).unwrap().unwrap();
-        }
-        assert_eq!(sessions.create(KeyHash([1; 32]), t0).unwrap(), Err(Full));
-        // Once they are idle, a new sign-in sweeps them.
-        assert!(
+        // Many keys (one key alone cannot fill the table, review M3).
+        let key = |i: usize| {
+            let mut bytes = [0_u8; 32];
+            bytes[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            KeyHash(bytes)
+        };
+        for i in 0..MAX_SESSIONS {
             sessions
-                .create(KeyHash([1; 32]), t0 + IDLE)
+                .create(key(i / MAX_SESSIONS_PER_KEY), t0)
                 .unwrap()
-                .is_ok()
-        );
+                .unwrap();
+        }
+        assert_eq!(sessions.create(key(usize::MAX), t0).unwrap(), Err(Full));
+        // Once they are idle, a new sign-in sweeps them.
+        assert!(sessions.create(key(usize::MAX), t0 + IDLE).unwrap().is_ok());
         assert_eq!(sessions.len(), 1);
+    }
+
+    #[test]
+    fn one_key_holds_a_bounded_number_of_sessions_and_its_oldest_go_first() {
+        // Review M3: one key used to be able to fill the whole table and lock everyone out.
+        let sessions = Sessions::default();
+        let t0 = Instant::now();
+        let mut tokens = Vec::new();
+        for i in 0..MAX_SESSIONS_PER_KEY + 3 {
+            let at = t0 + Duration::from_secs(u64::try_from(i).unwrap());
+            tokens.push(sessions.create(KeyHash([9; 32]), at).unwrap().unwrap().0);
+        }
+        assert_eq!(sessions.len(), MAX_SESSIONS_PER_KEY);
+        let now = t0 + Duration::from_secs(60);
+        for (i, token) in tokens.iter().enumerate() {
+            assert_eq!(sessions.check(token, now).is_some(), i >= 3, "session {i}");
+        }
+        // Another key still signs in.
+        assert!(sessions.create(KeyHash([1; 32]), now).unwrap().is_ok());
     }
 
     #[test]

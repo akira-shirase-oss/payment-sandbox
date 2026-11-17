@@ -245,7 +245,7 @@ pub fn network_request(
 }
 
 /// Decline code recorded when the network holds another request under the identity.
-pub const IDENTITY_CONFLICT: &str = "network_identity_conflict";
+pub const IDENTITY_CONFLICT: &str = sandbox_domain::checkout::NETWORK_IDENTITY_CONFLICT;
 
 /// Translates a network answer into what is recorded.
 pub fn network_result(answer: &Answer) -> NetworkResult {

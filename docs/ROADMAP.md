@@ -129,7 +129,8 @@ to it as automated tests; a load scenario with thresholds under `perf/`.
 ### M6 status — In progress (functional gates pass; load run owed)
 
 Decisions: D-060 (checkout sessions), D-061 (the two origins and their policies), D-062
-(dashboard sign-in and CSRF), D-063 (simulator controls), D-064 (size budgets).
+(dashboard sign-in and CSRF), D-063 (simulator controls), D-064 (size budgets), D-065 (the
+review's fixes).
 
 | Gate | Evidence |
 |---|---|
@@ -143,6 +144,7 @@ Decisions: D-060 (checkout sessions), D-061 (the two origins and their policies)
 | Keyboard and phone | Journeys `the checkout can be paid with the keyboard alone` (visible focus) and `at 360 px…` (no sideways scroll, every badge whole) |
 | Component tests | Vitest: `packages/ui` (money, outcome states, badge, token contrast in four schemes), `apps/checkout` (flow, picker, status), `apps/dashboard` (virtual list) |
 | Size budgets and page loads | `scripts/web-budget.mjs` in `scripts/check.sh` and CI (D-064); `perf/results/*-web-m6.json` (`scripts/web-perf.sh`) |
+| Review fixes (D-065) | A restore cannot lead to a second charge: a network identity conflict closes the session (`after_a_restore_a_conflicting_attempt_closes_the_session_and_never_charges_twice`, restored into the second cluster; `after_a_restore_paying_again_recovers_the_payment_without_a_second_charge`); the dashboard answers on its own host name and needs fetch metadata or its Origin on reads (`reads_need_fetch_metadata_or_this_origin_even_with_the_cookie`, `the_dashboard_answers_only_on_its_own_host_name`); at most 8 sessions per key |
 | **Owed** | `perf/scenarios/m6-checkout.js` (sessions, pages, paid attempts and repeats; written and parsed, never run): its smoke and its full ≥1,000,000-request run on a quiet machine |
 
 ## Load plan and ship gate

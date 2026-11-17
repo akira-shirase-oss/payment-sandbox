@@ -135,6 +135,7 @@ async fn attempt(
         Err(AttemptError::NotFound) => return Err(ApiError::Unauthorized),
         Err(AttemptError::KeyConflict) => return Err(ApiError::IdempotencyKeyConflict),
         Err(AttemptError::Open) => return Err(ApiError::CheckoutAttemptOpen),
+        Err(AttemptError::Closed) => return Err(ApiError::CheckoutClosed),
         Err(AttemptError::Exhausted) => return Err(ApiError::CheckoutAttemptsExhausted),
         Err(AttemptError::Expired) => return Err(ApiError::CheckoutExpired),
         Err(AttemptError::Db(db)) => return Err(db.into()),

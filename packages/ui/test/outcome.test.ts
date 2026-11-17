@@ -9,7 +9,7 @@ import {
 	UNREACHABLE
 } from '../src/lib/outcome.ts';
 
-const CHECKOUT_STATES = ['open', 'processing', 'uncertain', 'declined', 'not_executed', 'authorized', 'paid'];
+const CHECKOUT_STATES = ['open', 'processing', 'uncertain', 'declined', 'not_executed', 'authorized', 'paid', 'conflict'];
 
 test('each checkout state has its own word, and only paid says paid', () => {
 	const words = CHECKOUT_STATES.map((s) => checkoutOutcome(s).word);
@@ -26,6 +26,9 @@ test('each checkout state has its own word, and only paid says paid', () => {
 	expect(checkoutOutcome('paid')).toMatchObject({ tone: 'ok', word: 'Paid' });
 	expect(checkoutOutcome('uncertain')).toMatchObject({ tone: 'uncertain', word: 'Uncertain' });
 	expect(checkoutOutcome('uncertain').detail).toMatch(/Do not pay again/);
+	// A restore's disagreement with the network closes the checkout (D-065).
+	expect(checkoutOutcome('conflict')).toMatchObject({ tone: 'uncertain', word: 'Needs review' });
+	expect(checkoutOutcome('conflict').detail).toMatch(/never charge twice/);
 });
 
 test('an unknown state, or none, is "Unknown" in the uncertain tone, never success', () => {

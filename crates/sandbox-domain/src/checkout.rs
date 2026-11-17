@@ -34,6 +34,10 @@ pub const MIN_LIFETIME_SECONDS: i64 = 60;
 pub const MAX_LIFETIME_SECONDS: i64 = 86_400;
 /// Default lifetime.
 pub const DEFAULT_LIFETIME_SECONDS: i64 = 3_600;
+/// The decline code recorded when the network holds another request under an operation's
+/// identity (D-040). On a checkout attempt it means the server lost the attempt the
+/// network answered (a restore): the session closes (D-065).
+pub const NETWORK_IDENTITY_CONFLICT: &str = "network_identity_conflict";
 
 /// When the money is captured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -81,6 +85,11 @@ pub enum CheckoutState {
     Authorized,
     /// The whole amount was captured.
     Paid,
+    /// The network holds another request under this attempt's identity: the server lost
+    /// what the network answered (a restore of its database). The session is closed to new
+    /// attempts, so it can never charge twice; reconciliation reports the disagreement
+    /// (D-065).
+    Conflict,
 }
 
 impl CheckoutState {
@@ -94,6 +103,7 @@ impl CheckoutState {
             Self::NotExecuted => "not_executed",
             Self::Authorized => "authorized",
             Self::Paid => "paid",
+            Self::Conflict => "conflict",
         }
     }
 }
@@ -122,6 +132,8 @@ pub struct AttemptFacts {
     pub capture_tries: i32,
     /// Captured minor units (the payment's journal-backed sum).
     pub captured_minor: i64,
+    /// True when the authorization was refused as a network identity conflict.
+    pub conflict: bool,
 }
 
 /// The payer-facing state and next step.
@@ -134,10 +146,13 @@ pub struct Derived {
 }
 
 /// True when a new attempt may start after `latest` (the latest attempt's authorize state;
-/// `None` = no attempt). An attempt without its operation row yet is still open.
-pub fn admits_new_attempt(latest: Option<Option<OperationState>>) -> bool {
+/// `None` = no attempt). An attempt without its operation row yet is still open, and one
+/// refused as a network identity conflict (`conflicted`) closes the session: the network
+/// may hold a charge the server no longer knows about (review M1, D-065).
+pub fn admits_new_attempt(latest: Option<Option<OperationState>>, conflicted: bool) -> bool {
     match latest {
         None => true,
+        Some(_) if conflicted => false,
         Some(state) => matches!(
             state,
             Some(OperationState::Declined | OperationState::NotExecuted)
@@ -160,6 +175,12 @@ pub fn derive(
             next_action: pay,
         };
     };
+    if facts.conflict {
+        return Derived {
+            state: CheckoutState::Conflict,
+            next_action: None,
+        };
+    }
     let (state, next_action) = match facts.authorize {
         None | Some(OperationState::Pending) => (CheckoutState::Processing, Some(NextAction::Wait)),
         Some(OperationState::Uncertain) => (CheckoutState::Uncertain, Some(NextAction::Wait)),
@@ -232,7 +253,7 @@ pub enum FieldError {
     Description,
     /// An embed origin is not an exact loopback origin.
     #[error(
-        "embed_origins are exact origins like http://127.0.0.1:5173 (loopback only in the local/CI mode, D-023)"
+        "embed_origins are exact origins like http://127.0.0.1:5173 (loopback hosts only in the local/CI mode, D-023)"
     )]
     EmbedOrigin,
     /// Too many embed origins.
@@ -272,14 +293,23 @@ pub fn validate_description(text: &str) -> Result<(), FieldError> {
     Ok(())
 }
 
-/// The host part of a loopback authority, lowercased, if it is one.
-fn loopback_host(host: &str) -> Option<&'static str> {
-    match host.to_ascii_lowercase().as_str() {
-        "127.0.0.1" => Some("127.0.0.1"),
-        "localhost" => Some("localhost"),
-        "[::1]" => Some("[::1]"),
-        _ => None,
-    }
+/// The host part of a loopback authority, lowercased, if it is one: `127.0.0.1`, `[::1]`,
+/// `localhost`, or a name under `localhost` (RFC 6761; browsers resolve every
+/// `*.localhost` to loopback, D-065), such as `dashboard.localhost`.
+fn loopback_host(host: &str) -> Option<String> {
+    let host = host.to_ascii_lowercase();
+    let named = host.strip_suffix(".localhost").is_some_and(|label| {
+        label.split('.').all(|part| {
+            !part.is_empty()
+                && part.len() <= 63
+                && !part.starts_with('-')
+                && !part.ends_with('-')
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
+    });
+    (matches!(host.as_str(), "127.0.0.1" | "localhost" | "[::1]") || named).then_some(host)
 }
 
 /// Splits `scheme://authority...` for http(s) URLs of visible ASCII.
@@ -368,6 +398,7 @@ mod tests {
             capture,
             capture_tries: i32::from(capture.is_some()),
             captured_minor: captured,
+            conflict: false,
         }
     }
 
@@ -498,17 +529,32 @@ mod tests {
 
     #[test]
     fn a_new_attempt_waits_for_the_last_to_end_without_money() {
-        assert!(admits_new_attempt(None));
-        assert!(admits_new_attempt(Some(Some(S::Declined))));
-        assert!(admits_new_attempt(Some(Some(S::NotExecuted))));
+        assert!(admits_new_attempt(None, false));
+        assert!(admits_new_attempt(Some(Some(S::Declined)), false));
+        assert!(admits_new_attempt(Some(Some(S::NotExecuted)), false));
         for open in [
             None,
             Some(S::Pending),
             Some(S::Uncertain),
             Some(S::Succeeded),
         ] {
-            assert!(!admits_new_attempt(Some(open)), "{open:?}");
+            assert!(!admits_new_attempt(Some(open), false), "{open:?}");
         }
+    }
+
+    #[test]
+    fn a_network_identity_conflict_closes_the_session_instead_of_declining() {
+        // Review M1: recorded as a decline, it used to admit a new, charging attempt.
+        assert!(!admits_new_attempt(Some(Some(S::Declined)), true));
+        let mut f = facts(Some(S::Declined), None, 0);
+        f.conflict = true;
+        assert_eq!(
+            derive(CaptureMethod::Automatic, 2_500, Some(&f), true),
+            Derived {
+                state: CheckoutState::Conflict,
+                next_action: None
+            }
+        );
     }
 
     #[test]
@@ -578,6 +624,10 @@ mod tests {
             "*",
             "'none'",
             "http://127.0.0.1:5173;script-src",
+            "http://evil.com.localhost.example:80",
+            "http://.localhost:80",
+            "http://-x.localhost:80",
+            "http://a_b.localhost:80",
         ] {
             assert_eq!(canonical_origin(bad), Err(FieldError::EmbedOrigin), "{bad}");
         }

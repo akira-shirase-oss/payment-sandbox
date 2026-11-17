@@ -148,6 +148,10 @@ pub enum AttemptError {
     /// The latest attempt may still turn into money (pending, uncertain or succeeded).
     #[error("the session's latest attempt is still open or succeeded")]
     Open,
+    /// The network holds another request under an attempt's identity (a restore lost it):
+    /// the session takes no new attempt (D-065).
+    #[error("the session is closed: the network disagrees with its record of an attempt")]
+    Closed,
     /// Every attempt was used.
     #[error("the session has used all of its attempts")]
     Exhausted,
@@ -278,7 +282,7 @@ pub async fn begin_attempt(
         };
     }
     let latest = sqlx::query(
-        "SELECT o.state FROM checkout_attempts a
+        "SELECT o.state, o.decline_code FROM checkout_attempts a
            LEFT JOIN operations o ON o.project_id = a.project_id AND o.id = a.authorize_operation_id
           WHERE a.project_id = $1 AND a.session_id = $2
           ORDER BY a.number DESC LIMIT 1",
@@ -298,7 +302,17 @@ pub async fn begin_attempt(
                 .transpose()?,
         ),
     };
-    if !checkout::admits_new_attempt(latest_state) {
+    let conflicted = match &latest {
+        Some(row) => {
+            row.try_get::<Option<String>, _>("decline_code")?.as_deref()
+                == Some(checkout::NETWORK_IDENTITY_CONFLICT)
+        }
+        None => false,
+    };
+    if conflicted {
+        return Err(AttemptError::Closed);
+    }
+    if !checkout::admits_new_attempt(latest_state, conflicted) {
         return Err(AttemptError::Open);
     }
     if expired {

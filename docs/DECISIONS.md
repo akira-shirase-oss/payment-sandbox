@@ -887,6 +887,42 @@ smallest version that meets that gate.
   observations on a development machine, not capacity, and have no threshold yet: the
   first record sets the baseline.
 
+- **D-065 — The M6 review: a restore cannot charge twice; the dashboard has a host of its
+  own; sessions per key are bounded.** Each closed with a test that failed first.
+  - *M1 (high):* after a restore of an older backup the server reuses an attempt number
+    the network already answered. A different scenario under it got the network's `409`,
+    which D-040 records as a decline (`network_identity_conflict`), and any decline admitted
+    a new attempt: approve then charged a second time (two authorizations and two captures
+    of 2,500). Now that conflict never counts as a decline: the attempt shows `conflict`
+    ("Needs review"), the session takes no new attempt (`409 checkout_closed`), and
+    reconciliation against the network reports the disagreement. Attempt keys keep their
+    numbers on purpose, rather than gaining the restore generation (D-050): a number keeps
+    its meaning across a restore, so the same scenario paid again under it reaches the
+    network's record and recovers the payment once (D-015), whereas a key that changes with
+    the generation would make the first attempt after a restore a new identity, a second
+    real charge the conflict check could never see; and a session can never move past an
+    attempt the network approved, because that number either replays the approval or
+    conflicts. Tests: `after_a_restore_a_conflicting_attempt_closes_the_session_and_never_charges_twice`
+    (a `pg_dump` restore into the second cluster, D-055) and
+    `after_a_restore_paying_again_recovers_the_payment_without_a_second_charge`;
+    `checkout::tests::a_network_identity_conflict_closes_the_session_instead_of_declining`.
+  - *M2 (low):* browsers send a cookie to every port of its host, and a dashboard request
+    carrying the cookie but no fetch metadata was answered. The dashboard now has a host
+    name of its own, `http://dashboard.localhost:56084` by default (`*.localhost` is
+    loopback, RFC 6761, and Chromium keeps `__Host-` cookies there; checked with Chromium
+    156): a request on any other host is redirected there (pages) or refused `421`
+    (anything else), so its cookie is never set for, or sent to, 127.0.0.1. Every API read
+    also needs `Sec-Fetch-Site: same-origin` or, without fetch metadata, the dashboard's
+    exact `Origin`; scripts and `curl` use `/v1` with a key instead. Embed origins and
+    return URLs accept `*.localhost` names too. Tests:
+    `reads_need_fetch_metadata_or_this_origin_even_with_the_cookie`,
+    `the_dashboard_answers_only_on_its_own_host_name`, and the sign-in journey (the cookie's
+    domain is the dashboard's host; the checkout's origin has no such cookie).
+  - *M3 (low):* one key could fill all 4,096 sessions and lock everyone out of sign-in for
+    30 minutes. A key now holds at most 8 sessions; its next sign-in ends its oldest.
+    Filling the table takes 512 keys. Test:
+    `one_key_holds_a_bounded_number_of_sessions_and_its_oldest_go_first`.
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

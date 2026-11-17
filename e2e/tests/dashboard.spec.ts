@@ -39,8 +39,11 @@ test('signing in gives a host-only session cookie, and signing out ends it on th
 	const session = cookies.find((c) => c.name === '__Host-ps_dashboard');
 	expect(session).toBeDefined();
 	expect(session).toMatchObject({ httpOnly: true, secure: true, sameSite: 'Strict', path: '/' });
-	// The page cannot read it.
+	// The page cannot read it, and it belongs to the dashboard's own host name: the
+	// checkout (127.0.0.1) never receives it (D-065).
 	expect(await page.evaluate(() => document.cookie)).not.toContain('ps_dashboard');
+	expect(session?.domain).toBe(new URL(env.dashboard).hostname);
+	expect((await context.cookies(env.checkout)).map((c) => c.name)).not.toContain('__Host-ps_dashboard');
 	// A state change without the CSRF token is refused, even with the cookie.
 	const forged = await page.evaluate(async () => (await fetch('/api/session/sign-out', { method: 'POST', body: '{}', headers: { 'content-type': 'application/json' } })).status);
 	expect(forged).toBe(403);

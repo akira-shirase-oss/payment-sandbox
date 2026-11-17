@@ -79,8 +79,13 @@ pub enum ErrorCode {
     CheckoutAttemptsExhausted,
     /// The checkout session expired.
     CheckoutExpired,
+    /// The network disagrees with the session's record of an attempt (a restore): closed
+    /// to new attempts (D-065).
+    CheckoutClosed,
     /// A simulator control without the operator's credential (D-063).
     OperatorCredentialRequired,
+    /// A request for the dashboard on a host name other than its own (D-065).
+    MisdirectedRequest,
     /// A defect. Details are in the logs only.
     Internal,
 }
@@ -222,9 +227,17 @@ pub enum ApiError {
     /// Expired.
     #[error("this checkout has expired")]
     CheckoutExpired,
+    /// Closed after a network identity conflict (D-065).
+    #[error(
+        "this checkout is closed: the simulated network holds a different record of one of its attempts, so no new attempt may charge again"
+    )]
+    CheckoutClosed,
     /// No operator credential for a simulator control (D-063).
     #[error("simulator controls need the operator credential (X-Operator-Token)")]
     OperatorCredentialRequired,
+    /// The wrong host name for this site (D-065).
+    #[error("this site answers on its own host name only; use the dashboard's origin")]
+    Misdirected,
     /// Defect.
     #[error("internal error")]
     Internal(#[source] anyhow::Error),
@@ -260,18 +273,20 @@ impl ApiError {
             | Self::InsufficientCapacity(_)
             | Self::InvalidState(_)
             | Self::Conflict(_)
-            | Self::StaleCursor => StatusCode::CONFLICT,
+            | Self::StaleCursor
+            | Self::CheckoutAttemptOpen
+            | Self::CheckoutAttemptsExhausted
+            | Self::CheckoutExpired
+            | Self::CheckoutClosed => StatusCode::CONFLICT,
             Self::Unauthorized | Self::OperatorCredentialRequired => StatusCode::UNAUTHORIZED,
             Self::Forbidden(_) | Self::CrossOrigin => StatusCode::FORBIDDEN,
-            Self::CheckoutAttemptOpen | Self::CheckoutAttemptsExhausted | Self::CheckoutExpired => {
-                StatusCode::CONFLICT
-            }
             Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             Self::RouteNotFound | Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Overloaded
             | Self::PaymentBusy
             | Self::Unavailable(_)
             | Self::DatabaseTimeout(_) => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Misdirected => StatusCode::MISDIRECTED_REQUEST,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -307,7 +322,9 @@ impl ApiError {
             Self::CheckoutAttemptOpen => ErrorCode::CheckoutAttemptOpen,
             Self::CheckoutAttemptsExhausted => ErrorCode::CheckoutAttemptsExhausted,
             Self::CheckoutExpired => ErrorCode::CheckoutExpired,
+            Self::CheckoutClosed => ErrorCode::CheckoutClosed,
             Self::OperatorCredentialRequired => ErrorCode::OperatorCredentialRequired,
+            Self::Misdirected => ErrorCode::MisdirectedRequest,
             Self::Internal(_) => ErrorCode::Internal,
         }
     }
