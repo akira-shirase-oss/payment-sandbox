@@ -312,10 +312,13 @@ pub fn operation_json(o: &Operation) -> Value {
     })
 }
 
-/// `GET /v1/balances/{currency}/{account}/explain` query.
+/// `GET /v1/balances/{currency}/{account}/explain` query: a first page has none of the
+/// cursor fields; later pages pass back `as_of`, `after_seq` and `running` from `next`.
 #[derive(Debug, Deserialize)]
 pub struct ExplainQuery {
+    as_of: Option<String>,
     after_seq: Option<i64>,
+    running: Option<i64>,
     limit: Option<i64>,
 }
 
@@ -331,12 +334,32 @@ pub async fn explain(
     let currency = Currency::from_code(&currency).map_err(|_| ApiError::NotFound("currency"))?;
     let account = sandbox_domain::AccountKind::from_code(&account)
         .map_err(|_| ApiError::NotFound("account"))?;
+    let cursor = match (q.as_of, q.after_seq, q.running) {
+        (Some(as_of), Some(after_seq), Some(running))
+            if as_of.len() <= 16_384
+                && as_of
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || b == b':' || b == b',') =>
+        {
+            Some(sandbox_db::reconcile::ExplainCursor {
+                as_of,
+                after_seq,
+                running,
+            })
+        }
+        (None, None, None) => None,
+        _ => {
+            return Err(ApiError::BadRequest(
+                "pass as_of, after_seq and running together, as returned in `next`".to_owned(),
+            ));
+        }
+    };
     let explanation = sandbox_db::reconcile::explain(
         &state.db,
         auth.scope(),
         currency.code(),
         account.code(),
-        q.after_seq.unwrap_or(0),
+        cursor,
         q.limit.unwrap_or(100),
     )
     .await?;

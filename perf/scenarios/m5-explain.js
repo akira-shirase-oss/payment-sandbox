@@ -63,18 +63,19 @@ export default function (data) {
 
 export function teardown(data) {
   for (const account of accounts) {
-    let after = 0;
+    let cursor = '';
     let sum = 0;
     let balance = null;
     let signedBalance = null;
     for (let page = 0; page < 100000; page++) {
-      const res = call('GET', `/v1/balances/EUR/${account}/explain?after_seq=${after}&limit=1000`, data.key, undefined, null, { phase: 'gate' });
+      const res = call('GET', `/v1/balances/EUR/${account}/explain?limit=1000${cursor}`, data.key, undefined, null, { phase: 'gate' });
       const body = res.json();
       balance = body.balance_minor;
       signedBalance = body.explanation.balance_minor;
       for (const line of body.explanation.lines) sum += line.amount_minor;
-      if (body.explanation.next_after_seq === null) break;
-      after = body.explanation.next_after_seq;
+      const next = body.explanation.next;
+      if (next === null) break;
+      cursor = `&as_of=${encodeURIComponent(next.as_of)}&after_seq=${next.after_seq}&running=${next.running}`;
     }
     console.log(`explain ${account}: balance=${balance} lines sum=${sum}`);
     check(sum, { 'the explanation sums to the balance': (s) => s === signedBalance }, { phase: 'gate' });

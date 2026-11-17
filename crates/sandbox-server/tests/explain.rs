@@ -61,7 +61,7 @@ async fn every_balance_is_explained_line_by_line_across_pages() {
     assert_eq!(balances.len(), 3);
     for balance in balances {
         let account = balance["account"].as_str().unwrap();
-        let mut after = 0_i64;
+        let mut cursor = String::new();
         let mut sum = 0_i64;
         let mut lines = 0_i64;
         let mut last_running = None;
@@ -69,7 +69,7 @@ async fn every_balance_is_explained_line_by_line_across_pages() {
         loop {
             let (status, page) = app
                 .get(
-                    &format!("/v1/balances/USD/{account}/explain?after_seq={after}&limit=3"),
+                    &format!("/v1/balances/USD/{account}/explain?limit=3{cursor}"),
                     &key,
                 )
                 .await;
@@ -86,8 +86,14 @@ async fn every_balance_is_explained_line_by_line_across_pages() {
                 last_running = Some(sum);
             }
             pages += 1;
-            if let Some(next) = page["explanation"]["next_after_seq"].as_i64() {
-                after = next;
+            let next = &page["explanation"]["next"];
+            if next.is_object() {
+                cursor = format!(
+                    "&as_of={}&after_seq={}&running={}",
+                    next["as_of"].as_str().unwrap(),
+                    next["after_seq"],
+                    next["running"]
+                );
             } else {
                 assert_eq!(page["explanation"]["line_count"].as_i64().unwrap(), lines);
                 break;
@@ -139,6 +145,109 @@ async fn a_planted_drift_is_detected_exactly() {
         .await
         .unwrap();
     app.assert_reconciled(&key).await;
+    app.cleanup().await;
+    sim.remove().await;
+}
+
+/// Review finding 5 (experiment X1): an entry that allocated its sequence number earlier but
+/// commits later must not make paging skip it. Every page of one explanation reports the
+/// same balance, and the lines of all pages sum exactly to it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn explain_pages_stay_consistent_while_entries_commit_out_of_order() {
+    use sandbox_db::journal::{self, EntryRefs};
+    use sandbox_domain::identity::entry_id;
+    use sandbox_domain::{Amount, Currency, Recipe};
+    let sim = TestSim::start().await;
+    let app = TestApp::with_sim(&sim, &[]).await;
+    let (_, key) = app.project("store").await;
+    let pids = purchases(&app, &key).await;
+    let (_, project) = app.get("/v1/project", &key).await;
+    let scope = sandbox_db::ProjectScope {
+        project_id: project["project"]["id"].as_str().unwrap().parse().unwrap(),
+        epoch: 1,
+    };
+    let (_, before) = app
+        .get("/v1/balances/USD/merchant_pending/explain?limit=1000", &key)
+        .await;
+    let committed = before["explanation"]["line_count"].as_i64().unwrap();
+
+    // A posting allocates its sequence number now and commits later.
+    let mut held = app.db.pool.begin().await.unwrap();
+    let entry = Recipe::Capture
+        .post(Currency::Usd, Amount::new(200).unwrap())
+        .unwrap();
+    journal::post(
+        &mut held,
+        scope,
+        entry_id(uuid::Uuid::now_v7(), Recipe::Capture),
+        &entry,
+        EntryRefs::default(),
+    )
+    .await
+    .unwrap();
+    // Meanwhile a later posting commits.
+    let (status, _) = app
+        .post(
+            &format!("/v1/payments/{}/refunds", pids[1]),
+            &key,
+            Some("late"),
+            json!({"amount": 50}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let first = format!(
+        "/v1/balances/USD/merchant_pending/explain?limit={}",
+        committed + 1
+    );
+    let (_, page) = app.get(&first, &key).await;
+    held.commit().await.unwrap();
+    let balance = page["explanation"]["balance_minor"].as_i64().unwrap();
+    let mut sum: i64 = page["explanation"]["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["amount_minor"].as_i64().unwrap())
+        .sum();
+    let mut cursor = page["explanation"]["next"].clone();
+    for _ in 0..100 {
+        let path = if cursor.is_object() {
+            format!(
+                "/v1/balances/USD/merchant_pending/explain?limit={}&as_of={}&after_seq={}&running={}",
+                committed + 1,
+                cursor["as_of"].as_str().unwrap(),
+                cursor["after_seq"],
+                cursor["running"]
+            )
+        } else {
+            break;
+        };
+        let (_, page) = app.get(&path, &key).await;
+        assert_eq!(
+            page["explanation"]["balance_minor"].as_i64().unwrap(),
+            balance,
+            "the balance moved between pages: {page}"
+        );
+        sum += page["explanation"]["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l["amount_minor"].as_i64().unwrap())
+            .sum::<i64>();
+        cursor = page["explanation"]["next"].clone();
+    }
+    assert_eq!(
+        sum, balance,
+        "the pages' lines must sum to the balance they report"
+    );
+    // A fresh explanation sees both new postings.
+    let (_, fresh) = app
+        .get("/v1/balances/USD/merchant_pending/explain?limit=1000", &key)
+        .await;
+    assert_eq!(
+        fresh["explanation"]["line_count"].as_i64().unwrap(),
+        committed + 2
+    );
     app.cleanup().await;
     sim.remove().await;
 }

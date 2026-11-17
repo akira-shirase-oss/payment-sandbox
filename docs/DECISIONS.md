@@ -357,6 +357,22 @@ review found. Each states the choice, the alternative and the cost.
   D-036. Tests: `network_agreement_is_project_scoped_complete_and_checked_both_ways`
   (100,001 records) and the extended R1 test.
 
+- **D-042 — An explanation is of one horizon.** Review finding: explain
+  paged by `journal_entries.seq`, which is allocation order, not commit
+  order, and each page read its own snapshot. A posting that took a lower
+  sequence number but committed later was skipped, and the lines summed to
+  −150 against a balance of −350. Now an explanation is of the first
+  page's snapshot: only entries whose transactions that snapshot saw as
+  committed count (`pg_visible_in_snapshot`). A transaction in progress at
+  that moment stays out even after it commits, so the set can never change.
+  Paging by sequence over it is stable, and the balance (the live balance
+  at that moment) and every page are computed over that same set. The
+  snapshot's `xmin` alone was tried first and rejected: it is cluster-wide,
+  so any open transaction anywhere held the explanation back. The cursor
+  `next` carries `as_of`, `after_seq` and the running total, so no page
+  re-sums earlier lines (review 15). A newer explanation sees what committed since. Test:
+  `explain_pages_stay_consistent_while_entries_commit_out_of_order`.
+
 ## Open questions (still open)
 
 - **Dashboard authentication** — per-project-owner session login is the

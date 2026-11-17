@@ -174,87 +174,98 @@ pub struct ExplainedLine {
     pub running_minor: i64,
 }
 
-/// A page of the postings that sum to an account's balance, in posting order.
+/// Where the next page of an explanation starts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExplainCursor {
+    /// The first page's snapshot (`xmin:xmax:xip,…`): only entries of transactions it saw
+    /// as committed count.
+    pub as_of: String,
+    /// Entries after this allocation sequence.
+    pub after_seq: i64,
+    /// The running total through the previous page.
+    pub running: i64,
+}
+
+/// A page of the postings that sum to an account's balance as of one snapshot (review
+/// finding 5; D-042): the first page's snapshot. The entries its transactions committed
+/// are a fixed set — a transaction in progress at that moment stays invisible to it even
+/// after it commits — so paging by sequence over it is stable and every page reports the
+/// same balance, which is the live balance at that moment. Later commits appear in the next
+/// explanation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Explanation {
-    /// The account's signed balance (every line, not just this page).
+    /// The snapshot this explanation is of.
+    pub as_of: String,
+    /// The account's signed balance at the horizon (every line, not just this page).
     pub balance_minor: i64,
-    /// Number of lines in total.
+    /// Number of lines at the horizon.
     pub line_count: i64,
     /// This page.
     pub lines: Vec<ExplainedLine>,
-    /// Pass as `after_seq` for the next page; `None` at the end.
-    pub next_after_seq: Option<i64>,
+    /// The cursor of the next page; `None` at the end.
+    pub next: Option<ExplainCursor>,
 }
 
-/// Explains `account` in `currency`: the lines with entry seq after `after_seq`, at most
-/// `limit`, each with the running total, plus the total balance. Summing every page's lines
-/// gives exactly the balance.
+/// Explains `account` in `currency`. Without a cursor it starts at the current horizon.
 pub async fn explain(
     pool: &PgPool,
     scope: ProjectScope,
     currency: &str,
     account: &str,
-    after_seq: i64,
+    cursor: Option<ExplainCursor>,
     limit: i64,
 ) -> Result<Explanation, DbError> {
     let limit = limit.clamp(1, 1_000);
-    let mut tx = pool.begin().await?;
-    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-        .execute(&mut *tx)
-        .await?;
+    let (as_of, after_seq, running) = match cursor {
+        Some(c) => (c.as_of, c.after_seq, c.running),
+        None => (
+            sqlx::query_scalar("SELECT pg_current_snapshot()::text")
+                .fetch_one(pool)
+                .await?,
+            0,
+            0,
+        ),
+    };
     let (balance_minor, line_count): (i64, i64) = sqlx::query_as(
-        "SELECT coalesce(sum(amount_minor), 0)::bigint, count(*) FROM journal_lines
-          WHERE project_id = $1 AND dataset_epoch = $2 AND currency = $3 AND account_kind = $4",
-    )
-    .bind(scope.project_id)
-    .bind(scope.epoch)
-    .bind(currency)
-    .bind(account)
-    .fetch_one(&mut *tx)
-    .await?;
-    // The running total before this page, once.
-    let before_page: i64 = sqlx::query_scalar(
-        "SELECT coalesce(sum(l.amount_minor), 0)::bigint FROM journal_lines l
+        "SELECT coalesce(sum(l.amount_minor), 0)::bigint, count(*) FROM journal_lines l
            JOIN journal_entries e ON e.project_id = l.project_id AND e.id = l.entry_id
-          WHERE l.project_id = $1 AND l.dataset_epoch = $2 AND l.currency = $3
-            AND l.account_kind = $4 AND e.seq <= $5",
+          WHERE l.project_id = $1 AND l.dataset_epoch = $2 AND l.currency = $3 AND l.account_kind = $4
+            AND pg_visible_in_snapshot(e.created_xact, $5::pg_snapshot)",
     )
     .bind(scope.project_id)
     .bind(scope.epoch)
     .bind(currency)
     .bind(account)
-    .bind(after_seq)
-    .fetch_one(&mut *tx)
+    .bind(&as_of)
+    .fetch_one(pool)
     .await?;
     let rows = sqlx::query(
         "SELECT e.seq, e.id, e.recipe, e.payment_id, e.operation_id, l.amount_minor
            FROM journal_lines l
            JOIN journal_entries e ON e.project_id = l.project_id AND e.id = l.entry_id
           WHERE l.project_id = $1 AND l.dataset_epoch = $2 AND l.currency = $3 AND l.account_kind = $4
-            AND e.seq > $5
+            AND pg_visible_in_snapshot(e.created_xact, $5::pg_snapshot) AND e.seq > $6
           ORDER BY e.seq, l.line_no
-          LIMIT $6",
+          LIMIT $7",
     )
     .bind(scope.project_id)
     .bind(scope.epoch)
     .bind(currency)
     .bind(account)
+    .bind(&as_of)
     .bind(after_seq)
     .bind(limit)
-    .fetch_all(&mut *tx)
+    .fetch_all(pool)
     .await?;
-    tx.commit().await?;
-    // Every recipe posts to an account at most once per entry, so paging by entry
-    // sequence never splits an entry's lines on one account.
-    let mut running = before_page;
+    // Every recipe posts to an account at most once per entry, so paging by entry sequence
+    // never splits an entry's lines on one account.
+    let mut total = running;
     let mut lines = Vec::with_capacity(rows.len());
     for row in &rows {
         let amount: i64 = row.try_get("amount_minor")?;
-        let total = running
+        total = total
             .checked_add(amount)
             .ok_or_else(|| DbError::Constraint("running total overflow".to_owned()))?;
-        running = total;
         lines.push(ExplainedLine {
             seq: row.try_get("seq")?,
             entry_id: row.try_get("id")?,
@@ -265,15 +276,20 @@ pub async fn explain(
             running_minor: total,
         });
     }
-    let next_after_seq = if lines.len() == usize::try_from(limit).unwrap_or(0) {
-        lines.last().map(|l| l.seq)
-    } else {
-        None
-    };
+    let next = (lines.len() == usize::try_from(limit).unwrap_or(0))
+        .then(|| {
+            lines.last().map(|l| ExplainCursor {
+                as_of: as_of.clone(),
+                after_seq: l.seq,
+                running: total,
+            })
+        })
+        .flatten();
     Ok(Explanation {
+        as_of,
         balance_minor,
         line_count,
         lines,
-        next_after_seq,
+        next,
     })
 }
