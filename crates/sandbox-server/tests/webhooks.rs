@@ -986,3 +986,45 @@ async fn webhooks_may_not_target_the_sandboxs_own_ports_or_unlisted_ones() {
     }
     sim.remove().await;
 }
+
+/// D-066: events of a payment a reset archived are still delivered (at least once, they
+/// are history), and the development store records them without fulfilling anything:
+/// its re-read answers `410 dataset_archived`, which is final, not a reason to retry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_event_delivered_after_a_reset_is_recorded_and_fulfills_nothing() {
+    let (sim, app, key) = setup().await;
+    let (_, reader) = app.key(&key, &["read"]).await;
+    let api = serve_api(&app).await;
+    let store = new_store();
+    let running = start_store("127.0.0.1:0", store.clone()).await;
+    let (_, secret) = endpoint(&app, &key, &format!("{}/webhooks", running.url)).await;
+    store
+        .configure(StoreConfig {
+            sandbox_url: api.url.clone(),
+            api_key: reader,
+            secrets: vec![secret],
+        })
+        .await;
+    purchase(&app, &key, 1, 1_000).await;
+    let (status, body) = app
+        .post(
+            "/v1/project/reset",
+            &key,
+            None,
+            json!({"confirm": "store", "epoch": 1}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let deliverer = Deliverer::new(&app.state, Arc::new(ShiftedClock::default())).unwrap();
+    let report = deliver_all(&deliverer).await;
+    assert_eq!(
+        (report.delivered, report.retried, report.dead),
+        (2, 0, 0),
+        "{report:?}"
+    );
+    assert_eq!(store.inbox_len().await.unwrap(), 2);
+    assert_eq!(store.fulfillments().await.unwrap(), vec![]);
+    app.cleanup().await;
+    sim.remove().await;
+}

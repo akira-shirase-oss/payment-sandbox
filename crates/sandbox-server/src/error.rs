@@ -86,6 +86,12 @@ pub enum ErrorCode {
     OperatorCredentialRequired,
     /// A request for the dashboard on a host name other than its own (D-065).
     MisdirectedRequest,
+    /// A reset's typed confirmation is not the project's slug (D-066); nothing changed.
+    ConfirmationMismatch,
+    /// A reset named an epoch that is no longer current (D-066); nothing changed.
+    EpochChanged,
+    /// The resource belongs to an earlier dataset epoch, archived by a reset (D-066).
+    DatasetArchived,
     /// A defect. Details are in the logs only.
     Internal,
 }
@@ -238,6 +244,25 @@ pub enum ApiError {
     /// The wrong host name for this site (D-065).
     #[error("this site answers on its own host name only; use the dashboard's origin")]
     Misdirected,
+    /// A reset whose typed confirmation is not the project's slug (D-066).
+    #[error("the confirmation must be this project's slug, typed exactly; nothing was reset")]
+    ConfirmationMismatch,
+    /// A reset of an epoch that is no longer current (D-066).
+    #[error(
+        "the dataset is now at epoch {current}, not the epoch named; nothing was reset (read the project and confirm again)"
+    )]
+    EpochChanged {
+        /// The current epoch.
+        current: i32,
+    },
+    /// Archived by a reset (D-066).
+    #[error(
+        "this payment belongs to dataset epoch {epoch}, which a reset archived; it stays in the journal but current reads and writes use the new epoch"
+    )]
+    DatasetArchived {
+        /// The payment's epoch.
+        epoch: i32,
+    },
     /// Defect.
     #[error("internal error")]
     Internal(#[source] anyhow::Error),
@@ -264,9 +289,10 @@ impl ApiError {
             | Self::IdempotencyKeyRequired
             | Self::InvalidCursor
             | Self::InvalidIdempotencyKey(_) => StatusCode::BAD_REQUEST,
-            Self::InvalidBody(_) | Self::RawCardData | Self::InvalidPaymentToken(_) => {
-                StatusCode::UNPROCESSABLE_ENTITY
-            }
+            Self::InvalidBody(_)
+            | Self::RawCardData
+            | Self::InvalidPaymentToken(_)
+            | Self::ConfirmationMismatch => StatusCode::UNPROCESSABLE_ENTITY,
             Self::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::IdempotencyKeyConflict
@@ -277,7 +303,9 @@ impl ApiError {
             | Self::CheckoutAttemptOpen
             | Self::CheckoutAttemptsExhausted
             | Self::CheckoutExpired
-            | Self::CheckoutClosed => StatusCode::CONFLICT,
+            | Self::CheckoutClosed
+            | Self::EpochChanged { .. } => StatusCode::CONFLICT,
+            Self::DatasetArchived { .. } => StatusCode::GONE,
             Self::Unauthorized | Self::OperatorCredentialRequired => StatusCode::UNAUTHORIZED,
             Self::Forbidden(_) | Self::CrossOrigin => StatusCode::FORBIDDEN,
             Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
@@ -325,6 +353,9 @@ impl ApiError {
             Self::CheckoutClosed => ErrorCode::CheckoutClosed,
             Self::OperatorCredentialRequired => ErrorCode::OperatorCredentialRequired,
             Self::Misdirected => ErrorCode::MisdirectedRequest,
+            Self::ConfirmationMismatch => ErrorCode::ConfirmationMismatch,
+            Self::EpochChanged { .. } => ErrorCode::EpochChanged,
+            Self::DatasetArchived { .. } => ErrorCode::DatasetArchived,
             Self::Internal(_) => ErrorCode::Internal,
         }
     }

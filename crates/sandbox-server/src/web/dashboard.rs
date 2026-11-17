@@ -240,6 +240,12 @@ pub fn router(state: &AppState, site: Arc<Site>, origin: &str, sessions: Arc<Ses
         )
         .route("/api/status", get(status))
         .with_state(state.clone());
+    // The one state change the dashboard makes to a project (D-066): the API's own reset,
+    // with the session's identity (so `admin` is still required), this origin and the
+    // session's CSRF token.
+    let writes = Router::new()
+        .route("/api/v1/project/reset", post(handlers::projects::reset))
+        .with_state(state.clone());
     let reports = Router::new()
         .route(
             "/api/v1/reconciliation",
@@ -273,6 +279,7 @@ pub fn router(state: &AppState, site: Arc<Site>, origin: &str, sessions: Arc<Ses
         .with_state(ctx.clone());
     let hot = Router::new()
         .merge(behind_session(reads))
+        .merge(behind_session(writes))
         .merge(behind_session(signed))
         .merge(open);
     let app =
@@ -395,7 +402,8 @@ async fn session_json(
 ) -> Result<Value, ApiError> {
     let project = sandbox_db::projects::get(&ctx.state.db, identity.scope.project_id).await?;
     Ok(json!({
-        "project": {"id": project.id, "slug": project.slug, "name": project.name},
+        "project": {"id": project.id, "slug": project.slug, "name": project.name,
+                    "dataset_epoch": project.dataset_epoch},
         "scopes": identity.scopes.iter().map(|s| s.code()).collect::<Vec<_>>(),
         "csrf_token": csrf,
         "profile": match ctx.state.config.profile {

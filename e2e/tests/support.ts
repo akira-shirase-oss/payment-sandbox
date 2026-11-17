@@ -129,3 +129,33 @@ export async function badgesWhole(page: Page) {
 	);
 	expect(clipped).toEqual([]);
 }
+
+/** axe in the page: every serious or critical WCAG 2.1 A/AA violation, by rule and target. */
+export async function seriousViolations(page: Page): Promise<string[]> {
+	const { default: AxeBuilder } = await import('@axe-core/playwright');
+	const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+	return results.violations
+		.filter((v) => v.impact === 'serious' || v.impact === 'critical')
+		.map((v) => `${v.id} (${v.impact}): ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`);
+}
+
+/**
+ * Screenshots for docs/screens/ (the interface standard): 360 px and 1440 px wide, light and
+ * dark. Taken only when E2E_SCREENS_DIR is set (scripts/screens.sh), so CI writes nothing.
+ */
+export async function screens(page: Page, name: string) {
+	const dir = process.env.E2E_SCREENS_DIR;
+	if (!dir) return;
+	const original = page.viewportSize();
+	for (const width of [360, 1440]) {
+		for (const scheme of ['light', 'dark'] as const) {
+			await page.setViewportSize({ width, height: width === 360 ? 780 : 900 });
+			await page.emulateMedia({ colorScheme: scheme });
+			await page.evaluate((dark) => document.documentElement.classList.toggle('dark', dark), scheme === 'dark');
+			await page.screenshot({ path: `${dir}/${name}-${width}-${scheme}.png`, fullPage: true, animations: 'disabled' });
+		}
+	}
+	await page.emulateMedia({ colorScheme: 'light' });
+	await page.evaluate(() => document.documentElement.classList.remove('dark'));
+	if (original) await page.setViewportSize(original);
+}

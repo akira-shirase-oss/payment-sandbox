@@ -9,6 +9,7 @@ use axum::{
 };
 use sandbox_db::DbError;
 use sandbox_db::keys::NewKey;
+use sandbox_db::projects::ResetOutcome;
 use sandbox_domain::keys::{self, Scope};
 use sandbox_domain::project::{ProjectSlug, validate_name};
 use serde::Deserialize;
@@ -93,6 +94,62 @@ pub async fn current(State(state): State<AppState>, auth: Auth) -> Result<Respon
     auth.require(Scope::Read)?;
     let project = sandbox_db::projects::get(&state.db, auth.scope().project_id).await?;
     Ok(Json(json!({"project": project_json(&project), "simulated": true})).into_response())
+}
+
+/// `POST /v1/project/reset` body: the project's slug typed by a person, and the epoch they
+/// saw (so a repeated request cannot reset twice).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResetBody {
+    confirm: String,
+    epoch: i32,
+}
+
+/// Opens a new dataset epoch (D-022, D-066): `admin` only, with the slug typed as the
+/// confirmation and the current epoch named. Nothing is deleted: the earlier epoch's
+/// journal, payments, operations and events stay, archived; current reads, idempotency
+/// keys and explanations start afresh in the new epoch.
+pub async fn reset(
+    State(state): State<AppState>,
+    auth: Auth,
+    SandboxJson(body): SandboxJson<ResetBody>,
+) -> Result<Response, ApiError> {
+    auth.require(Scope::Admin)?;
+    let outcome = reset_project(&state, &auth, &body.confirm, body.epoch).await?;
+    Ok(Json(outcome).into_response())
+}
+
+/// The reset itself, shared by the API and the dashboard (which reaches it with the
+/// session's identity, its Origin and its CSRF token).
+pub async fn reset_project(
+    state: &AppState,
+    auth: &Auth,
+    confirm: &str,
+    epoch: i32,
+) -> Result<serde_json::Value, ApiError> {
+    auth.require(Scope::Admin)?;
+    let actor = format!("key:{}", auth.key_id());
+    let project_id = auth.scope().project_id;
+    match sandbox_db::projects::reset(&state.db, project_id, epoch, confirm, &actor, auth.key_id())
+        .await?
+    {
+        ResetOutcome::Reset {
+            from,
+            to,
+            archived_payments,
+        } => {
+            tracing::warn!(%project_id, from, to, archived_payments, "dataset reset: a new epoch is open");
+            let project = sandbox_db::projects::get(&state.db, project_id).await?;
+            Ok(json!({
+                "project": project_json(&project),
+                "reset": {"from_epoch": from, "to_epoch": to, "archived_payments": archived_payments,
+                          "note": "nothing was deleted: the earlier epoch's journal, payments and events are archived"},
+                "simulated": true,
+            }))
+        }
+        ResetOutcome::ConfirmationMismatch => Err(ApiError::ConfirmationMismatch),
+        ResetOutcome::EpochChanged { current } => Err(ApiError::EpochChanged { current }),
+    }
 }
 
 fn project_json(project: &sandbox_db::projects::Project) -> serde_json::Value {

@@ -145,9 +145,11 @@ pub async fn get(
     PathId(payment_id): PathId,
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Read)?;
-    let payment = sandbox_db::payments::get_payment(&state.db, auth.scope(), payment_id)
-        .await?
-        .ok_or(ApiError::NotFound("payment"))?;
+    let Some(payment) =
+        sandbox_db::payments::get_payment(&state.db, auth.scope(), payment_id).await?
+    else {
+        return Err(lifecycle::missing_payment(&state, auth.scope(), payment_id).await);
+    };
     let operations =
         sandbox_db::payments::operations_for_payment(&state.db, auth.scope(), payment_id).await?;
     Ok(Json(json!({
@@ -169,7 +171,7 @@ pub async fn journal(
         .await?
         .is_none()
     {
-        return Err(ApiError::NotFound("payment"));
+        return Err(lifecycle::missing_payment(&state, auth.scope(), payment_id).await);
     }
     let entries =
         sandbox_db::journal::entries_for_payment(&state.db, auth.scope(), payment_id).await?;

@@ -42,7 +42,11 @@
 </div>
 {#if error}<p role="alert" class="mb-4 text-sm text-destructive">{error}</p>{/if}
 {#if rows.length === 0 && done}
-	<p class="text-sm text-muted-foreground">No payments in this project yet.</p>
+	<p class="text-sm text-muted-foreground" data-testid="payments-empty">
+		No payments in this epoch yet. Make one from your store, with
+		<span class="font-mono">sandbox-cli payments create</span>, or by running a library scenario
+		(<span class="font-mono">sandbox-cli scenarios run purchase</span>).
+	</p>
 {:else}
 	<VirtualRows items={rows} rowHeight={64} viewport={560} label="Payments, newest first" onnearend={more}>
 		{#snippet row(p: Payment)}

@@ -83,10 +83,14 @@ apply it once → report, never blind replay. Materialized balances are
 recomputed from the journal and compared; a mismatch is a defect, not a
 rounding error.
 
-**Reset:** dataset reset requires the `admin` scope and a typed
-confirmation of the project slug, and opens a new dataset epoch — posted
-entries are archived, never deleted (D-022); projects stay isolated;
-simulator scenarios are seeded and preserved across runs.
+**Reset (D-022, D-066):** `POST /v1/project/reset {confirm, epoch}` (or the
+dashboard's Dataset page) requires the `admin` scope, the project slug typed
+as the confirmation and the current epoch; one transaction moves the
+project's `dataset_epoch` forward by one and appends an audit event. Posted
+entries, payments, operations and events of the earlier epoch are archived,
+never deleted; current reads and idempotency scopes use the new epoch; open
+operations resolve in their own epoch; old payments answer `410
+dataset_archived`.
 
 **Recovery after a restore:** the reverse reconciliation lists simulator
 operations whose identity the server does not know (its database was

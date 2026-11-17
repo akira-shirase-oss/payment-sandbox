@@ -923,6 +923,59 @@ smallest version that meets that gate.
     Filling the table takes 512 keys. Test:
     `one_key_holds_a_bounded_number_of_sessions_and_its_oldest_go_first`.
 
+## M7: the developer product (2026-11-17)
+
+M7's row names a Rust CLI, a TypeScript SDK, a seeded scenario library, dataset reset as a
+new epoch, sandbox labels end to end and migration/restore tests per release; its gate: each
+library scenario run twice yields the same states and events, reset needs `admin` and the
+typed slug and never deletes journal rows, and production-looking SDK configuration is
+refused. These fix the smallest version that meets it.
+
+- **D-066 — Dataset reset: one epoch forward, typed, raced safely, nothing deleted.**
+  `POST /v1/project/reset {confirm, epoch}` needs the `admin` scope; `confirm` must be the
+  project's slug exactly (`422 confirmation_mismatch` otherwise) and `epoch` the current
+  one (`409 epoch_changed`, naming the current epoch, otherwise), so a repeated or raced
+  request cannot reset twice: eight concurrent confirmations of one epoch open exactly one
+  new epoch. One transaction locks the project row, moves `dataset_epoch` forward by one and
+  appends a `dataset.reset` audit event naming the key. The runtime role gains exactly
+  `UPDATE (dataset_epoch)` on `projects` (a column grant, which also lets it take the row
+  lock); a trigger (`projects_epoch_moves_forward`, SQLSTATE `PSP01`) refuses every other
+  change to a project, for the owner too, and projects can no longer be deleted or
+  truncated (migration 0013). The protections manifest (D-058) gains the three triggers and
+  the function, and now checks **column** grants: `has_table_privilege` does not see them,
+  so `GRANT UPDATE (amount_minor) ON journal_lines TO ps_runtime` used to pass the server's
+  startup check (shown failing first, then fixed). After a reset: current reads, balances,
+  explanations and idempotency scopes use the new epoch (the same keys derive new
+  identities, D-015); a payment of an earlier epoch answers `410 dataset_archived` rather
+  than `404`, for reads and for captures, voids and refunds; explanation cursors of the old
+  epoch are refused (they seal it, D-056); checkout sessions of the old epoch read as
+  expired, so they take no new attempt; operations still open resolve later **in their own
+  epoch** (the reconciler uses each operation's epoch), so their money never appears in the
+  new one; events already owed are still delivered (at least once, D-006), and the
+  development store records an archived payment's event and fulfills nothing (`410` is
+  final, not a reason to retry). Nothing of any epoch is deleted or changed. The dashboard
+  offers the same reset on a Dataset page (typed slug, the epoch shown in its header): the
+  API's own handler behind the session, so `admin` is still required, plus the dashboard's
+  Origin and CSRF token (D-062); a lost answer is shown as unknown, with a "check what
+  happened" read-back, never as done. Tests: `tests/reset.rs` (5), the dashboard's
+  `the_dashboards_reset_needs_admin_the_typed_slug_origin_and_csrf`, the webhook test
+  `an_event_delivered_after_a_reset_is_recorded_and_fulfills_nothing`, the weakenings in
+  `the_server_refuses_a_database_whose_protections_were_weakened`, and the journeys in
+  `e2e/tests/dataset.spec.ts` (keyboard alone, a raced reset, a lost answer).
+
+- **D-067 — The interface standard is tested in the journeys.** Maintainer standard,
+  2026-11-17: every screen added or touched uses the shared kit, designs every state (empty
+  with a next step, loading without layout jump, errors in plain words with a way to
+  recover and the code behind a details toggle, success, honest unknown), works by
+  keyboard with visible focus and labels, and reads at 360 and 1440 px in light and dark.
+  The proof is in `e2e/`: `a11y.spec.ts` runs axe (`@axe-core/playwright`, WCAG 2.1 A and
+  AA rules) on every screen of both sites in both schemes and fails on any serious or
+  critical violation (its first run found the new header link distinguishable by colour
+  alone, `link-in-text-block`; fixed), and journeys capture screenshots at 360 and 1440 px,
+  light and dark, into `docs/screens/` when `scripts/screens.sh` runs them (CI writes
+  none). Screens that existed before M7 and were not touched keep their M6 design; the
+  axe check covers them all the same.
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

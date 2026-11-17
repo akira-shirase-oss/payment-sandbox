@@ -21,6 +21,7 @@ pub fn app(state: &AppState) -> Router {
         .route("/v1/sandbox", get(sandbox_notice))
         .route("/v1/projects", post(handlers::projects::create))
         .route("/v1/project", get(handlers::projects::current))
+        .route("/v1/project/reset", post(handlers::projects::reset))
         .route(
             "/v1/keys",
             get(handlers::keys::list).post(handlers::keys::create),

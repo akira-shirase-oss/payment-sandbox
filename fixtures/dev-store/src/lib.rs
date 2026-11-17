@@ -10,7 +10,8 @@
 //!    if the payment has captured money, records the fulfillment under its own business key
 //!    — the payment id — at most once.
 //!
-//! A failure to re-read the payment answers `503`, so the sandbox retries later.
+//! A failure to re-read the payment answers `503`, so the sandbox retries later. A payment
+//! a dataset reset archived (`410`, D-066) is recorded in the inbox and fulfills nothing.
 //!
 //! `PUT /config` replaces the API key and the signing secrets the store trusts, so it is a
 //! test control (D-046): mounted only when the store was given an operator credential
@@ -358,6 +359,11 @@ async fn captured(
         .send()
         .await
         .map_err(err)?;
+    // A reset archived the payment's epoch (D-066): the event is real history, but the
+    // store's orders start afresh with the new epoch, so it is recorded and fulfills nothing.
+    if response.status() == reqwest::StatusCode::GONE {
+        return Ok(0);
+    }
     if !response.status().is_success() {
         return Err(StoreError(format!(
             "payment read answered {}",

@@ -224,6 +224,10 @@ async fn the_server_refuses_a_database_whose_protections_were_weakened() {
         "ALTER FUNCTION journal_lines_check_balance() RESET search_path",
         "GRANT UPDATE, DELETE ON journal_lines TO ps_runtime",
         "GRANT TRUNCATE ON operations TO ps_runtime",
+        // Column grants are privileges too (D-066): the table-level check missed them.
+        "GRANT UPDATE (amount_minor) ON journal_lines TO ps_runtime",
+        "GRANT UPDATE (slug) ON projects TO ps_runtime",
+        "DROP TRIGGER projects_epoch_moves_forward ON projects",
     ];
     for weakening in weakenings {
         let db = TestDb::new().await;

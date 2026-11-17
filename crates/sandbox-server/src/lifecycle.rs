@@ -119,9 +119,25 @@ pub async fn child(
             },
         )
         .await
-        .map_err(begin_error)?
+    };
+    let begun = match begun {
+        Ok(begun) => begun,
+        Err(BeginError::PaymentNotFound) => {
+            return Err(missing_payment(state, scope, payment_id).await);
+        }
+        Err(other) => return Err(begin_error(other)),
     };
     finish(state, scope, begun).await
+}
+
+/// The error for a payment this scope does not hold: `410 dataset_archived` when it belongs
+/// to an earlier epoch of the project (a reset archived it, D-066), else `404`.
+pub async fn missing_payment(state: &AppState, scope: ProjectScope, payment_id: Uuid) -> ApiError {
+    match payments::payment_epoch(&state.db, scope.project_id, payment_id).await {
+        Ok(Some(epoch)) if epoch != scope.epoch => ApiError::DatasetArchived { epoch },
+        Ok(_) => ApiError::NotFound("payment"),
+        Err(error) => error.into(),
+    }
 }
 
 async fn finish(state: &AppState, scope: ProjectScope, begun: Begin) -> Result<Outcome, ApiError> {

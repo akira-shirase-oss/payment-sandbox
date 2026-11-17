@@ -28,14 +28,18 @@ WITH expected_triggers (tbl, name, digest) AS (
            ('operations', 'operations_no_truncate', 'fca21370b8e532d970738903402625db'),
            ('operations', 'operations_resolved_is_final', 'f5ab60868728ffeae03a024304f87cc3'),
            ('payments', 'payments_no_delete', '9d8be5096e435ecdfe4e228c330ab2c1'),
-           ('payments', 'payments_no_truncate', 'e78203e1076c56708807bba773ee3dc9')
+           ('payments', 'payments_no_truncate', 'e78203e1076c56708807bba773ee3dc9'),
+           ('projects', 'projects_epoch_moves_forward', '42f3bb0af470fada5913435d2478ec18'),
+           ('projects', 'projects_no_delete', 'b53bfe3a62d4ecd4979b8f59c38e1056'),
+           ('projects', 'projects_no_truncate', '2ab4b2e96a7e082b0e910c5df0d04bf9')
 ), expected_functions (name, digest) AS (
     -- md5(pg_get_functiondef(oid)): the whole definition, body and settings included.
     VALUES ('journal_entries_check_lines', '0751af9ed7f638e9d937e6b5556d19a7'),
            ('journal_entries_stamp', '8df55a68832985280d17f363674717c8'),
            ('journal_lines_check_balance', '45d580297b8266c2c2d8ad823546e34b'),
            ('journal_refuse_change', '92238c34856bc8af8688e3c80df79b27'),
-           ('operations_resolved_is_final', 'ad4f3d10a4cc76f979df1abac1648a39')
+           ('operations_resolved_is_final', 'ad4f3d10a4cc76f979df1abac1648a39'),
+           ('projects_epoch_moves_forward', 'f419c2cbb6002139fafd2d24eb5aee23')
 ), expected_grants (tbl, privileges) AS (
     VALUES ('accounts', 'INSERT,SELECT'),
            ('api_keys', 'INSERT,SELECT,UPDATE'),
@@ -51,6 +55,10 @@ WITH expected_triggers (tbl, name, digest) AS (
            ('projects', 'INSERT,SELECT'),
            ('webhook_endpoints', 'INSERT,SELECT,UPDATE'),
            ('_sqlx_migrations', '')
+), expected_column_grants (tbl, col, privileges) AS (
+    -- Privileges held on single columns only, beyond the table-level ones above (D-066):
+    -- a reset writes this one column (and locks the row) and nothing else of a project.
+    VALUES ('projects', 'dataset_epoch', 'UPDATE')
 ), tables AS (
     SELECT c.oid, c.relname, pg_catalog.pg_get_userbyid(c.relowner) AS owner
       FROM pg_catalog.pg_class c
@@ -66,6 +74,17 @@ WITH expected_triggers (tbl, name, digest) AS (
            WHERE pg_catalog.has_table_privilege('ps_runtime', t.oid, x)
       ) p ON true
      GROUP BY t.relname
+), column_held AS (
+    -- A column grant (GRANT UPDATE (col) ON t) is invisible to has_table_privilege, so a
+    -- weakening such as UPDATE on journal_lines.amount_minor passed the table check above.
+    SELECT t.relname, a.attname,
+           string_agg(x, ',' ORDER BY x) AS privileges
+      FROM tables t
+      JOIN pg_catalog.pg_attribute a ON a.attrelid = t.oid AND a.attnum > 0 AND NOT a.attisdropped
+      CROSS JOIN unnest(ARRAY['SELECT', 'INSERT', 'UPDATE', 'REFERENCES']) AS x
+     WHERE pg_catalog.has_column_privilege('ps_runtime', t.oid, a.attnum, x)
+       AND NOT pg_catalog.has_table_privilege('ps_runtime', t.oid, x)
+     GROUP BY t.relname, a.attname
 )
 SELECT problem FROM (
     SELECT format('trigger %s.%s is missing or not enabled', e.tbl, e.name) AS problem
@@ -111,6 +130,17 @@ SELECT problem FROM (
                   coalesce(g.privileges, ''))
       FROM held h LEFT JOIN expected_grants g ON g.tbl = h.relname
      WHERE h.privileges <> coalesce(g.privileges, '')
+    UNION ALL
+    SELECT format('ps_runtime holds [%s] on column %s.%s; expected [%s]', c.privileges, c.relname,
+                  c.attname, coalesce(g.privileges, ''))
+      FROM column_held c
+      LEFT JOIN expected_column_grants g ON g.tbl = c.relname AND g.col = c.attname
+     WHERE c.privileges <> coalesce(g.privileges, '')
+    UNION ALL
+    SELECT format('ps_runtime lacks [%s] on column %s.%s', g.privileges, g.tbl, g.col)
+      FROM expected_column_grants g
+     WHERE NOT EXISTS (SELECT 1 FROM column_held c
+                        WHERE c.relname = g.tbl AND c.attname = g.col AND c.privileges = g.privileges)
     UNION ALL
     SELECT format('table %s is missing', g.tbl)
       FROM expected_grants g

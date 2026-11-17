@@ -3,7 +3,7 @@
 import { get, post, signIn as exchange, useCsrf, whenSignedOut } from './api.js';
 
 export interface SessionInfo {
-	project: { id: string; slug: string; name: string };
+	project: { id: string; slug: string; name: string; dataset_epoch: number };
 	scopes: string[];
 	csrf_token: string;
 	profile: string;

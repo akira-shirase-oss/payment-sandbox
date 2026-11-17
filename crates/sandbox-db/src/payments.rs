@@ -547,6 +547,22 @@ pub async fn get_payment(
     row.as_ref().map(payment_from).transpose()
 }
 
+/// The dataset epoch a payment of `project_id` belongs to, whatever the current one is:
+/// how a read tells "archived by a reset" (D-066) from "never existed".
+pub async fn payment_epoch(
+    pool: &PgPool,
+    project_id: Uuid,
+    id: Uuid,
+) -> Result<Option<i32>, DbError> {
+    Ok(
+        sqlx::query_scalar("SELECT dataset_epoch FROM payments WHERE project_id = $1 AND id = $2")
+            .bind(project_id)
+            .bind(id)
+            .fetch_optional(pool)
+            .await?,
+    )
+}
+
 /// Loads an operation.
 pub async fn get_operation(
     pool: &PgPool,

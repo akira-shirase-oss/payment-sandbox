@@ -21,7 +21,8 @@
 		{ href: '/', label: 'Overview' },
 		{ href: '/payments', label: 'Payments' },
 		{ href: '/ledger', label: 'Ledger' },
-		{ href: '/webhooks', label: 'Webhooks' }
+		{ href: '/webhooks', label: 'Webhooks' },
+		{ href: '/dataset', label: 'Dataset' }
 	];
 	const links = $derived(session.info?.sim_controls ? [...NAV, { href: '/simulator', label: 'Simulator' }] : NAV);
 	const current = (href: string) =>
@@ -53,7 +54,8 @@
 		<div class="mx-auto flex min-h-14 w-full max-w-6xl flex-wrap items-center justify-between gap-2 px-4 py-2 sm:px-6">
 			<p class="font-semibold tracking-tight">
 				Payment Sandbox
-				{#if session.info}<span class="text-muted-foreground">· <bdi>{session.info.project.name}</bdi></span>{/if}
+				{#if session.info}<span class="text-muted-foreground">· <bdi>{session.info.project.name}</bdi>
+						· <a class="rounded-sm underline decoration-border underline-offset-4 hover:decoration-foreground focus-visible:ring-4 focus-visible:ring-ring/25 focus-visible:outline-none" href="/dataset" data-testid="header-epoch">epoch {session.info.project.dataset_epoch}</a></span>{/if}
 			</p>
 			<div class="flex items-center gap-1">
 				<ThemeToggle />

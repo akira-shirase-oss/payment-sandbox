@@ -21,7 +21,9 @@ macro_rules! session_columns {
     () => {
         "s.project_id, s.id, s.dataset_epoch, s.secret_hash, s.amount_minor, s.currency,
          s.description, s.capture_method, s.embed_origins, s.return_url, s.attempts,
-         s.created_at, s.expires_at, s.expires_at <= now() AS expired, p.name AS merchant_name"
+         s.created_at, s.expires_at,
+         (s.expires_at <= now() OR s.dataset_epoch <> p.dataset_epoch) AS expired,
+         p.name AS merchant_name"
     };
 }
 
@@ -63,7 +65,8 @@ pub struct Session {
     /// No new attempt after this (database clock).
     #[serde(with = "time::serde::rfc3339")]
     pub expires_at: OffsetDateTime,
-    /// True when `expires_at` has passed, by the database clock at read time.
+    /// True when `expires_at` has passed, by the database clock at read time, or a reset
+    /// archived the session's epoch (D-066).
     pub expired: bool,
     /// The project's display name.
     pub merchant_name: String,
@@ -241,6 +244,13 @@ pub async fn find(pool: &PgPool, id: Uuid) -> Result<Option<Session>, DbError> {
     row.as_ref().map(session_from).transpose()
 }
 
+/// Locks a session; `expired` is true past its expiry or once a reset archived its epoch.
+const LOCK_SESSION: &str = "SELECT attempts,
+        expires_at <= now()
+          OR dataset_epoch <> (SELECT dataset_epoch FROM projects WHERE id = $1) AS expired
+   FROM checkout_sessions
+  WHERE project_id = $1 AND id = $2 FOR UPDATE";
+
 /// Begins an attempt with the payer's `client_key` and scenario `token`, or finds the
 /// attempt that key already began.
 pub async fn begin_attempt(
@@ -250,15 +260,13 @@ pub async fn begin_attempt(
     token: &str,
 ) -> Result<Begun, AttemptError> {
     let mut tx = pool.begin().await?;
-    let locked = sqlx::query(
-        "SELECT attempts, expires_at <= now() AS expired FROM checkout_sessions
-          WHERE project_id = $1 AND id = $2 FOR UPDATE",
-    )
-    .bind(session.project_id)
-    .bind(session.id)
-    .fetch_optional(&mut *tx)
-    .await?
-    .ok_or(AttemptError::NotFound)?;
+    // A reset closes the sessions of the epoch it archives (D-066): they read as expired.
+    let locked = sqlx::query(LOCK_SESSION)
+        .bind(session.project_id)
+        .bind(session.id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(AttemptError::NotFound)?;
     let attempts: i32 = locked.try_get("attempts")?;
     let expired: bool = locked.try_get("expired")?;
     // The same key finds its own attempt, whatever happened since (a retry is always

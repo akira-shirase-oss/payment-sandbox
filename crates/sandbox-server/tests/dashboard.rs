@@ -610,3 +610,68 @@ async fn the_dashboard_answers_only_on_its_own_host_name() {
     dash.remove();
     app.cleanup().await;
 }
+
+/// D-066: the dashboard's reset is the API's own, so it still needs `admin`, the typed slug
+/// and the current epoch; as a state change it also needs this origin and the CSRF token.
+#[tokio::test]
+async fn the_dashboards_reset_needs_admin_the_typed_slug_origin_and_csrf() {
+    let app = TestApp::new(&[]).await;
+    let (_, admin) = app.project("dash-reset").await;
+    let (_, read) = app.key(&admin, &["read"]).await;
+    let dash = Dash::new(&app);
+    let (cookie, csrf) = dash.sign_in(&admin).await;
+    let (_, _, current) = dash.get("/api/session/current", &cookie).await;
+    assert_eq!(current["project"]["dataset_epoch"], 1, "{current}");
+    let body = json!({"confirm": "dash-reset", "epoch": 1});
+    let path = "/api/v1/project/reset";
+    let (status, _, _) = dash
+        .post(
+            path,
+            &[("cookie", &cookie), ("origin", ORIGIN)],
+            Some(body.clone()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "no CSRF token");
+    let (status, _, _) = dash
+        .post(
+            path,
+            &[
+                ("cookie", &cookie),
+                ("origin", "http://127.0.0.1:56083"),
+                ("x-csrf-token", &csrf),
+            ],
+            Some(body.clone()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "another origin");
+    let (reader_cookie, reader_csrf) = dash.sign_in(&read).await;
+    let (status, _, refused) = dash
+        .post(
+            path,
+            &[
+                ("cookie", &reader_cookie),
+                ("origin", ORIGIN),
+                ("x-csrf-token", &reader_csrf),
+            ],
+            Some(body.clone()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+    assert_eq!(refused["error"]["code"], "forbidden");
+    let signed = [
+        ("cookie", cookie.as_str()),
+        ("origin", ORIGIN),
+        ("x-csrf-token", csrf.as_str()),
+    ];
+    let (status, _, refused) = dash
+        .post(path, &signed, Some(json!({"confirm": "dash", "epoch": 1})))
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    let (status, _, done) = dash.post(path, &signed, Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(done["project"]["dataset_epoch"], 2);
+    let (_, _, current) = dash.get("/api/session/current", &cookie).await;
+    assert_eq!(current["project"]["dataset_epoch"], 2);
+    dash.remove();
+    app.cleanup().await;
+}
