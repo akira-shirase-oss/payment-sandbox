@@ -68,6 +68,10 @@ set -e
 [ "$status" -eq 4 ]
 sandbox-cli payments wait "$(jq -r .payment.id <<<"$lost")"
 
+# A hosted checkout: a link for the payer (it holds the session's secret), then its state.
+session=$(sandbox-cli --json checkout create --amount 25.00 --currency USD --description "Order 1004" | jq -r .session.id)
+sandbox-cli checkout get "$session"
+
 # Replay the failure library and check every trace against the committed one.
 sandbox-cli scenarios run --all --check
 ```
@@ -145,7 +149,65 @@ private network you control), and, in the SDK, `NODE_ENV=production`
 unless `allowProductionEnvironment: true` says this is a test of a production build. Every
 answer must carry `Sandbox-Simulated: true`, or the client stops.
 
-## 4. Webhooks
+## 4. The hosted checkout
+
+A store that wants a payment page instead of calling `payments.create` itself creates a
+checkout session on its server and sends the payer to the session's `url`. The page (its own
+origin, D-060) shows the amount and lets the payer pick what the simulated network does;
+there is no card field. It shows what really happened, `uncertain` included, and a declined
+payer may try again (up to 10 attempts). With `capture_method: 'automatic'` (the default)
+the whole amount is captured as soon as it is authorized; with `'manual'` you capture.
+
+<!-- example: examples/checkout.mjs -->
+```js
+// The hosted checkout from docs/DEVELOPERS.md, run as written by CI against a real sandbox.
+// Needs PS_API_URL and PS_API_KEY (one of your project's keys with payments:write). A payer
+// opens the printed link and chooses what the simulated network does; in CI a stand-in payer
+// (e2e/payer.mjs) does it from the terminal.
+// SIMULATED MONEY ONLY: no real cards, balances or banking connection.
+import { Sandbox } from '@sandbox/sdk';
+
+const sandbox = new Sandbox({ apiUrl: process.env.PS_API_URL, apiKey: process.env.PS_API_KEY });
+
+// Your store's server creates a session for the order and sends the payer to its url. The
+// link holds the session's secret: give it to that payer only. No money moves yet.
+const created = await sandbox.checkoutSessions.create({
+	amount: 2500,
+	currency: 'USD',
+	description: 'Order 1003',
+	expiresIn: 900
+});
+console.log(`send the payer to: ${created.url}`);
+
+// Then it waits for the outcome (or listens for the payment's webhooks). Only "paid" is money
+// to act on; a decline lets the payer try again, and "uncertain" is not known yet.
+const result = await sandbox.checkoutSessions.waitForPayment(created.session.id, { timeoutMs: 60_000 });
+console.log(`checkout ${result.session.state}, finished ${result.finished}`);
+if (!result.paid) throw new Error('not paid: do not fulfil the order');
+
+// The session names its payment: the same journal-backed record as any other.
+const { payment } = await sandbox.payments.get(result.attempt.payment_id);
+console.log(`payment ${payment.status}: captured ${payment.captured} of ${payment.amount}`);
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `amount`, `currency` | required | What the payer pays, in minor units. |
+| `description` | none | Shown to the payer (200 characters at most). |
+| `captureMethod` | `'automatic'` | `'manual'`: the session ends `authorized`; capture with `payments.capture`. |
+| `returnUrl` | none | The page's "Back to the store" link (loopback `http(s)` in the local mode). |
+| `embedOrigins` | none | Up to 4 loopback origins (with a port) allowed to frame the page. |
+| `expiresIn` | 3600 | Seconds the session stays open (60–86400). |
+
+The session's `state` is what the page shows: `open`, `processing`, `uncertain`,
+`declined`, `not_executed`, `authorized`, `paid` or `conflict`. Fulfil an order only on
+`paid` (or `authorized` with manual capture), or on the payment's `capture.succeeded`
+webhook. From a terminal: `sandbox-cli checkout create --amount 25.00 --currency USD`
+prints the link, `sandbox-cli checkout get <id>` the state (exit 3 declined, 4 not known
+yet), and `sandbox-cli checkout wait <id>` waits like `waitForPayment`. Every field and
+answer is in `docs/API.md`.
+
+## 5. Webhooks
 
 Register an endpoint (`POST /v1/webhook_endpoints {"url": ...}` with an admin key; in the
 local mode only loopback receivers on allowed ports, D-023 and D-059) and keep the
@@ -164,7 +226,7 @@ const { payment } = await sandbox.payments.get(event.payment_id);
 `fixtures/dev-store` is a complete reference consumer: inbox deduplication, the re-read,
 and fulfillment under its own unique key.
 
-## 5. Failure scenarios, reproducibly
+## 6. Failure scenarios, reproducibly
 
 `sandbox-cli scenarios list` shows the seeded library (`fixtures/scenarios/`): declines,
 an expired method, a lost reply, an unavailable network, capacity refusals, idempotent
@@ -173,7 +235,7 @@ scenarios run <name> --check` runs one with fresh keys and compares what happene
 trace committed beside it; the same scenario gives the same states, events and journal
 entries on every run. Write your own as JSON in the same shape and run it with `--file`.
 
-## 6. Start over
+## 7. Start over
 
 `sandbox-cli reset` (or the dashboard's Dataset page) opens a new, empty dataset epoch after
 you type the project's slug; it needs an admin key. Nothing is deleted: the earlier epoch's

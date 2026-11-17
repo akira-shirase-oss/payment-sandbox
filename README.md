@@ -41,7 +41,7 @@ cargo run -q -p sandbox-cli -- payments create --amount 42.00 --currency USD
 
 Sign in to the dashboard at `http://dashboard.localhost:56084` with the same key. From
 here, `docs/DEVELOPERS.md` takes a store through the CLI, the TypeScript SDK, the hosted
-checkout, webhooks and the failure-scenario library.
+checkout, webhooks and the failure-scenario library; `docs/API.md` lists every endpoint.
 
 Working on the sandbox itself:
 
@@ -81,8 +81,10 @@ banking connection.
 ## Documents
 
 - `docs/DEVELOPERS.md` — the developer guide: the CLI, the TypeScript SDK
-  (`packages/sdk-ts`), webhooks, the failure-scenario library, reset; its examples run in CI
-  as written
+  (`packages/sdk-ts`), the hosted checkout, webhooks, the failure-scenario library, reset;
+  its examples run in CI as written
+- `docs/API.md` — the API reference: every endpoint, its scope, body and answers, and the
+  error codes (a test keeps it identical to the server's routes)
 - `docs/OPERATING.md` — the operator guide for a shared host: install (release build,
   `deploy/systemd`, `deploy/env`, `deploy/Caddyfile`), first run, upgrade, backup and
   restore, troubleshooting

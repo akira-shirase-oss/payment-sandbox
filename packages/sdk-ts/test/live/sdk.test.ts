@@ -123,13 +123,9 @@ describe('the SDK against the real sandbox', () => {
 		});
 		await new Promise<void>((resolve) => server.listen(webhookPort, '127.0.0.1', resolve));
 		try {
-			const endpoint = await fetch(`${api}/v1/webhook_endpoints`, {
-				method: 'POST',
-				headers: { authorization: `Bearer ${admin}`, 'content-type': 'application/json' },
-				body: JSON.stringify({ url: `http://127.0.0.1:${webhookPort}/hooks` })
-			});
-			expect(endpoint.status, await endpoint.clone().text()).toBe(201);
-			const secret = ((await endpoint.json()) as { secret: string }).secret;
+			const { endpoint, secret } = await sandbox.webhookEndpoints.create(`http://127.0.0.1:${webhookPort}/hooks`);
+			expect(secret).toMatch(/^whsec_sim_/);
+			expect((await sandbox.webhookEndpoints.list()).endpoints.map((e) => e.id)).toEqual([endpoint.id]);
 			const hold = await sandbox.payments.create({ amount: 500, currency: 'JPY' });
 			await sandbox.payments.capture(hold.payment.id, 500);
 			for (let i = 0; i < 100 && received.length < 2; i += 1) await new Promise((r) => setTimeout(r, 100));
@@ -138,9 +134,28 @@ describe('the SDK against the real sandbox', () => {
 			expect(events.every((e) => e.payment_id === hold.payment.id)).toBe(true);
 			const first = received[0]!;
 			expect(() => verifyWebhook({ body: `${first.body} `, headers: first.headers, secrets: [secret] })).toThrow(/No signature matches/);
+			// A rotation keeps the old secret signing for a day; disabling stops deliveries.
+			const rotated = await sandbox.webhookEndpoints.rotate(endpoint.id);
+			expect([rotated.secret === secret, rotated.previousValidForSeconds]).toEqual([false, 86_400]);
+			await sandbox.webhookEndpoints.disable(endpoint.id);
+			expect((await sandbox.webhookEndpoints.list()).endpoints[0]!.disabled_at).not.toBeNull();
 		} finally {
 			server.close();
 		}
+	});
+
+	it('creates and reads a hosted checkout session', async () => {
+		const { admin } = await project();
+		const sandbox = new Sandbox({ apiUrl: api, apiKey: admin });
+		const created = await sandbox.checkoutSessions.create({ amount: 2500, currency: 'USD', description: 'Order 7', expiresIn: 600 });
+		expect(created.url).toMatch(new RegExp(`/c/${created.session.id}#`));
+		expect(created.url.endsWith(created.client_secret)).toBe(true);
+		expect([created.session.state, created.session.capture_method, created.session.amount]).toEqual(['open', 'automatic', 2500]);
+		const read = await sandbox.checkoutSessions.get(created.session.id);
+		expect(read).not.toHaveProperty('client_secret');
+		// Nobody pays it here: still open when the wait gives up, never "failed".
+		const waited = await sandbox.checkoutSessions.waitForPayment(created.session.id, { timeoutMs: 300 });
+		expect([waited.finished, waited.paid, waited.session.state]).toEqual([false, false, 'open']);
 	});
 
 	it('resets the dataset only with the typed slug and the current epoch', async () => {

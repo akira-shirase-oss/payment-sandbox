@@ -25,6 +25,8 @@ Examples:
   sandbox-cli payments capture <payment id> --amount 42.00
   sandbox-cli payments refund <payment id> --amount 12.00
   sandbox-cli ledger explain USD merchant_pending
+  sandbox-cli checkout create --amount 25.00 --currency USD   # a hosted checkout link
+  sandbox-cli webhooks create --url http://127.0.0.1:56100/webhooks
   sandbox-cli scenarios run --all --check
   sandbox-cli reset
 
@@ -104,6 +106,12 @@ enum Command {
         #[arg(long)]
         network: bool,
     },
+    /// Hosted checkout sessions: a link for the payer, then what happened.
+    #[command(subcommand)]
+    Checkout(Checkout),
+    /// Webhook endpoints: register, list, rotate a secret, disable (admin key).
+    #[command(subcommand)]
+    Webhooks(Webhooks),
     /// List webhook events and their deliveries.
     Events {
         /// Only this payment's events.
@@ -176,6 +184,74 @@ enum Payments {
         /// Give up after this many seconds (the answer then says what is still open).
         #[arg(long, default_value_t = 30)]
         wait_secs: u64,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum Checkout {
+    /// Create a session and print the payer's link (it holds the session's secret: send it to
+    /// the payer only). Creating a session moves no money.
+    Create {
+        /// Amount in the currency's units: 25.00 USD, 500 JPY, 1.250 KWD.
+        #[arg(long)]
+        amount: String,
+        /// USD, EUR, JPY or KWD.
+        #[arg(long)]
+        currency: String,
+        /// Shown to the payer; at most 200 characters.
+        #[arg(long)]
+        description: Option<String>,
+        /// Capture yourself (with `payments capture`) instead of as soon as authorized.
+        #[arg(long)]
+        manual_capture: bool,
+        /// The payer's "Back to the store" link (an http(s) URL on a loopback host).
+        #[arg(long)]
+        return_url: Option<String>,
+        /// An origin allowed to frame the page (loopback with a port); repeat for more, up to 4.
+        #[arg(long = "embed-origin")]
+        embed_origins: Vec<String>,
+        /// Seconds the session stays open (60-86400).
+        #[arg(long, default_value_t = 3600)]
+        expires_in: u32,
+    },
+    /// Show a session: its state, what the payer should do next, and every attempt.
+    Get {
+        /// The session id.
+        id: String,
+    },
+    /// Wait until the session is paid, can no longer be paid, or the time is up.
+    Wait {
+        /// The session id.
+        id: String,
+        /// Give up after this many seconds (the answer then says where it stands).
+        #[arg(long, default_value_t = 60)]
+        wait_secs: u64,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum Webhooks {
+    #[command(
+        about = "Register an endpoint; prints its signing secret once. Loopback receivers only, on a port the server allows (PS_WEBHOOK_PORTS)"
+    )]
+    Create {
+        #[arg(
+            long,
+            help = "Where deliveries go, e.g. http://127.0.0.1:56100/webhooks"
+        )]
+        url: String,
+    },
+    /// List the endpoints, their health and whether a rotation is under way.
+    List,
+    /// Issue a new signing secret; the old one keeps signing for 24 hours.
+    Rotate {
+        /// The endpoint id.
+        id: String,
+    },
+    /// Stop deliveries to an endpoint.
+    Disable {
+        /// The endpoint id.
+        id: String,
     },
 }
 
@@ -380,6 +456,8 @@ async fn run(cli: Cli) -> Result<Ended, Failure> {
         Command::Payments(command) => payments(&ctx, command).await,
         Command::Ledger(command) => ledger(&ctx, command).await,
         Command::Reconcile { network } => reconcile(&ctx, network).await,
+        Command::Checkout(command) => checkout(&ctx, command).await,
+        Command::Webhooks(command) => webhooks(&ctx, command).await,
         Command::Events { payment, limit } => events(&ctx, payment.as_deref(), limit).await,
         Command::Scenarios(command) => scenarios(&ctx, command).await,
         Command::Reset { confirm } => reset(&ctx, confirm).await,
@@ -817,6 +895,223 @@ async fn reconcile(ctx: &Ctx, network: bool) -> Result<Ended, Failure> {
         lines.join("\n")
     });
     Ok(if clean { Ended::Done } else { Ended::Refused })
+}
+
+/// Plain words for a checkout session, and the exit status its state means: paid (or
+/// authorized with manual capture) or still open is done; declined or never executed is 3;
+/// processing or uncertain is 4 (not known yet); a conflict is 1.
+fn describe_session(view: &Value) -> (String, Ended) {
+    let s = &view["session"];
+    let state = s["state"].as_str().unwrap_or("?");
+    let currency = s["currency"].as_str();
+    let mut lines = vec![format!(
+        "checkout {}  {}  {}  ({} attempt(s) left{})",
+        s["id"].as_str().unwrap_or("?"),
+        money(s["amount"].as_i64(), currency),
+        state,
+        s["attempts_left"],
+        if s["expired"] == json!(true) {
+            ", expired"
+        } else {
+            ""
+        }
+    )];
+    let next = match s["next_action"].as_str() {
+        Some("pay") => "the payer may pay (again)",
+        Some("wait") => "wait: the network's answer is being confirmed",
+        Some("continue") => "the payer's page continues the capture",
+        _ => "nothing more for the payer to do",
+    };
+    lines.push(format!("next: {next}"));
+    if let Some(attempt) = view["attempt"].as_object() {
+        lines.push(format!(
+            "latest attempt #{}: {} -> authorize {}{}, payment {}",
+            attempt["number"],
+            attempt["scenario"].as_str().unwrap_or("?"),
+            attempt["authorize"].as_str().unwrap_or("not recorded"),
+            attempt["decline_code"]
+                .as_str()
+                .map_or(String::new(), |c| format!(" ({c})")),
+            attempt["payment_id"].as_str().unwrap_or("?")
+        ));
+    }
+    lines.push(format!(
+        "captured {}, refunded {}",
+        money(view["captured"].as_i64(), currency),
+        money(view["refunded"].as_i64(), currency)
+    ));
+    let manual = s["capture_method"] == json!("manual");
+    let ended = match state {
+        "paid" | "open" => Ended::Done,
+        "authorized" if manual => Ended::Done,
+        "declined" | "not_executed" => Ended::Declined,
+        "conflict" => Ended::Refused,
+        _ => Ended::Uncertain,
+    };
+    (lines.join("\n"), ended)
+}
+
+async fn checkout(ctx: &Ctx, command: Checkout) -> Result<Ended, Failure> {
+    match command {
+        Checkout::Create {
+            amount,
+            currency: code,
+            description,
+            manual_capture,
+            return_url,
+            embed_origins,
+            expires_in,
+        } => {
+            let currency = currency(&code)?;
+            let minor = parse_amount(&amount, currency)?;
+            let mut body = json!({
+                "amount": minor,
+                "currency": currency.code(),
+                "capture_method": if manual_capture { "manual" } else { "automatic" },
+                "expires_in": expires_in,
+            });
+            if let Some(description) = description {
+                body["description"] = json!(description);
+            }
+            if let Some(url) = return_url {
+                body["return_url"] = json!(url);
+            }
+            if !embed_origins.is_empty() {
+                body["embed_origins"] = json!(embed_origins);
+            }
+            let answer = ctx.client.post("/v1/checkout_sessions", &body).await?;
+            ctx.print(&answer.body, || {
+                format!(
+                    "checkout {} for {} created; send the payer to:\n{}\n(the link holds the session's secret, shown once: give it to the payer only)",
+                    answer.body["session"]["id"].as_str().unwrap_or("?"),
+                    money(Some(minor), Some(currency.code())),
+                    answer.body["url"].as_str().unwrap_or("?")
+                )
+            });
+            Ok(Ended::Done)
+        }
+        Checkout::Get { id } => {
+            let view = ctx
+                .client
+                .get(&format!("/v1/checkout_sessions/{id}"))
+                .await?
+                .body;
+            let (words, ended) = describe_session(&view);
+            ctx.print(&view, || words);
+            Ok(ended)
+        }
+        Checkout::Wait { id, wait_secs } => {
+            let deadline =
+                std::time::Instant::now() + Duration::from_secs(wait_secs.clamp(1, 3600));
+            let mut pause = Duration::from_millis(200);
+            loop {
+                let view = ctx
+                    .client
+                    .get(&format!("/v1/checkout_sessions/{id}"))
+                    .await?
+                    .body;
+                let s = &view["session"];
+                let state = s["state"].as_str().unwrap_or("");
+                let paid = state == "paid"
+                    || (state == "authorized" && s["capture_method"] == json!("manual"));
+                let busy = matches!(s["next_action"].as_str(), Some("wait" | "continue"));
+                let closed = state == "conflict"
+                    || ((s["expired"] == json!(true) || s["attempts_left"] == json!(0)) && !busy);
+                if paid || closed || std::time::Instant::now() + pause > deadline {
+                    let (words, mut ended) = describe_session(&view);
+                    if !paid && !closed {
+                        // Out of time while the payer may still pay: not known yet.
+                        ended = Ended::Uncertain;
+                    } else if closed && !paid && ended == Ended::Done {
+                        ended = Ended::Declined;
+                    }
+                    ctx.print(&view, || words);
+                    return Ok(ended);
+                }
+                tokio::time::sleep(pause).await;
+                pause = (pause * 2).min(Duration::from_secs(1));
+            }
+        }
+    }
+}
+
+async fn webhooks(ctx: &Ctx, command: Webhooks) -> Result<Ended, Failure> {
+    match command {
+        Webhooks::Create { url } => {
+            let answer = ctx
+                .client
+                .post("/v1/webhook_endpoints", &json!({"url": url}))
+                .await?;
+            ctx.print(&answer.body, || {
+                format!(
+                    "endpoint {} registered for {}\nsigning secret (shown once; keep it for verifying deliveries): {}",
+                    answer.body["endpoint"]["id"].as_str().unwrap_or("?"),
+                    answer.body["endpoint"]["url"].as_str().unwrap_or("?"),
+                    answer.body["secret"].as_str().unwrap_or("?")
+                )
+            });
+            Ok(Ended::Done)
+        }
+        Webhooks::List => {
+            let body = ctx
+                .client
+                .get("/v1/webhook_endpoints?limit=100")
+                .await?
+                .body;
+            ctx.print(&body, || {
+                let rows = body["endpoints"].as_array().cloned().unwrap_or_default();
+                if rows.is_empty() {
+                    return "No endpoints yet: sandbox-cli webhooks create --url http://127.0.0.1:<port>/webhooks".to_owned();
+                }
+                rows.iter()
+                    .map(|e| {
+                        let health = if e["disabled_at"].is_string() {
+                            "disabled".to_owned()
+                        } else if let Some(until) = e["circuit_open_until"].as_str() {
+                            format!("circuit open until {until} (deliveries paused after failures)")
+                        } else if e["consecutive_failures"].as_i64().unwrap_or(0) > 0 {
+                            format!("failing ({} in a row)", e["consecutive_failures"])
+                        } else {
+                            "healthy".to_owned()
+                        };
+                        format!(
+                            "{}  {}  {}{}",
+                            e["id"].as_str().unwrap_or("?"),
+                            e["url"].as_str().unwrap_or("?"),
+                            health,
+                            if e["rotating"] == json!(true) { ", two secrets sign (rotating)" } else { "" }
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            });
+            Ok(Ended::Done)
+        }
+        Webhooks::Rotate { id } => {
+            let answer = ctx
+                .client
+                .post(&format!("/v1/webhook_endpoints/{id}/rotate"), &json!({}))
+                .await?;
+            ctx.print(&answer.body, || {
+                format!(
+                    "new signing secret (shown once): {}\nthe old one keeps signing for {} s; verify with both until then",
+                    answer.body["secret"].as_str().unwrap_or("?"),
+                    answer.body["previous_valid_for_seconds"]
+                )
+            });
+            Ok(Ended::Done)
+        }
+        Webhooks::Disable { id } => {
+            let answer = ctx
+                .client
+                .post(&format!("/v1/webhook_endpoints/{id}/disable"), &json!({}))
+                .await?;
+            ctx.print(&answer.body, || {
+                format!("endpoint {id} disabled: nothing more is delivered to it")
+            });
+            Ok(Ended::Done)
+        }
+    }
 }
 
 async fn events(ctx: &Ctx, payment: Option<&str>, limit: u32) -> Result<Ended, Failure> {

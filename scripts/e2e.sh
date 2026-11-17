@@ -107,7 +107,23 @@ if [ "$#" -eq 0 ]; then
     examples/cli-quickstart.sh >"$work/cli-example.log" 2>&1 || { cat "$work/cli-example.log"; exit 1; }
   PS_API_URL="http://127.0.0.1:${api_port}" PS_API_KEY="$(new_key sdk-example)" \
     node examples/sdk-purchase.mjs >"$work/sdk-example.log" 2>&1 || { cat "$work/sdk-example.log"; exit 1; }
-  echo "examples ok: examples/cli-quickstart.sh and examples/sdk-purchase.mjs"
+  # The hosted checkout example: the store creates a session and waits; a stand-in payer
+  # (e2e/payer.mjs) opens the printed link and approves, as the page would.
+  PS_API_URL="http://127.0.0.1:${api_port}" PS_API_KEY="$(new_key checkout-example)" \
+    node examples/checkout.mjs >"$work/checkout-example.log" 2>&1 &
+  example=$!
+  pids+=("$example")
+  link=""
+  for _ in $(seq 1 100); do
+    link="$(grep -o 'http://[^ ]*/c/[^ ]*' "$work/checkout-example.log" | head -n 1 || true)"
+    [ -n "$link" ] && break
+    sleep 0.1
+  done
+  [ -n "$link" ] || { cat "$work/checkout-example.log"; exit 1; }
+  node e2e/payer.mjs "$link" >"$work/payer.log" 2>&1 || { cat "$work/payer.log"; exit 1; }
+  wait "$example" || { cat "$work/checkout-example.log"; exit 1; }
+  grep -q '^checkout paid' "$work/checkout-example.log" || { cat "$work/checkout-example.log"; exit 1; }
+  echo "examples ok: examples/cli-quickstart.sh, examples/sdk-purchase.mjs and examples/checkout.mjs"
   # The SDK against the real server (packages/sdk-ts/test/live).
   E2E_API="http://127.0.0.1:${api_port}" E2E_BOOTSTRAP="$bootstrap" E2E_SDK_WEBHOOK_PORT="$sdk_hook_port" \
     npm run test:live --workspace @sandbox/sdk

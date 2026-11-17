@@ -1,7 +1,21 @@
 // Payment Sandbox's TypeScript SDK. SIMULATED MONEY ONLY: no real cards, balances or
 // banking connection; it refuses production-looking configuration (D-068).
 export { Sandbox, SANDBOX_NOTICE, newIdempotencyKey, retryable, backoffMs } from './client.ts';
-export type { Currency, MoneyOptions, MoneyResult, NetworkScenario, Operation, OperationState, Payment, Project } from './client.ts';
+export type {
+	CheckoutSession,
+	CheckoutSessionInput,
+	CheckoutState,
+	CreatedCheckoutSession,
+	Currency,
+	MoneyOptions,
+	MoneyResult,
+	NetworkScenario,
+	Operation,
+	OperationState,
+	Payment,
+	Project,
+	WebhookEndpoint
+} from './client.ts';
 export { checkConfig, DEFAULT_API_URL, DEFAULT_RETRY, REAL_PROCESSOR_HOSTS, isLoopbackHost, isRealProcessor } from './config.ts';
 export type { RetryPolicy, SandboxOptions } from './config.ts';
 export {

@@ -953,3 +953,133 @@ async fn a_plain_post_is_never_re_sent_after_an_answer_that_may_follow_a_commit(
     assert_eq!((answer.status, answer.attempts), (200, 2));
     assert_eq!(keys.lock().unwrap().len(), 2);
 }
+
+/// The hosted checkout and webhook endpoints from the command line (v1 review M3, D-084):
+/// a session's link, its state and an honest wait; an endpoint registered, listed, rotated
+/// and disabled.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn checkout_sessions_from_the_command_line() {
+    let stack = Stack::start().await;
+    let (_, admin, read) = stack.project("cli-checkout").await;
+    let api = stack.api.clone();
+
+    let created = cli(
+        &api,
+        Some(&admin),
+        &[
+            "--json",
+            "checkout",
+            "create",
+            "--amount",
+            "25.00",
+            "--currency",
+            "USD",
+            "--description",
+            "Order 1004",
+            "--expires-in",
+            "600",
+        ],
+    )
+    .await;
+    assert_eq!(code(&created), 0, "{}", stderr(&created));
+    let session = json_out(&created);
+    let id = session["session"]["id"].as_str().unwrap().to_owned();
+    assert!(
+        session["url"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("/c/{id}#")),
+        "{session}"
+    );
+    assert_eq!(session["session"]["amount"], 2500);
+    let words = cli(
+        &api,
+        Some(&admin),
+        &[
+            "checkout",
+            "create",
+            "--amount",
+            "1.00",
+            "--currency",
+            "USD",
+        ],
+    )
+    .await;
+    assert!(
+        stdout(&words).contains("send the payer to:"),
+        "{}",
+        stdout(&words)
+    );
+
+    let shown = cli(&api, Some(&read), &["checkout", "get", &id]).await;
+    assert_eq!(code(&shown), 0, "{}", stderr(&shown));
+    assert!(
+        stdout(&shown).contains("25.00 USD  open"),
+        "{}",
+        stdout(&shown)
+    );
+    // Nobody pays: the wait gives up and says "not known yet" (exit 4), never "failed".
+    let waited = cli(
+        &api,
+        Some(&read),
+        &["checkout", "wait", &id, "--wait-secs", "1"],
+    )
+    .await;
+    assert_eq!(code(&waited), 4, "{}", stderr(&waited));
+    // A read key cannot create one.
+    let refused = cli(
+        &api,
+        Some(&read),
+        &[
+            "checkout",
+            "create",
+            "--amount",
+            "1.00",
+            "--currency",
+            "USD",
+        ],
+    )
+    .await;
+    assert_eq!(code(&refused), 1, "{}", stderr(&refused));
+    stack.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn webhook_endpoints_from_the_command_line() {
+    let stack = Stack::start().await;
+    let (_, admin, _) = stack.project("cli-webhooks").await;
+    let api = stack.api.clone();
+
+    let hook_url = format!("{}/hooks-cli", stack.store_url);
+    let registered = cli(
+        &api,
+        Some(&admin),
+        &["--json", "webhooks", "create", "--url", &hook_url],
+    )
+    .await;
+    assert_eq!(code(&registered), 0, "{}", stderr(&registered));
+    let endpoint = json_out(&registered);
+    let endpoint_id = endpoint["endpoint"]["id"].as_str().unwrap().to_owned();
+    assert!(
+        endpoint["secret"]
+            .as_str()
+            .unwrap()
+            .starts_with("whsec_sim_")
+    );
+    let listed = cli(&api, Some(&admin), &["webhooks", "list"]).await;
+    assert!(stdout(&listed).contains(&hook_url), "{}", stdout(&listed));
+    let rotated = cli(&api, Some(&admin), &["webhooks", "rotate", &endpoint_id]).await;
+    assert_eq!(code(&rotated), 0, "{}", stderr(&rotated));
+    assert!(stdout(&rotated).contains("86400 s"), "{}", stdout(&rotated));
+    let disabled = cli(&api, Some(&admin), &["webhooks", "disable", &endpoint_id]).await;
+    assert_eq!(code(&disabled), 0, "{}", stderr(&disabled));
+    let listed = cli(&api, Some(&admin), &["webhooks", "list"]).await;
+    assert!(
+        stdout(&listed)
+            .lines()
+            .any(|l| l.starts_with(&endpoint_id) && l.contains("disabled")),
+        "{}",
+        stdout(&listed)
+    );
+    stack.stop().await;
+}

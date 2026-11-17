@@ -1292,6 +1292,28 @@ closes one of its findings, with the test that failed before the fix.
   database part (it needs a quiet source); the guide no longer asks to stop the server for
   a backup.
 
+- **D-084 — The checkout and webhook endpoints in the SDK, the CLI and the docs; an API
+  reference tested against the routes.** A store learned `capture_method`, `return_url`,
+  `embed_origins`, `expires_in` and `client_secret` only from D-060 or the source, and
+  neither client could create a checkout session or a webhook endpoint. Now the SDK has
+  `checkoutSessions.create/get/waitForPayment` and `webhookEndpoints.create/list/rotate/
+  disable`, and the CLI `checkout create|get|wait` and `webhooks create|list|rotate|disable`
+  (`checkout get`/`wait` exit 3 for a decline and 4 for "not known yet", like payments).
+  Session creation is not keyed, so the clients never re-send it after a failure that may
+  have reached the server (D-078); a lost answer means "create another". `waitForPayment`
+  ends on `paid` (or `authorized` with manual capture), on a session that can no longer be
+  paid (expired, attempts used, conflict) or at its deadline, and says which (`finished`,
+  `paid`). `docs/DEVELOPERS.md` §4 shows `examples/checkout.mjs`, which `scripts/e2e.sh`
+  runs as written with a stand-in payer (`e2e/payer.mjs`, the page's own request) until the
+  session is paid; the CLI quickstart creates and shows a session. `docs/API.md` is the API
+  reference: hand-written, and `tests/api_reference.rs` requires its endpoint table to equal
+  the routes in `routes.rs` (both ways; a mutation adding a row and removing one fails it),
+  every row to be served (never `route_not_found`/`405`), and every stable error code to be
+  listed. Tests: `tests/cli.rs::checkout_sessions_from_the_command_line` and `webhook_endpoints_from_the_command_line`
+  (before: `checkout` was an unknown subcommand, exit 2), the SDK's unit tests and its live
+  test (before: no `checkoutSessions`), the live webhook test now through
+  `webhookEndpoints`.
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

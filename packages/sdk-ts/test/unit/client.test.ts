@@ -174,6 +174,53 @@ describe('retries', () => {
 	});
 });
 
+describe('checkout sessions and webhook endpoints', () => {
+	const view = (state: string, extra: Record<string, unknown> = {}) => ({
+		status: 200,
+		body: {
+			session: { id: 's1', state, capture_method: 'automatic', expired: false, attempts_left: 9, next_action: 'pay', ...extra },
+			attempt: null,
+			attempts: [],
+			captured: 0,
+			refunded: 0,
+			simulated: true
+		}
+	});
+
+	it('creates a session with the API\'s field names and no idempotency key', async () => {
+		const bodies: unknown[] = [];
+		const { fetch, seen } = fake([{ status: 201, body: { ...view('open').body, url: 'http://127.0.0.1:56083/c/s1#cs_sim_x', client_secret: 'cs_sim_x' } }]);
+		const recording = ((url: string | URL, init?: RequestInit) => {
+			bodies.push(JSON.parse(String(init?.body)));
+			return fetch(url, init);
+		}) as typeof globalThis.fetch;
+		const sandbox = new Sandbox({ apiKey: KEY, fetch: recording, retry: FAST });
+		const created = await sandbox.checkoutSessions.create({ amount: 2500, currency: 'USD', captureMethod: 'manual', returnUrl: 'http://localhost:3000/done', expiresIn: 600 });
+		expect(created.url).toContain('#cs_sim_x');
+		expect(bodies[0]).toEqual({ amount: 2500, currency: 'USD', capture_method: 'manual', return_url: 'http://localhost:3000/done', expires_in: 600 });
+		expect(seen[0]!.key).toBeNull();
+	});
+
+	it('waits for a payment until it is paid, can no longer be paid, or time runs out', async () => {
+		const paid = fake([view('processing', { next_action: 'wait' }), view('paid', { next_action: null })]);
+		const sandbox = new Sandbox({ apiKey: KEY, fetch: paid.fetch, retry: FAST });
+		expect(await sandbox.checkoutSessions.waitForPayment('s1', { timeoutMs: 5_000 })).toMatchObject({ finished: true, paid: true });
+		const expired = fake([view('declined', { expired: true, next_action: null })]);
+		const late = new Sandbox({ apiKey: KEY, fetch: expired.fetch, retry: FAST });
+		expect(await late.checkoutSessions.waitForPayment('s1')).toMatchObject({ finished: true, paid: false });
+		const open = fake([view('open')]);
+		const idle = new Sandbox({ apiKey: KEY, fetch: open.fetch, retry: FAST });
+		expect(await idle.checkoutSessions.waitForPayment('s1', { timeoutMs: 100 })).toMatchObject({ finished: false, paid: false });
+	});
+
+	it('registers a webhook endpoint and returns its secret once', async () => {
+		const { fetch, seen } = fake([{ status: 201, body: { endpoint: { id: 'e1', url: 'http://127.0.0.1:56100/hooks' }, secret: 'whsec_sim_x', simulated: true } }]);
+		const sandbox = new Sandbox({ apiKey: KEY, fetch, retry: FAST });
+		const { endpoint, secret } = await sandbox.webhookEndpoints.create('http://127.0.0.1:56100/hooks');
+		expect([endpoint.id, secret, seen[0]!.method, seen[0]!.url]).toEqual(['e1', 'whsec_sim_x', 'POST', 'http://127.0.0.1:56080/v1/webhook_endpoints']);
+	});
+});
+
 describe('the parts', () => {
 	it('retries only try-again answers', () => {
 		for (const [status, code] of [[503, 'payment_busy'], [503, 'overloaded'], [503, 'unavailable'], [503, 'deadline_exceeded'], [429, 'rate_limited']] as const) {

@@ -24,5 +24,9 @@ set -e
 [ "$status" -eq 4 ]
 sandbox-cli payments wait "$(jq -r .payment.id <<<"$lost")"
 
+# A hosted checkout: a link for the payer (it holds the session's secret), then its state.
+session=$(sandbox-cli --json checkout create --amount 25.00 --currency USD --description "Order 1004" | jq -r .session.id)
+sandbox-cli checkout get "$session"
+
 # Replay the failure library and check every trace against the committed one.
 sandbox-cli scenarios run --all --check

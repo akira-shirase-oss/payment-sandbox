@@ -89,6 +89,69 @@ export interface MoneyResult {
 	attempts: number;
 }
 
+/** Where a checkout session stands (D-060). Only `paid`, or `authorized` with manual capture, is money to act on. */
+export type CheckoutState = 'open' | 'processing' | 'uncertain' | 'declined' | 'not_executed' | 'authorized' | 'paid' | 'conflict';
+
+/** What a store sends to create a hosted checkout session. */
+export interface CheckoutSessionInput {
+	/** Minor units (2500 = 25.00 USD). */
+	amount: number;
+	currency: Currency;
+	/** Shown to the payer; at most 200 characters. */
+	description?: string;
+	/** `automatic` (default): captured as soon as authorized; `manual`: you capture. */
+	captureMethod?: 'automatic' | 'manual';
+	/** The payer's "Back to the store" link: an http(s) URL on a loopback host. */
+	returnUrl?: string;
+	/** Up to 4 loopback origins with a port that may frame the page. */
+	embedOrigins?: string[];
+	/** Seconds the session stays open: 60-86400, default 3600. */
+	expiresIn?: number;
+}
+
+/** A checkout session as the store's API shows it. */
+export interface CheckoutSession {
+	session: {
+		id: string;
+		amount: number;
+		currency: Currency;
+		description: string | null;
+		capture_method: 'automatic' | 'manual';
+		expires_at: number;
+		expired: boolean;
+		attempts_left: number;
+		state: CheckoutState;
+		next_action: 'pay' | 'wait' | 'continue' | null;
+	};
+	/** The latest attempt, if the payer submitted one. */
+	attempt: { number: number; scenario: string; payment_id: string; authorize: OperationState | null; decline_code: string | null; capture: OperationState | null } | null;
+	captured: number;
+	refunded: number;
+	/** Every attempt and its payment. */
+	attempts: Array<{ number: number; scenario: string; payment_id: string; authorize_operation_id: string; created_at: number }>;
+}
+
+/** A new session: the view plus the payer's link, whose fragment holds the client secret (shown once). */
+export interface CreatedCheckoutSession extends CheckoutSession {
+	/** Send the payer here. */
+	url: string;
+	client_secret: string;
+}
+
+/** A webhook endpoint (never its secret). */
+export interface WebhookEndpoint {
+	id: string;
+	url: string;
+	/** RFC 3339. */
+	created_at: string;
+	/** Failed attempts since the last success; the circuit opens after several. */
+	consecutive_failures: number;
+	/** RFC 3339; while in the future, nothing is sent to this endpoint. */
+	circuit_open_until: string | null;
+	disabled_at: string | null;
+	rotating: boolean;
+}
+
 export interface MoneyOptions {
 	/** Reuse a key to retry a request whose answer you did not get; a fresh one by default. */
 	idempotencyKey?: string;
@@ -258,6 +321,72 @@ export class Sandbox {
 				await sleep(pause);
 				pause = Math.min(pause * 2, 1_000);
 			}
+		}
+	};
+
+	/**
+	 * The hosted checkout (D-060): your store's server creates a session for an order and sends
+	 * the payer to its `url`; the payer chooses what the simulated network does (there is no
+	 * card field). Creating a session moves no money.
+	 */
+	readonly checkoutSessions = {
+		/** Creates a session. Not retried after a failure that may have reached the server (it is not keyed): create another. */
+		create: async (input: CheckoutSessionInput): Promise<CreatedCheckoutSession> => {
+			const body: Record<string, unknown> = { amount: input.amount, currency: input.currency };
+			if (input.description !== undefined) body.description = input.description;
+			if (input.captureMethod !== undefined) body.capture_method = input.captureMethod;
+			if (input.returnUrl !== undefined) body.return_url = input.returnUrl;
+			if (input.embedOrigins !== undefined) body.embed_origins = input.embedOrigins;
+			if (input.expiresIn !== undefined) body.expires_in = input.expiresIn;
+			return (await this.#send('POST', '/v1/checkout_sessions', body)).body as unknown as CreatedCheckoutSession;
+		},
+		/** A session, its state and every attempt. */
+		get: async (sessionId: string): Promise<CheckoutSession> =>
+			(await this.#send('GET', `/v1/checkout_sessions/${encodeURIComponent(sessionId)}`)).body as unknown as CheckoutSession,
+		/**
+		 * Polls until the session is paid (or authorized, with manual capture), can no longer be
+		 * paid (expired, every attempt used, or closed by a conflict), or `timeoutMs` passes.
+		 * `finished: false` means still open or not known yet, never failed.
+		 */
+		waitForPayment: async (sessionId: string, options: { timeoutMs?: number } = {}): Promise<CheckoutSession & { finished: boolean; paid: boolean }> => {
+			const deadline = Date.now() + (options.timeoutMs ?? 60_000);
+			let pause = 200;
+			for (;;) {
+				const view = await this.checkoutSessions.get(sessionId);
+				const s = view.session;
+				const paid = s.state === 'paid' || (s.state === 'authorized' && s.capture_method === 'manual');
+				const busy = s.next_action === 'wait' || s.next_action === 'continue';
+				const closed = s.state === 'conflict' || ((s.expired || s.attempts_left === 0) && !busy);
+				if (paid || closed) return { ...view, finished: true, paid };
+				if (Date.now() + pause > deadline) return { ...view, finished: false, paid: false };
+				await sleep(pause);
+				pause = Math.min(pause * 2, 1_000);
+			}
+		}
+	};
+
+	/** Webhook endpoints (admin keys). Deliveries go only to loopback receivers on allowed ports (D-023, D-059). */
+	readonly webhookEndpoints = {
+		/** Registers `url`; the answer's `secret` (whsec_sim_...) is shown once: keep it for verifyWebhook. */
+		create: async (url: string): Promise<{ endpoint: WebhookEndpoint; secret: string }> => {
+			const body = (await this.#send('POST', '/v1/webhook_endpoints', { url })).body;
+			return { endpoint: body.endpoint as WebhookEndpoint, secret: body.secret as string };
+		},
+		/** The project's endpoints, a page at a time (`nextAfter` continues). */
+		list: async (options: { limit?: number; after?: string } = {}): Promise<{ endpoints: WebhookEndpoint[]; nextAfter: string | null }> => {
+			const query = new URLSearchParams({ limit: String(options.limit ?? 100) });
+			if (options.after) query.set('after', options.after);
+			const body = (await this.#send('GET', `/v1/webhook_endpoints?${query}`)).body;
+			return { endpoints: body.endpoints as WebhookEndpoint[], nextAfter: (body.next_after as string | null) ?? null };
+		},
+		/** A new signing secret; the old one keeps signing for `previousValidForSeconds` (24 hours). */
+		rotate: async (endpointId: string): Promise<{ secret: string; previousValidForSeconds: number }> => {
+			const body = (await this.#send('POST', `/v1/webhook_endpoints/${encodeURIComponent(endpointId)}/rotate`, {})).body;
+			return { secret: body.secret as string, previousValidForSeconds: body.previous_valid_for_seconds as number };
+		},
+		/** Stops deliveries to an endpoint. */
+		disable: async (endpointId: string): Promise<void> => {
+			await this.#send('POST', `/v1/webhook_endpoints/${encodeURIComponent(endpointId)}/disable`, {});
 		}
 	};
 
