@@ -31,7 +31,9 @@ cargo test -p sandbox-server --features fault-injection --test drills --locked
 # The checkout and the dashboard (M6): strict type checks, component tests, then the
 # journeys in Chromium against the real processes (which build both apps), then the apps'
 # size budgets (D-064).
-[ -d node_modules ] || npm ci --no-audit --no-fund
+# Always a clean install from the lockfile, as CI does: a lockfile out of step with a
+# package.json fails here, not first in CI.
+npm ci --no-audit --no-fund --prefer-offline
 npm run check --workspaces --if-present
 npm test --workspaces --if-present
 scripts/e2e.sh
