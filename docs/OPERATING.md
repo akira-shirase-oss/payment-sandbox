@@ -60,7 +60,7 @@ signs in over the Unix socket as the OS user `postgres` (peer authentication), s
 `setup` as that user with a socket URL (`setup` itself needs no file access):
 
 ```sh
-sudo -u postgres env PS_ADMIN_DATABASE_URL='postgres:///postgres?host=/var/run/postgresql' \
+sudo -u postgres env PS_ADMIN_DATABASE_URL='postgres:///postgres?host=/var/run/postgresql&user=postgres' \
   PS_OWNER_PASSWORD=your-owner-password PS_APP_PASSWORD=your-app-password \
   /opt/payment-sandbox/bin/sandbox-server setup
 systemctl daemon-reload
@@ -70,7 +70,9 @@ systemctl enable --now payment-sandbox-sim payment-sandbox-server payment-sandbo
 
 With a password for the administrator instead (another distribution, a managed server),
 use `PS_ADMIN_DATABASE_URL=postgres://postgres:...@127.0.0.1:5432/postgres`. Add
-`&port=5433` to the socket URL if your cluster is not on 5432. The services always connect
+`&port=5433` to the socket URL if your cluster is not on 5432. Keep `user=postgres` in it:
+without a user the client falls back to a name of its own, which peer authentication
+refuses. The services always connect
 over `127.0.0.1` with their passwords (`scram-sha-256` in the stock `pg_hba.conf`). CI's
 release job installs PostgreSQL 18 from the PostgreSQL project's Ubuntu packages and runs
 exactly this (D-082).
@@ -155,7 +157,7 @@ everything:
 ```sh
 b=/var/backups/payment-sandbox; stamp=20261117T031700Z       # the backup to restore
 systemctl stop payment-sandbox-server
-sudo -u postgres env PS_ADMIN_DATABASE_URL='postgres:///postgres?host=/var/run/postgresql' \
+sudo -u postgres env PS_ADMIN_DATABASE_URL='postgres:///postgres?host=/var/run/postgresql&user=postgres' \
   PS_DATABASE_NAME=payment_sandbox_restored /opt/payment-sandbox/bin/sandbox-server setup
 pg_restore --single-transaction --exit-on-error --no-owner --role=ps_owner \
   --dbname="postgres://ps_owner:...@127.0.0.1:5432/payment_sandbox_restored" "$b/db-$stamp.dump"

@@ -14,7 +14,7 @@ host_port="127.0.0.1:$pg_port"
 # docs/OPERATING.md's admin URL for a stock install: the Unix socket, as the OS user
 # postgres (peer authentication, no password). The port only because CI's runner may
 # already have another cluster on 5432.
-admin_url="postgres:///postgres?host=/var/run/postgresql&port=$pg_port"
+admin_url="postgres:///postgres?host=/var/run/postgresql&user=postgres&port=$pg_port"
 # Built by scripts/release-smoke.sh (no cargo here: under sudo, root has no toolchain).
 release="${RELEASE_DIR:-target/release}"
 [ -x "$release/sandbox-server" ] || { echo "release-systemd: no release build in $release (run scripts/release-smoke.sh first)" >&2; exit 1; }
