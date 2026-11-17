@@ -38,16 +38,19 @@ cp -R apps/dashboard/build /opt/payment-sandbox/dashboard
 install -d -m 0700 /etc/payment-sandbox
 for f in server sim migrate; do install -m 0600 "deploy/env/$f.env.example" "/etc/payment-sandbox/$f.env"; done
 sim_token="$(secret)" bootstrap="$(secret)"
+# The roles' passwords are the operator's own, as the guide says (never the development ones).
+owner_password="$(secret)" app_password="$(secret)"
 set_var /etc/payment-sandbox/sim.env PS_SIM_TOKEN "$sim_token"
 set_var /etc/payment-sandbox/server.env PS_SIM_TOKEN "$sim_token"
 set_var /etc/payment-sandbox/server.env PS_BOOTSTRAP_TOKEN "$bootstrap"
 set_var /etc/payment-sandbox/server.env PS_SECRET_KEY "$(secret)"
-set_var /etc/payment-sandbox/server.env PS_DATABASE_URL "postgres://ps_app:ps-app-dev@$host_port/payment_sandbox"
-set_var /etc/payment-sandbox/migrate.env PS_MIGRATE_DATABASE_URL "postgres://ps_owner:ps-owner-dev@$host_port/payment_sandbox"
+set_var /etc/payment-sandbox/server.env PS_DATABASE_URL "postgres://ps_app:$app_password@$host_port/payment_sandbox"
+set_var /etc/payment-sandbox/migrate.env PS_MIGRATE_DATABASE_URL "postgres://ps_owner:$owner_password@$host_port/payment_sandbox"
 install -m 0644 deploy/systemd/*.service /etc/systemd/system/
 systemd-analyze verify /etc/systemd/system/payment-sandbox-*.service
 
-PS_ADMIN_DATABASE_URL="$admin_url" /opt/payment-sandbox/bin/sandbox-server setup
+PS_ADMIN_DATABASE_URL="$admin_url" PS_OWNER_PASSWORD="$owner_password" PS_APP_PASSWORD="$app_password" \
+  /opt/payment-sandbox/bin/sandbox-server setup
 systemctl daemon-reload
 systemctl start payment-sandbox-migrate
 systemctl start payment-sandbox-sim payment-sandbox-server
@@ -75,11 +78,21 @@ key="$(curl -fsS -X POST http://127.0.0.1:56080/v1/projects -H "Authorization: B
   -H 'Content-Type: application/json' -d '{"slug": "team-store", "name": "Team store"}' | jq -r .api_key.secret)"
 PS_API_KEY="$key" /opt/payment-sandbox/bin/sandbox-cli status
 PS_API_KEY="$key" /opt/payment-sandbox/bin/sandbox-cli payments create --amount 42.00 --currency USD
-# The units restart a killed service.
+# The units restart a killed service: a new process (MainPID changes, NRestarts grows) that
+# becomes ready, not the old one answering before it died.
+old_pid="$(systemctl show -p MainPID --value payment-sandbox-server)"
+old_restarts="$(systemctl show -p NRestarts --value payment-sandbox-server)"
 systemctl kill --signal=SIGKILL payment-sandbox-server
-for _ in $(seq 1 100); do
-  curl -fsS http://127.0.0.1:56080/readyz >/dev/null 2>&1 && break
+restarted=no
+for _ in $(seq 1 150); do
+  pid="$(systemctl show -p MainPID --value payment-sandbox-server)"
+  restarts="$(systemctl show -p NRestarts --value payment-sandbox-server)"
+  if [ "$pid" != 0 ] && [ "$pid" != "$old_pid" ] && [ "$restarts" -gt "$old_restarts" ] \
+    && curl -fsS http://127.0.0.1:56080/readyz 2>/dev/null | jq -e '.status == "ready"' >/dev/null; then
+    restarted=yes
+    break
+  fi
   sleep 0.2
 done
-curl -fsS http://127.0.0.1:56080/readyz | jq -e '.status == "ready"' >/dev/null
-echo "release systemd ok: the units install, start, serve and restart"
+[ "$restarted" = yes ] || fail "the server was not restarted (MainPID $old_pid -> $pid, NRestarts $old_restarts -> $restarts)"
+echo "release systemd ok: the units install, start, serve and restart (pid $old_pid -> $pid)"
