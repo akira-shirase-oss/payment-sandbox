@@ -608,3 +608,33 @@ async fn drill_b_a_lease_clock_jump_causes_at_most_a_duplicate_delivery() {
     app.cleanup().await;
     sim.remove().await;
 }
+
+/// Review finding 18: disabling an endpoint stops its pending deliveries and retries too.
+#[tokio::test]
+async fn a_disabled_endpoint_gets_no_more_attempts() {
+    let (sim, app, key) = setup().await;
+    let addr = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .to_string();
+    let (id, _) = endpoint(&app, &key, &format!("http://{addr}/webhooks")).await;
+    purchase(&app, &key, 1, 0).await;
+    let (status, _) = app
+        .post(
+            &format!("/v1/webhook_endpoints/{id}/disable"),
+            &key,
+            None,
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let deliverer = Deliverer::new(&app.state, Arc::new(ShiftedClock::default())).unwrap();
+    let report = deliverer.run_once().await.unwrap();
+    assert_eq!(
+        report.claimed, 0,
+        "a disabled endpoint's delivery was attempted: {report:?}"
+    );
+    app.cleanup().await;
+    sim.remove().await;
+}

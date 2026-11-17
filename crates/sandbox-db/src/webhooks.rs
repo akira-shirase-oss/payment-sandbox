@@ -156,12 +156,15 @@ pub async fn claim(
     let lease_ms = i64::try_from(lease.as_millis()).unwrap_or(i64::MAX);
     let rows = sqlx::query(
         "WITH due AS (
-             SELECT project_id, event_id, endpoint_id FROM deliveries
-              WHERE state = 'pending' AND next_attempt_at <= $1
-                AND (lease_until IS NULL OR lease_until <= $1)
-              ORDER BY next_attempt_at
+             SELECT d.project_id, d.event_id, d.endpoint_id FROM deliveries d
+               JOIN webhook_endpoints w ON w.project_id = d.project_id AND w.id = d.endpoint_id
+              WHERE d.state = 'pending' AND d.next_attempt_at <= $1
+                AND (d.lease_until IS NULL OR d.lease_until <= $1)
+                -- A disabled endpoint gets no more attempts (review 18).
+                AND w.disabled_at IS NULL
+              ORDER BY d.next_attempt_at
               LIMIT $3
-              FOR UPDATE SKIP LOCKED
+              FOR UPDATE OF d SKIP LOCKED
          )
          UPDATE deliveries d
             SET lease_until = $1 + make_interval(secs => $2::float8 / 1000.0),
