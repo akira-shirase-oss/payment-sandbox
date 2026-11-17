@@ -242,3 +242,64 @@ async fn the_server_refuses_a_database_whose_protections_were_weakened() {
         );
     }
 }
+
+/// Review N8: `seq` is `GENERATED ALWAYS AS IDENTITY`, which `OVERRIDING SYSTEM VALUE`
+/// still lets a caller choose: the runtime role stored a balanced entry at `seq = -5`, which
+/// explain (paging `seq > after_seq` from 0) would never list though it counts in the
+/// balance. The stamp trigger now takes the sequence's next value whatever the caller says.
+#[tokio::test]
+async fn the_runtime_role_cannot_choose_an_entrys_sequence_number() {
+    let db = TestDb::new().await;
+    let a = projects::create(&db.pool, Uuid::now_v7(), "store-a", "A")
+        .await
+        .unwrap();
+    let entry = Recipe::Authorize
+        .post(Currency::Usd, Amount::new(500).unwrap())
+        .unwrap();
+    let mut tx = db.pool.begin().await.unwrap();
+    journal::post(
+        &mut tx,
+        a.scope(),
+        entry_id(Uuid::now_v7(), Recipe::Authorize),
+        &entry,
+        EntryRefs::default(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut conn = runtime(&db).await;
+    let (pa, e) = (a.id, Uuid::now_v7());
+    let mut tx = conn.begin().await.unwrap();
+    sqlx::query(AssertSqlSafe(format!(
+        "INSERT INTO journal_entries (project_id, id, seq, dataset_epoch, currency, recipe, semantics_version)
+         OVERRIDING SYSTEM VALUE VALUES ('{pa}', '{e}', -5, 1, 'USD', 'authorize', 1)"
+    )))
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query(AssertSqlSafe(format!(
+        "INSERT INTO journal_lines (project_id, entry_id, line_no, currency, dataset_epoch, account_kind, amount_minor)
+         VALUES ('{pa}', '{e}', 1, 'USD', 1, 'payer_funding', 500), ('{pa}', '{e}', 2, 'USD', 1, 'payer_held', -500)"
+    )))
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    let seq: i64 = sqlx::query_scalar(AssertSqlSafe(format!(
+        "SELECT seq FROM journal_entries WHERE id = '{e}'"
+    )))
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    let highest: i64 = sqlx::query_scalar("SELECT max(seq) FROM journal_entries")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+    conn.close().await.ok();
+    db.cleanup().await;
+    assert!(
+        seq > 0 && seq == highest,
+        "the caller chose seq {seq} (highest {highest})"
+    );
+}

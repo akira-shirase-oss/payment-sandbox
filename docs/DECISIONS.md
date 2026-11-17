@@ -705,6 +705,11 @@ review found. Each states the choice, the alternative and the cost.
     `wide_gaps_other_digit_forms_and_all_digit_uuids_are_detected`,
     `every_digit_block_is_ten_numeric_characters`, `request_id_policy`,
     `every_common_card_number_shape_is_refused_and_never_stored`.
+  - *N8:* `GENERATED ALWAYS AS IDENTITY` still allows `OVERRIDING SYSTEM
+    VALUE`, so the runtime role stored an entry at `seq = -5` (never listed
+    by explain, counted in the balance). The stamp trigger now takes the
+    sequence's next value whatever the caller wrote (migration 0011).
+    Test: `the_runtime_role_cannot_choose_an_entrys_sequence_number`.
 
 ## Open questions (still open)
 
