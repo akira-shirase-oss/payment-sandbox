@@ -75,8 +75,8 @@
 		</Card>
 		<Card class="min-w-0">
 			<CardHeader><CardTitle><h2 class="title">Operations</h2></CardTitle></CardHeader>
-			<CardContent class="overflow-x-auto">
-				<Table.Root>
+			<CardContent>
+				<Table.Root label="Operations">
 					<Table.Header>
 						<Table.Row><Table.Head>Kind</Table.Head><Table.Head>State</Table.Head><Table.Head>Amount</Table.Head><Table.Head>Key</Table.Head><Table.Head>Calls</Table.Head></Table.Row>
 					</Table.Header>

@@ -1316,6 +1316,20 @@ closes one of its findings, with the test that failed before the fix.
   test (before: no `checkoutSessions`), the live webhook test now through
   `webhookEndpoints`.
 
+- **D-085 — Every table scroll region is labelled and focusable; the ledger keeps its
+  balance on a phone.** At 360 px axe found `scrollable-region-focusable` (serious) on the
+  ledger, the webhooks page and a payment's page: their tables scroll sideways in a
+  container a keyboard could not reach, and the ledger's Balance column, the page's main
+  number, sat off-screen behind that unlabelled scroll. The kit's `Table.Root` now takes a
+  required `label`: its container is a `role="region"` with that name, `tabindex="0"` and
+  the kit's focus ring, so it is announced and scrolls from the keyboard; the pages' own
+  extra `overflow-x-auto` wrappers are gone. The ledger shows Account and Balance at every
+  width and folds currency and normal side under the account's name below `sm`. The axe
+  journey (`e2e/tests/a11y.spec.ts`) now runs at 360 and 1440 px, light and dark (4
+  journeys, every screen of both sites); the phone journey requires the first balance fully
+  in view. Before the fix the 360 px runs failed (`scrollable-region-focusable` on the
+  payment page among others) and the 1440 px runs passed.
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

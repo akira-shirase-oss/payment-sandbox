@@ -22,18 +22,22 @@
 	Every balance is summed from the journal (D-028). Open one to see the postings that make it up.
 </p>
 {#if error}<p role="alert" class="mb-4 text-sm text-destructive">{error}</p>{/if}
-<div class="overflow-x-auto rounded-xl border bg-card">
-	<Table.Root>
+<!-- At 360 px the balance stays beside its account: currency and side fold under the name. -->
+<div class="rounded-xl border bg-card">
+	<Table.Root label="Balances">
 		<Table.Header>
-			<Table.Row><Table.Head>Account</Table.Head><Table.Head>Currency</Table.Head><Table.Head>Normal side</Table.Head><Table.Head class="text-right">Balance</Table.Head></Table.Row>
+			<Table.Row><Table.Head>Account</Table.Head><Table.Head class="hidden sm:table-cell">Currency</Table.Head><Table.Head class="hidden sm:table-cell">Normal side</Table.Head><Table.Head class="text-right">Balance</Table.Head></Table.Row>
 		</Table.Header>
 		<Table.Body>
 			{#each balances as b (`${b.currency}/${b.account}`)}
 				<Table.Row>
-					<Table.Cell><a class="underline decoration-border" href={`/ledger/${b.currency}/${b.account}`}>{account(b.account)}</a></Table.Cell>
-					<Table.Cell>{b.currency}</Table.Cell>
-					<Table.Cell>{b.normal_side}</Table.Cell>
-					<Table.Cell class="tabular text-right">{money(b.balance_minor, b.currency)}</Table.Cell>
+					<Table.Cell>
+						<a class="underline decoration-border" href={`/ledger/${b.currency}/${b.account}`}>{account(b.account)}</a>
+						<span class="block text-xs text-muted-foreground sm:hidden">{b.currency} · {b.normal_side}</span>
+					</Table.Cell>
+					<Table.Cell class="hidden sm:table-cell">{b.currency}</Table.Cell>
+					<Table.Cell class="hidden sm:table-cell">{b.normal_side}</Table.Cell>
+					<Table.Cell class="tabular text-right whitespace-nowrap" data-testid="balance">{money(b.balance_minor, b.currency)}</Table.Cell>
 				</Table.Row>
 			{:else}
 				<Table.Row><Table.Cell colspan={4} class="text-muted-foreground">No postings yet.</Table.Cell></Table.Row>

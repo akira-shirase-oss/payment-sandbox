@@ -32,8 +32,8 @@
 <h1 class="display-2 mb-6">Webhooks</h1>
 {#if error}<p role="alert" class="mb-4 text-sm text-destructive">{error}</p>{/if}
 <h2 class="title mb-2">Endpoints</h2>
-<div class="mb-8 overflow-x-auto rounded-xl border bg-card">
-	<Table.Root>
+<div class="mb-8 rounded-xl border bg-card">
+	<Table.Root label="Endpoints">
 		<Table.Header>
 			<Table.Row><Table.Head>URL</Table.Head><Table.Head>Health</Table.Head><Table.Head>Failures in a row</Table.Head><Table.Head>Secret</Table.Head></Table.Row>
 		</Table.Header>
@@ -53,8 +53,8 @@
 </div>
 <h2 class="title mb-2">Recent events</h2>
 <p class="mb-2 text-sm text-muted-foreground">Delivery is at least once: a receiver may see an event twice and must deduplicate (D-006).</p>
-<div class="overflow-x-auto rounded-xl border bg-card">
-	<Table.Root>
+<div class="rounded-xl border bg-card">
+	<Table.Root label="Recent events">
 		<Table.Header>
 			<Table.Row><Table.Head>Event</Table.Head><Table.Head>Payment</Table.Head><Table.Head>When</Table.Head><Table.Head>Deliveries</Table.Head></Table.Row>
 		</Table.Header>

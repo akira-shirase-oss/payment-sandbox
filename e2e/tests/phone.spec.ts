@@ -34,6 +34,10 @@ test('at 360 px the checkout and the dashboard fit, with every badge whole', asy
 		await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
 		await noSidewaysScroll(page);
 		await badgesWhole(page);
+		if (section === 'Ledger') {
+			// The page's main number stays on screen beside its account (v1 review M2).
+			await expect(page.getByTestId('balance').first()).toBeInViewport({ ratio: 1 });
+		}
 	}
 	await page.getByRole('link', { name: 'Payments', exact: true }).click();
 	await page.getByRole('link', { name: /1,234,567\.89 USD/ }).first().click();

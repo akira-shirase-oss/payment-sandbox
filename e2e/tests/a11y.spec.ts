@@ -1,5 +1,7 @@
-// axe on every screen of both sites, in light and dark mode: zero serious or critical
-// WCAG 2.1 A/AA violations (the interface standard, M7). SIMULATED MONEY ONLY.
+// axe on every screen of both sites, at 360 px and 1440 px, in light and dark mode: zero
+// serious or critical WCAG 2.1 A/AA violations (the interface standard, M7; at 360 px since
+// the v1 review's M2, which found scroll regions a keyboard could not reach there).
+// SIMULATED MONEY ONLY.
 import { expect, test, type Page } from '@playwright/test';
 import { checkoutSession, env, project, seriousViolations, statusOf } from './support.js';
 
@@ -8,8 +10,10 @@ async function settle(page: Page) {
 	await page.waitForLoadState('networkidle');
 }
 
+for (const width of [360, 1440] as const)
 for (const scheme of ['light', 'dark'] as const) {
-	test(`every screen is free of serious accessibility violations in ${scheme} mode`, async ({ page, request }) => {
+	test(`every screen is free of serious accessibility violations at ${width} px in ${scheme} mode`, async ({ page, request }) => {
+		await page.setViewportSize({ width, height: width === 360 ? 780 : 900 });
 		await page.emulateMedia({ colorScheme: scheme });
 		const shop = await project(request, 'Accessible shop');
 		const session = await checkoutSession(request, shop.admin, { amount: 2_500, currency: 'EUR', description: 'Order 7' });
