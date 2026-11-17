@@ -9,6 +9,6 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p docs/screens
 specs=("$@")
-[ "${#specs[@]}" -gt 0 ] || specs=(tests/dataset.spec.ts)
+[ "${#specs[@]}" -gt 0 ] || specs=(tests/screens.spec.ts tests/dataset.spec.ts)
 E2E_SCREENS_DIR="$PWD/docs/screens" scripts/e2e.sh "${specs[@]}"
 echo "screens ok: $(ls docs/screens | wc -l | tr -d ' ') files in docs/screens"
