@@ -48,14 +48,21 @@ pub fn require_same_origin(
     }
 }
 
-/// The policy of a site's pages. `script_src` lists the inline scripts' hashes; styles,
-/// fonts, images and connections are this origin only; nothing may be a form target, a
-/// base, a plugin or a frame (`frame_ancestors` says who may frame the page).
-pub fn page_policy(script_hashes: &str, frame_ancestors: &str) -> String {
+/// The policy of a site's pages. `script_hashes` lists the inline scripts' hashes and
+/// `style_hashes` the exact static style attributes the app inserts (allowed under
+/// `'unsafe-hashes'`, which admits those values only); fonts, images and connections are
+/// this origin only; nothing may be a form target, a base, a plugin or a frame
+/// (`frame_ancestors` says who may frame the page).
+pub fn page_policy(script_hashes: &str, style_hashes: &str, frame_ancestors: &str) -> String {
+    let styles = if style_hashes.is_empty() {
+        String::new()
+    } else {
+        format!(" 'unsafe-hashes' {style_hashes}")
+    };
     format!(
-        "default-src 'none'; script-src 'self' {script_hashes}; style-src 'self'; img-src 'self'; \
-         font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; \
-         form-action 'none'; object-src 'none'; frame-ancestors {frame_ancestors}"
+        "default-src 'none'; script-src 'self' {script_hashes}; style-src 'self'{styles}; \
+         img-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; \
+         base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors {frame_ancestors}"
     )
 }
 

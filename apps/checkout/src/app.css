@@ -1,0 +1,6 @@
+/*
+ * The checkout's styles: the owned design-system copy (@sandbox/ui, Tailwind CSS v4 tokens).
+ * Tailwind doesn't scan dependencies, so the package's components are named with @source.
+ */
+@import '@sandbox/ui/styles.css';
+@source '../../../packages/ui/src';

@@ -1,0 +1,36 @@
+{
+  "name": "@sandbox/checkout",
+  "private": true,
+  "version": "0.0.0",
+  "description": "The hosted test checkout (SIMULATED MONEY ONLY): a static SvelteKit app the sandbox server serves on its own origin (D-061). The payer picks a scenario; there is no card field (D-019).",
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "prepare": "svelte-kit sync || echo ''",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-static": "4.0.0",
+    "@sveltejs/kit": "3.1.0",
+    "@sveltejs/vite-plugin-svelte": "7.3.1",
+    "@tailwindcss/vite": "4.3.3",
+    "@types/node": "24.19.2",
+    "happy-dom": "21.0.4",
+    "svelte": "5.57.2",
+    "svelte-check": "4.7.7",
+    "tailwindcss": "4.3.3",
+    "typescript": "6.0.3",
+    "vite": "8.3.5",
+    "vitest": "5.0.5"
+  },
+  "dependencies": {
+    "@lucide/svelte": "1.62.0",
+    "@sandbox/ui": "0.0.0",
+    "mode-watcher": "1.1.0"
+  },
+  "imports": {
+    "#lib/*": "./src/lib/*"
+  }
+}

@@ -2,3 +2,7 @@
 *.redb
 /perf/results/raw-*.json
 node_modules/
+/apps/*/build/
+/apps/*/.svelte-kit/
+/e2e/test-results/
+/e2e/report/

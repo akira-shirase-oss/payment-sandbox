@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="referrer" content="no-referrer" />
+		<meta name="robots" content="noindex" />
+		<link rel="icon" href="%sveltekit.assets%/favicon.svg" />
+		<title>Sandbox checkout · simulated money only</title>
+		<!-- The theme before first paint. mode-watcher's own head script is turned off
+		     (disableHeadScriptInjection): this static copy of what it does is part of the
+		     built index.html, so the server allows it by hash in its policy (D-061). -->
+		<script>
+			(function () {
+				try {
+					var m = localStorage.getItem('mode-watcher-mode') || 'system';
+					var dark = m === 'dark' || (m === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+					document.documentElement.classList.toggle('dark', dark);
+					document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+				} catch (e) {}
+			})();
+		</script>
+		%sveltekit.head%
+	</head>
+	<body>
+		<div class="contents">%sveltekit.body%</div>
+	</body>
+</html>

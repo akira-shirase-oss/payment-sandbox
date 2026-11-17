@@ -1,0 +1,16 @@
+{
+  "name": "@sandbox/e2e",
+  "private": true,
+  "version": "0.0.0",
+  "description": "The browser journeys (SIMULATED MONEY ONLY): Playwright in Chromium against the real server, network and development store, started by scripts/e2e.sh.",
+  "type": "module",
+  "scripts": {
+    "e2e": "playwright test",
+    "check": "tsc -p ."
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@types/node": "24.19.2",
+    "typescript": "6.0.3"
+  }
+}

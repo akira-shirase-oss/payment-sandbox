@@ -822,7 +822,13 @@ smallest version that meets that gate.
   policy: `default-src 'none'; script-src 'self' 'sha256-…'; style-src 'self'; img-src
   'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none';
   form-action 'none'; object-src 'none'; frame-ancestors …` — no `'unsafe-inline'` for
-  scripts or styles. The dashboard is never framed (`frame-ancestors 'none'`,
+  scripts or styles. SvelteKit's route announcer is one static `style="…"` attribute in the
+  app's own script; the site hashes every such attribute it finds in its scripts and allows
+  exactly those values under `'unsafe-hashes'` (which admits only listed values, never an
+  arbitrary inline style); mode-watcher's transition-blocking `<style>` is switched off and
+  its head script is static in `app.html`, so it is one of the hashed scripts. Sizes the
+  apps set at run time go through the CSSOM, which the policy does not govern. The
+  dashboard is never framed (`frame-ancestors 'none'`,
   `X-Frame-Options: DENY`). The checkout is embeddable only where its session says:
   `frame-ancestors` lists the session's `embed_origins` and is `'none'` (with
   `X-Frame-Options: DENY`) otherwise; an embedded page tells its parent the outcome with
@@ -866,6 +872,20 @@ smallest version that meets that gate.
   over a client with no credential of its own (2 s deadline, 64 KiB answers), and the
   network decides (D-046). A dashboard session alone cannot change the network. Test:
   `simulator_controls_need_the_dev_profile_and_the_operators_own_credential`.
+
+- **D-064 — The web apps' budgets.** Each app's first visit is measured on the built output
+  (`scripts/web-budget.mjs`, gzip level 9): the JavaScript `index.html` loads before the app
+  can run, all JavaScript, and the stylesheet; fonts load per unicode range on demand and
+  are counted apart. Budgets, about 20 % over the first measurement (checkout 74.0 / 81.1 /
+  8.4 KB, dashboard 82.8 / 100.7 / 8.8 KB): checkout 90 / 100 / 11 KB, dashboard 100 / 125 /
+  11 KB; a miss fails `scripts/check.sh` and CI, and raising one needs a measurement and an
+  entry here. A list that can grow past a few hundred rows (payments, an explanation's
+  lines) renders only the rows in view (`VirtualRows`, fixed row height); the payments list
+  pages by `next_before` (keyset on `(created_at, id)`, the `payments_recent` index), the
+  explanation by its sealed cursor. Page loads are recorded by `scripts/web-perf.sh` in
+  `perf/results/` with the machine, its load and the commit; they are loopback
+  observations on a development machine, not capacity, and have no threshold yet: the
+  first record sets the baseline.
 
 ## Open questions (still open)
 

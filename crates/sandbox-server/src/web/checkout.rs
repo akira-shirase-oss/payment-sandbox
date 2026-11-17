@@ -208,7 +208,7 @@ fn page_response(site: &Site, ancestors: &str) -> Response {
     )
         .into_response();
     let headers = response.headers_mut();
-    let policy = super::page_policy(site.script_hashes(), ancestors);
+    let policy = super::page_policy(site.script_hashes(), site.style_hashes(), ancestors);
     match HeaderValue::from_str(&policy) {
         Ok(value) => {
             headers.insert(header::CONTENT_SECURITY_POLICY, value);

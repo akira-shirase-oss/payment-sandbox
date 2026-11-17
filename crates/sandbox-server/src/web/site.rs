@@ -1,7 +1,10 @@
 //! A built static app held in memory (D-061). Read once at startup, bounded in files and
 //! bytes, with no symbolic links followed: a request never touches the file system, so no
 //! path can escape the directory. The SHA-256 of every inline script of `index.html` is
-//! computed here, so the page policy can allow exactly those and no `'unsafe-inline'`.
+//! computed here, so the page policy can allow exactly those and no `'unsafe-inline'`; so is
+//! that of every static `style="…"` attribute the app's scripts would insert (`SvelteKit`'s
+//! route announcer has one), which the policy allows by hash under `'unsafe-hashes'`: only
+//! those exact values, never an arbitrary inline style.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -33,6 +36,7 @@ pub struct Site {
     files: HashMap<String, Asset>,
     index: Bytes,
     script_hashes: String,
+    style_hashes: String,
 }
 
 /// Why a site could not be loaded.
@@ -68,10 +72,22 @@ impl Site {
         let html =
             std::str::from_utf8(&index).map_err(|_| SiteError::Unusual("index.html".to_owned()))?;
         let script_hashes = inline_script_hashes(html).join(" ");
+        let mut styles = std::collections::BTreeSet::new();
+        for (path, asset) in &files {
+            if std::path::Path::new(path)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("js"))
+                && let Ok(text) = std::str::from_utf8(&asset.body)
+            {
+                styles.extend(style_attribute_hashes(text));
+            }
+        }
+        let style_hashes = styles.into_iter().collect::<Vec<_>>().join(" ");
         Ok(Self {
             files,
             index,
             script_hashes,
+            style_hashes,
         })
     }
 
@@ -88,6 +104,11 @@ impl Site {
     /// The `'sha256-…'` sources of `index.html`'s inline scripts.
     pub fn script_hashes(&self) -> &str {
         &self.script_hashes
+    }
+
+    /// The `'sha256-…'` sources of the static style attributes in the app's scripts.
+    pub fn style_hashes(&self) -> &str {
+        &self.style_hashes
     }
 }
 
@@ -178,6 +199,30 @@ pub fn inline_script_hashes(html: &str) -> Vec<String> {
     hashes
 }
 
+/// The `'sha256-…'` source of every static `style="…"` attribute in a script's templates
+/// (one without interpolation or escapes: what a template inserts verbatim).
+pub fn style_attribute_hashes(script: &str) -> Vec<String> {
+    let mut hashes = Vec::new();
+    let mut rest = script;
+    while let Some(start) = rest.find(" style=\"") {
+        let after = &rest[start + " style=\"".len()..];
+        let Some(end) = after.find('"') else { break };
+        let value = &after[..end];
+        if !value.is_empty()
+            && value.len() <= 1_024
+            && !value.contains("${")
+            && !value.contains('\\')
+        {
+            hashes.push(format!(
+                "'sha256-{}'",
+                super::base64(&Sha256::digest(value.as_bytes()))
+            ));
+        }
+        rest = &after[end..];
+    }
+    hashes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,6 +240,17 @@ mod tests {
             "'sha256-DIm7WJS6ZKDYe5qFLPy+h4JFI9Bol5QmYC57mt3Fb00='"
         );
         assert_eq!(hashes.len(), 2);
+    }
+
+    #[test]
+    fn static_style_attributes_in_templates_are_hashed() {
+        // SvelteKit's route announcer, as its build emits it; the hash is the one Chromium
+        // asks for when the policy refuses it.
+        let js = r#"var r=$.from_html(`<div id="svelte-announcer" aria-live="assertive" aria-atomic="true" style="position: absolute; left: 0; top: 0; clip: rect(0 0 0 0); clip-path: inset(50%); overflow: hidden; white-space: nowrap; width: 1px; height: 1px"><!></div>`);var d=`<p style="color: ${c}"></p>`;"#;
+        assert_eq!(
+            style_attribute_hashes(js),
+            vec!["'sha256-S8qMpvofolR8Mpjy4kQvEm7m1q8clzU4dfDH0AmvZjo='".to_owned()]
+        );
     }
 
     #[test]

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # The gate: what CI runs, run before every commit. Toolchain pin, formatting, Clippy with
 # warnings denied, the architecture rule, every test (the database tests against the local
-# stack, which this starts if PS_TEST_DATABASE_URL is unset), then cargo-deny if installed.
+# stack, which this starts if PS_TEST_DATABASE_URL is unset), the web apps (type checks,
+# component tests, the browser journeys in Chromium, the size budgets), then cargo-deny if
+# installed.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -25,6 +27,15 @@ export PS_TEST_DATABASE_URL
 cargo test --workspace --locked
 # Drill (a) and the both-processes restart: the real server binary, killed at fault points.
 cargo test -p sandbox-server --features fault-injection --test drills --locked
+
+# The checkout and the dashboard (M6): strict type checks, component tests, then the
+# journeys in Chromium against the real processes (which build both apps), then the apps'
+# size budgets (D-064).
+[ -d node_modules ] || npm ci --no-audit --no-fund
+npm run check --workspaces --if-present
+npm test --workspaces --if-present
+scripts/e2e.sh
+node scripts/web-budget.mjs
 
 # cargo installs tools into ~/.cargo/bin, which may be missing from PATH (after rustup's).
 [ -d "$HOME/.cargo/bin" ] && PATH="$PATH:$HOME/.cargo/bin"
