@@ -26,4 +26,15 @@ database and (from M2) the simulated network all listen on loopback.
 | `m3-uncertain` | M3 | 80% approvals, 10% lost replies, 10% network unavailable, the reconciler running; then nothing open, clean two-way reconciliation | owed; see ROADMAP M3 for the smoke |
 | `m4-webhooks` | M4 | purchases with webhooks on: the deliverer signs and delivers every event to `fixtures/dev-store`, which must fulfill every captured payment exactly once | owed; the busy-machine smoke passed its correctness gate and missed p95 by 20 ms |
 | `m5-explain` | M5 | seeded purchases, then balances and explain pages at a fixed rate; every account walked to its end must sum to its balance | owed; the busy-machine smoke passed |
+| `m6-checkout` | M6 | the hosted checkout as payers use it: a session (API), the page (checkout origin), a read, a paid attempt (authorize and capture) and a repeat of it under the same key; then every session paid once and reconciliation clean | owed: written and parsed (`k6 inspect`); not yet run, smoke or full: the machine was reserved for another million-scale run |
 | `m2-refund-race` | M2 | the hot-account and hot-payment refund races (D-027): exact admitted count, then reconciliation | owed; the busy-machine smoke passed (630 admitted exactly, refund p99 39 ms) |
+
+## The web apps (M6)
+
+`scripts/web-perf.sh` records the checkout's and the dashboard's bundle sizes
+(`scripts/web-budget.mjs`, gzip; the budgets of D-064 are checked by `scripts/check.sh` and
+CI) and a page-load measurement: Chromium headless on loopback, 25 first visits (a fresh
+browser context each) and 25 repeat visits per site, until the payer can act (the checkout's
+Pay button, the dashboard's Sign in). Results go to `perf/results/<stamp>-web-m6.json` with
+the machine, its load and the commit; the browser, the servers and the database share one
+machine, so they are development observations, not capacity.

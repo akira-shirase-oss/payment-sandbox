@@ -20,12 +20,14 @@
 | `sandbox-domain` | Pure: `Money` (checked integers + explicit currency scale), account kinds, posting recipes, operation state machines, capacity rules, named refusals. No I/O — enforced. |
 | `sandbox-db` | SQLx: migrations, journal append, hold/capacity transactions, idempotency + inbox/outbox, reconciliation queries. |
 | `sandbox-http` | Bounded HTTP/1 serving for all three processes (D-054): connection cap before accept, read and write deadlines, per-connection request and age limits, bounded drain. |
-| `sandbox-server` | Axum API: payments, holds, captures, refunds, dashboard serving, project isolation, sandbox keys; the bounded outbox deliverer (lease, deadline, jitter retries). |
+| `sandbox-server` | Axum API: payments, holds, captures, refunds, checkout sessions, project isolation, sandbox keys; the bounded outbox deliverer (lease, deadline, jitter retries); and the two browser-facing sites on their own listeners (`web/`, D-061): the checkout origin and the dashboard origin. |
 | `sandbox-sim` | **Separate process with its own state store** (a redb file, D-034): approvals, declines and uncertain outcomes by `tok_sim_*` scenario token; its own capacity checks against its own record; fenced readback (D-017); listing for reverse reconciliation; virtual test clock; test-only fault rules (delay, lost reply, unavailable). One writer thread, bounded queue, group commit; listings and clock reads run in their own read transactions outside the writer (D-047). Executions, readbacks and listings need the server's network credential; faults and the clock are a control plane mounted only when switched on (by default only in the `dev` profile), behind an operator credential (D-046). |
 | `sandbox-cli` *(planned, M7)* | Rust CLI: create payment, capture, refund, inspect operations and the ledger, confirmed dataset reset. |
 | `packages/sdk-ts` *(planned, M7)* | TypeScript SDK for test stores. |
-| `apps/checkout` *(planned, M6)* | SvelteKit test checkout — the payer-facing sandbox page a test store redirects to. |
-| `apps/dashboard` *(planned, M6)* | SvelteKit inspection UI — operations, postings, balances, events, reconciler state. |
+| `apps/checkout` | SvelteKit test checkout (D-060): the payer-facing page a test store links to; a scenario picker, no card field; a static app the server serves from memory on the checkout origin. |
+| `apps/dashboard` | SvelteKit inspection UI (D-062): payments, holds, operations, journal entries, balances explained page by page, reconciliation, background tasks, webhook endpoints and deliveries, and (dev profile only) the simulator's controls. |
+| `packages/ui` | This repository's copy of Colophon's UI kit (D-035): Tailwind v4 tokens, the shadcn-svelte components the apps use, and the sandbox's outcome states, badge, banner and theme toggle. |
+| `e2e` | The Playwright journeys in Chromium against the real processes (`scripts/e2e.sh`). |
 
 ## Paths
 
@@ -49,6 +51,23 @@ simulator call happens outside any transaction → a further transaction
 applies the result: balanced postings + released reservation + outbox
 event. A decline or a fenced "never executed" releases the reservation;
 `uncertain` keeps it until readback.
+
+**Checkout (D-060):** the merchant `POST /v1/checkout_sessions` (amount, currency,
+description fixed) → the payer opens `{checkout origin}/c/{id}#cs_sim_…` (the secret in the
+fragment) → the page reads `GET /api/sessions/{id}` with the secret as a bearer token → "Pay"
+is `POST /api/sessions/{id}/attempts {token}` with an `Idempotency-Key`: the attempt row
+commits under the session's lock first (derived authorize key, operation and payment ids),
+then the authorize path above, then, with automatic capture, the capture path under a
+derived key → the page shows the state derived from the recorded operations and the
+journal-backed sums. A new attempt waits for the last to end without money; the same key
+re-drives its own attempt; `POST …/continue` finishes the latest one after the reconciler
+resolved it.
+
+**Dashboard (D-062):** `POST /api/session` with a sandbox key → a host-only
+`__Host-ps_dashboard` session (in memory, the key's hash re-resolved per request) → the API's
+own read handlers under `/api/v1/…`, read-only; state changes need the dashboard's `Origin`
+and the session's CSRF token; simulator controls (dev profile) forward the operator's
+credential to the network's control plane.
 
 **Webhook:** each state change commits its outbox row in the same
 transaction → the deliverer claims it under a lease → signed POST →
@@ -87,6 +106,10 @@ transient database failures with exponential backoff and full jitter.
 | 56432 | PostgreSQL (`deploy/compose.yaml`, compose project `payment-sandbox`) |
 | 56080 | `sandbox-server` API |
 | 56081 | `sandbox-sim` |
+| 56082 | `sandbox-dev-store` (`fixtures/dev-store`) |
+| 56083 | the checkout origin (`PS_CHECKOUT_LISTEN`, on with `PS_CHECKOUT_DIR`) |
+| 56084 | the dashboard origin (`PS_DASHBOARD_LISTEN`, on with `PS_DASHBOARD_DIR`) |
+| 56460–56465 | `scripts/e2e.sh`: API, network, checkout, dashboard, store, the test merchant page |
 | 56090 / 56091 | server / simulator during load runs (`scripts/load.sh`) |
 
 ## Consistency story
@@ -111,10 +134,11 @@ contract, not options.
 ```
 crates/        sandbox-domain, sandbox-db, sandbox-server, sandbox-sim
                (sandbox-cli: planned, M7)
-apps/          checkout, dashboard (planned, M6: SvelteKit + Tailwind v4 +
-               shadcn-svelte, separate origins — D-029, D-035)
-packages/      ui (planned, M6: this repository's copy of the Colophon UI
-               package); sdk-ts and the CMS sandbox adapter (planned, M7)
+apps/          checkout, dashboard (SvelteKit + Tailwind v4 + shadcn-svelte,
+               static, served from memory on separate origins — D-029, D-035, D-061)
+packages/      ui (this repository's copy of the Colophon UI package); sdk-ts and the
+               CMS sandbox adapter (planned, M7)
+e2e/           Playwright journeys in Chromium (scripts/e2e.sh)
 docs/          END_GOAL, ARCHITECTURE, ROADMAP, DECISIONS
 fixtures/      dev-store (the reference fulfillment consumer and the
                ship gate's development store, D-024), seeded scenarios

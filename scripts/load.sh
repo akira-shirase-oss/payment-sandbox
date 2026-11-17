@@ -58,6 +58,17 @@ PS_STORE_CONTROL=on PS_STORE_CONTROL_TOKEN="$store_control" \
 PS_STORE_LISTEN="127.0.0.1:${store_port}" PS_STORE_DB="target/perf/store-${scenario}-${stamp}.redb" \
   ./target/release/sandbox-dev-store >"target/perf/store-${scenario}-${stamp}.log" 2>&1 &
 store=$!
+# The checkout's own listener for the M6 scenarios (D-061), serving a one-page stand-in:
+# the load is the server's (sessions, attempts, the page from memory), not the app's.
+checkout_env=()
+checkout_url=""
+if [[ "$scenario" == m6-* ]]; then
+  site="target/perf/checkout-site-${stamp}"
+  mkdir -p "$site"
+  printf '<!doctype html><title>checkout</title><script>start()</script>\n' >"$site/index.html"
+  checkout_url="http://127.0.0.1:$((port + 3))"
+  checkout_env=(PS_CHECKOUT_DIR="$site" PS_CHECKOUT_LISTEN="127.0.0.1:$((port + 3))")
+fi
 # A fresh operator token per run: scenarios create their own projects with it.
 bootstrap="load-$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
 # Load runs measure each route's own cost: the per-project report budget (D-047), which
@@ -70,7 +81,7 @@ PS_SIM_URL="http://127.0.0.1:${sim_port}" PS_SIM_TOKEN="$sim_token" PS_RECONCILE
 PS_WEBHOOK_PORTS="$((port + 2))" \
 PS_SECRET_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
 PS_BOOTSTRAP_TOKEN="$bootstrap" PS_LISTEN="127.0.0.1:${port}" PS_LOG=warn PS_LOG_FORMAT=json \
-  ./target/release/sandbox-server >"$log" 2>&1 &
+  env ${checkout_env[@]+"${checkout_env[@]}"} ./target/release/sandbox-server >"$log" 2>&1 &
 server=$!
 trap 'kill "$server" "$sim" "$store" 2>/dev/null || true; rm -f "$summary"' EXIT
 for _ in $(seq 1 100); do
@@ -80,7 +91,7 @@ done
 curl -fsS "http://127.0.0.1:${port}/readyz" >/dev/null
 
 set +e
-STORE_URL="http://127.0.0.1:${store_port}" STORE_TOKEN="$store_control" \
+STORE_URL="http://127.0.0.1:${store_port}" STORE_TOKEN="$store_control" CHECKOUT_URL="$checkout_url" \
 BOOTSTRAP="$bootstrap" BASE_URL="http://127.0.0.1:${port}" MODE="$mode" k6 run --quiet \
   --summary-export "$summary" "$script"
 k6_status=$?
