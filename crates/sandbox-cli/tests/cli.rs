@@ -858,3 +858,49 @@ async fn a_server_restart_behind_a_proxy_mid_payment_charges_once() {
     );
     stack.stop().await;
 }
+
+/// A server that accepts connections and never answers.
+async fn silent() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((stream, _)) = listener.accept().await {
+            held.push(stream);
+        }
+    });
+    url
+}
+
+/// Regression (v1 review L1): an attempt's deadline is capped by what is left of the
+/// request's, so `--timeout 5` never waits 10 s for one attempt.
+#[tokio::test]
+async fn retries_never_overrun_the_overall_deadline() {
+    let url = silent().await;
+    let policy = RetryPolicy {
+        deadline: Duration::from_secs(1),
+        attempt_timeout: Duration::from_secs(10),
+        ..fast()
+    };
+    let client = Client::new(Config::new(&url, Some(KEY), false).unwrap(), policy).unwrap();
+    let started = std::time::Instant::now();
+    let error = client.get("/v1/project").await.unwrap_err();
+    assert!(
+        matches!(error, ClientError::Unreachable { .. }),
+        "{error:?}"
+    );
+    let read = started.elapsed();
+    let started = std::time::Instant::now();
+    let error = client
+        .post_money("/v1/payments", &json!({}), Some("order-5".to_owned()))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, ClientError::Unknown { .. }), "{error:?}");
+    let money = started.elapsed();
+    for (what, took) in [("read", read), ("money", money)] {
+        assert!(
+            took < Duration::from_millis(2_500),
+            "{what}: {took:?} for a 1 s deadline"
+        );
+    }
+}

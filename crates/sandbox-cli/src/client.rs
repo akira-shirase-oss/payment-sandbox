@@ -279,7 +279,12 @@ impl Client {
         let mut attempts = 0;
         let last_failure = loop {
             attempts += 1;
-            let attempt = self.attempt(&method, &url, body, key.as_deref()).await?;
+            // One attempt never outlives the request's own deadline (v1 review L1).
+            let left = self.retry.deadline.saturating_sub(started.elapsed());
+            let budget = self.retry.attempt_timeout.min(left);
+            let attempt = self
+                .attempt(&method, &url, body, key.as_deref(), budget)
+                .await?;
             let (retry_after, failure) = match attempt {
                 Attempt::Answered {
                     status,
@@ -352,10 +357,12 @@ impl Client {
         url: &str,
         body: Option<&Value>,
         key: Option<&str>,
+        budget: Duration,
     ) -> Result<Attempt, ClientError> {
         let mut request = self
             .http
             .request(method.clone(), url)
+            .timeout(budget)
             .bearer_auth(self.config.key.expose())
             .header("accept", "application/json");
         if let Some(key) = key {

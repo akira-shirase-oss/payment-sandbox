@@ -132,6 +132,22 @@ describe('retries', () => {
 		await expect(strict.payments.create({ amount: 100, currency: 'USD' })).rejects.toBeInstanceOf(NotASandboxError);
 	});
 
+	// v1 review L1: an attempt's deadline is capped by what is left of the call's.
+	it('never overruns the overall deadline', async () => {
+		const seen: string[] = [];
+		const hang = ((url: string | URL, init?: RequestInit) => {
+			seen.push(String(url));
+			return new Promise<Response>((_, reject) => {
+				init?.signal?.addEventListener('abort', () => reject(init.signal!.reason));
+			});
+		}) as typeof globalThis.fetch;
+		const sandbox = new Sandbox({ apiKey: KEY, fetch: hang, retry: { ...FAST, deadlineMs: 300, attemptTimeoutMs: 10_000 } });
+		const started = Date.now();
+		const error = await sandbox.payments.create({ amount: 100, currency: 'USD' }).catch((e) => e);
+		expect(error).toBeInstanceOf(UnknownOutcomeError);
+		expect(Date.now() - started).toBeLessThan(1_500);
+	}, 3_000);
+
 	it('reports an uncertain answer as not settled, never as success', async () => {
 		const { fetch } = fake([created('uncertain', 202)]);
 		const sandbox = new Sandbox({ apiKey: KEY, fetch, retry: FAST });

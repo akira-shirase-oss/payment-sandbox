@@ -312,7 +312,8 @@ export class Sandbox {
 					headers,
 					body: body === undefined ? undefined : JSON.stringify(body),
 					redirect: 'error',
-					signal: AbortSignal.timeout(retry.attemptTimeoutMs)
+					// One attempt never outlives the call's own deadline (v1 review L1).
+					signal: AbortSignal.timeout(Math.max(1, Math.min(retry.attemptTimeoutMs, retry.deadlineMs - (Date.now() - started))))
 				});
 				const keyed = idempotencyKey !== undefined;
 				if (response.headers.get('sandbox-simulated') !== 'true') {
