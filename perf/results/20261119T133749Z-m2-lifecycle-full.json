@@ -1,0 +1,1087 @@
+{
+  "scenario": "m2-lifecycle",
+  "mode": "full",
+  "started_utc": "20261119T133749Z",
+  "commit": "fb868c79c5204bd4c655c3ae6f9f1d75632a40c6",
+  "tree_dirty": false,
+  "machine": {
+    "cpu": "AMD EPYC 9V74 80-Core Processor",
+    "cores": 4,
+    "memory_gb": 15,
+    "os": "Linux 7.0.0-1019-azure",
+    "load_average_before": "3.25, 1.02, 0.36",
+    "load_average_after": "9.48, 6.02, 5.40",
+    "note": "GitHub-hosted runner: the load generator, the server, the network and PostgreSQL share one runner VM on shared cloud hardware; an observation, not capacity",
+    "label": "GitHub-hosted runner",
+    "runner": {
+      "image": "ubuntu26/20261111.196.1",
+      "arch": "X64",
+      "workflow_run": 44535136879
+    }
+  },
+  "server_rss_kb_at_end": 45600,
+  "cpu": {
+    "cores": 4,
+    "run_seconds": 3011,
+    "samples_5s": 601,
+    "busy_mean": 0.337,
+    "busy_p50": 0.274,
+    "busy_p90": 0.632,
+    "saturated_share": 0.003,
+    "server_cpu_seconds": 723,
+    "network_cpu_seconds": 238,
+    "postgres_cpu_seconds": 1727,
+    "note": "busy share of all cores per 5 s sample; saturated = at least 95% busy; what the three processes do not account for is mostly k6, the load generator, on the same machine"
+  },
+  "network_stats": {
+    "simulated": true,
+    "store": {
+      "batch_max": 85,
+      "batch_ms_total": 1421733,
+      "batches": 412562,
+      "commands": 639364,
+      "commit_failures": 0,
+      "commit_ms_max": 795,
+      "commit_ms_total": 1364503,
+      "shed": 0,
+      "wait_ms_max": 1022,
+      "wait_ms_total": 8538120
+    },
+    "transport": {
+      "accepted": 6574,
+      "active": 51,
+      "active_peak": 152,
+      "place_wait_ms_max": 0,
+      "place_wait_ms_total": 4,
+      "refused": 0,
+      "served": 6574
+    }
+  },
+  "postgres_lock_waits_over_50ms": 6381,
+  "thresholds_passed": false,
+  "k6_exit_status": 99,
+  "requests": 858829,
+  "requests_per_second": 285.2298021467771,
+  "failed_rate": 0.2565074071788447,
+  "dropped_iterations": 1382,
+  "latency_ms": {
+    "min": 0,
+    "med": 121.51557,
+    "avg": 675.3578965050898,
+    "p(90)": 2001.1743006,
+    "p(95)": 2001.679152,
+    "p(99)": 2004.11732976,
+    "max": 4669.839762
+  },
+  "thresholds": [
+    {
+      "metric": "http_req_duration{op:refund}",
+      "thresholds": {
+        "p(95)<100": true,
+        "p(99)<250": true
+      }
+    },
+    {
+      "metric": "op_status{op:refund,status:200}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:authorize,status:504}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:capture,status:502}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:capture,status:504}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:capture,status:403}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:403}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:capture,status:404}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:0}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:authorize,status:429}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:authorize,status:409}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:capture,status:409}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:capture,status:201}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:refund,status:202}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:409}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:201}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:refund,status:403}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:capture,status:429}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "http_req_duration{op:authorize}",
+      "thresholds": {
+        "p(95)<100": true,
+        "p(99)<250": true
+      }
+    },
+    {
+      "metric": "op_status{op:authorize,status:201}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:200}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:authorize,status:500}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:404}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:refund,status:201}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:authorize,status:422}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:authorize,status:200}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:authorize,status:404}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:503}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "http_req_duration{op:capture}",
+      "thresholds": {
+        "p(95)<100": true,
+        "p(99)<250": true
+      }
+    },
+    {
+      "metric": "op_status{op:capture,status:401}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:authorize,status:503}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:500}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:refund,status:409}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:authorize,status:502}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:capture,status:0}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:capture,status:500}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:refund,status:400}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "http_req_failed{phase:load}",
+      "thresholds": {
+        "rate<0.0001": true
+      }
+    },
+    {
+      "metric": "checks{phase:reconcile}",
+      "thresholds": {
+        "rate==1": true
+      }
+    },
+    {
+      "metric": "op_status{op:refund,status:504}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:authorize,status:403}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:refund,status:404}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:capture,status:200}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:502}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:202}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:refund,status:429}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:refund,status:422}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:authorize,status:401}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:capture,status:422}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:capture,status:202}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:capture,status:400}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:400}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:authorize,status:202}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:429}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:refund,status:502}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:capture,status:503}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "checks{phase:load}",
+      "thresholds": {
+        "rate>0.9999": true
+      }
+    },
+    {
+      "metric": "op_status{op:refund,status:401}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:401}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:refund,status:500}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:authorize,status:0}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:authorize,status:400}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:refund,status:503}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:422}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:504}",
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    {
+      "metric": "op_status{op:refund,status:0}",
+      "thresholds": {
+        "count>=0": false
+      }
+    }
+  ],
+  "k6_summary": {
+    "http_req_duration{op:refund}": {
+      "med": 20.4877975,
+      "avg": 281.02418251563154,
+      "p(90)": 927.5586137000003,
+      "p(95)": 1237.29510745,
+      "p(99)": 2000.94869578,
+      "max": 3541.111087,
+      "min": 0,
+      "thresholds": {
+        "p(95)<100": true,
+        "p(99)<250": true
+      }
+    },
+    "op_status{op:refund,status:200}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "data_sent": {
+      "count": 281777482,
+      "rate": 93582.46570653417
+    },
+    "op_status{op:authorize,status:504}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:capture,status:502}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:capture,status:504}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:capture,status:403}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:other,status:403}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "vus": {
+      "value": 0,
+      "min": 0,
+      "max": 1025
+    },
+    "http_req_receiving": {
+      "p(95)": 0.17708759999999998,
+      "p(99)": 0.6777803199999999,
+      "max": 67.802753,
+      "min": 0,
+      "med": 0.03993,
+      "avg": 0.07396200940932283,
+      "p(90)": 0.0897570000000007
+    },
+    "op_status{op:capture,status:404}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:other,status:0}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:authorize,status:429}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:authorize,status:409}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:capture,status:409}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "dropped_iterations": {
+      "count": 1382,
+      "rate": 0.45898262234606185
+    },
+    "vus_max": {
+      "value": 1037,
+      "min": 100,
+      "max": 1037
+    },
+    "op_status{op:capture,status:201}": {
+      "count": 212754,
+      "rate": 70.65874734776703,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:refund,status:202}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "http_req_waiting": {
+      "p(90)": 2001.0838484,
+      "p(95)": 2001.5715994,
+      "p(99)": 2003.80112888,
+      "max": 4669.551347,
+      "min": 0,
+      "med": 121.413699,
+      "avg": 675.248016476872
+    },
+    "op_status{op:other,status:409}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "http_req_duration{expected_response:true}": {
+      "med": 26.953839,
+      "avg": 282.38100788997946,
+      "p(90)": 910.5258570000004,
+      "p(95)": 1184.5338454000005,
+      "p(99)": 1936.2944503200017,
+      "max": 4669.839762,
+      "min": 3.308579
+    },
+    "op_status{op:other,status:201}": {
+      "count": 2,
+      "rate": 0.0006642295547699882,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:refund,status:403}": {
+      "rate": 0,
+      "count": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:capture,status:429}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "http_req_duration{op:authorize}": {
+      "min": 0,
+      "med": 964.836653,
+      "avg": 1062.6342167817097,
+      "p(90)": 2001.615087,
+      "p(95)": 2002.1043666,
+      "p(99)": 2004.87274296,
+      "max": 3906.433919,
+      "thresholds": {
+        "p(95)<100": true,
+        "p(99)<250": true
+      }
+    },
+    "op_status{op:authorize,status:201}": {
+      "count": 213854,
+      "rate": 71.02407360289052,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:other,status:200}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:authorize,status:500}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "http_req_failed": {
+      "passes": 220296,
+      "fails": 638533,
+      "value": 0.2565074071788447
+    },
+    "op_status{op:other,status:404}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:refund,status:201}": {
+      "count": 211923,
+      "rate": 70.38275996776011,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:authorize,status:422}": {
+      "rate": 0,
+      "count": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:authorize,status:200}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:authorize,status:404}": {
+      "rate": 0,
+      "count": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:other,status:503}": {
+      "count": 2,
+      "rate": 0.0006642295547699882,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "http_req_blocked": {
+      "min": 0.000882,
+      "med": 0.004036,
+      "avg": 0.10184154082127551,
+      "p(90)": 0.177157,
+      "p(95)": 0.28580379999999994,
+      "p(99)": 1.1998065999999978,
+      "max": 272.256387
+    },
+    "op_status": {
+      "rate": 285.2298021467771,
+      "count": 858829
+    },
+    "http_req_duration{op:capture}": {
+      "min": 0,
+      "med": 22.174914,
+      "avg": 288.95936812145794,
+      "p(90)": 952.5807263000002,
+      "p(95)": 1252.9968492999965,
+      "p(99)": 2001.08295673,
+      "max": 4669.839762,
+      "thresholds": {
+        "p(95)<100": true,
+        "p(99)<250": true
+      }
+    },
+    "data_received": {
+      "count": 583932946,
+      "rate": 193932.76036855378
+    },
+    "op_status{op:capture,status:401}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:authorize,status:503}": {
+      "count": 216902,
+      "rate": 72.03635944435999,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:other,status:500}": {
+      "rate": 0,
+      "count": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:refund,status:409}": {
+      "count": 231,
+      "rate": 0.07671851357593364,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:authorize,status:502}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:capture,status:0}": {
+      "count": 1,
+      "rate": 0.0003321147773849941,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:capture,status:500}": {
+      "rate": 0,
+      "count": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:refund,status:400}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "http_req_failed{phase:load}": {
+      "passes": 220294,
+      "fails": 638531,
+      "thresholds": {
+        "rate<0.0001": true
+      },
+      "value": 0.25650627310569674
+    },
+    "http_req_connecting": {
+      "max": 271.850536,
+      "min": 0,
+      "med": 0,
+      "avg": 0.07687431254883313,
+      "p(90)": 0.11948,
+      "p(95)": 0.19317739999999978,
+      "p(99)": 1.0202661999999998
+    },
+    "checks{phase:reconcile}": {
+      "passes": 0,
+      "fails": 4,
+      "thresholds": {
+        "rate==1": true
+      },
+      "value": 0
+    },
+    "op_status{op:refund,status:504}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "checks": {
+      "passes": 638531,
+      "fails": 220298,
+      "value": 0.7434902640688659
+    },
+    "op_status{op:authorize,status:403}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:refund,status:404}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:capture,status:200}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "http_req_sending": {
+      "avg": 0.03591801880118207,
+      "p(90)": 0.032699,
+      "p(95)": 0.052309,
+      "p(99)": 0.33315991999999967,
+      "max": 98.092585,
+      "min": 0,
+      "med": 0.015093
+    },
+    "op_status{op:other,status:502}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:other,status:202}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:refund,status:429}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:refund,status:422}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:authorize,status:401}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:capture,status:422}": {
+      "rate": 0,
+      "count": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:capture,status:202}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:capture,status:400}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "iterations": {
+      "count": 431117,
+      "rate": 143.1803264818865
+    },
+    "op_status{op:other,status:400}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:authorize,status:202}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:other,status:429}": {
+      "rate": 0,
+      "count": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:refund,status:502}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:capture,status:503}": {
+      "rate": 0.3649941403461085,
+      "count": 1099,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "http_req_tls_handshaking": {
+      "p(95)": 0,
+      "p(99)": 0,
+      "max": 0,
+      "min": 0,
+      "med": 0,
+      "avg": 0,
+      "p(90)": 0
+    },
+    "checks{phase:load}": {
+      "passes": 638531,
+      "fails": 220294,
+      "thresholds": {
+        "rate>0.9999": true
+      },
+      "value": 0.7434937268943033
+    },
+    "op_status{op:refund,status:401}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:other,status:401}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:refund,status:500}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "http_reqs": {
+      "count": 858829,
+      "rate": 285.2298021467771
+    },
+    "op_status{op:authorize,status:0}": {
+      "count": 361,
+      "rate": 0.11989343463598287,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:authorize,status:400}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:refund,status:503}": {
+      "count": 1697,
+      "rate": 0.563598777222335,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:other,status:422}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "op_status{op:other,status:504}": {
+      "rate": 0,
+      "count": 0,
+      "thresholds": {
+        "count>=0": false
+      }
+    },
+    "iteration_duration": {
+      "med": 2000.886168,
+      "avg": 1346.0367048433584,
+      "p(90)": 2102.0893094000007,
+      "p(95)": 2893.148389599998,
+      "p(99)": 4419.615837159997,
+      "max": 8668.796234,
+      "min": 0.222199
+    },
+    "http_req_duration": {
+      "max": 4669.839762,
+      "min": 0,
+      "med": 121.51557,
+      "avg": 675.3578965050898,
+      "p(90)": 2001.1743006,
+      "p(95)": 2001.679152,
+      "p(99)": 2004.11732976
+    },
+    "op_status{op:refund,status:0}": {
+      "count": 3,
+      "rate": 0.0009963443321549823,
+      "thresholds": {
+        "count>=0": false
+      }
+    }
+  }
+}

@@ -35,7 +35,9 @@ export function statusThresholds(ops) {
   const t = {};
   for (const op of [...ops, 'other']) {
     for (const s of ['0', '200', '201', '202', '400', '401', '403', '404', '409', '422', '429', '500', '502', '503', '504']) {
-      t[`op_status{op:${op},status:${s}}`] = ['count>=0'];
+      // `count>-1`, not `count>=0`: k6's threshold grammar does not accept `>=` — the
+      // sub-metrics exported fine but every threshold showed as breached (m2 run 44535136879).
+      t[`op_status{op:${op},status:${s}}`] = ['count>-1'];
     }
   }
   return t;
