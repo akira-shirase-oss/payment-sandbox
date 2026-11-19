@@ -1,0 +1,37 @@
+{
+  "kind": "development observation — posting hot-row benchmark for D-096",
+  "machine": "MacBook Pro Mac14,10, Apple M2 Pro, arm64",
+  "os": "macOS (Darwin 27.2.0), local stack PostgreSQL on 127.0.0.1:56432",
+  "load_average": "~5 while measuring (busy machine; numbers are development observations, not production capacity)",
+  "method": "crates/sandbox-db/tests/posting_bench.rs, `cargo test --release -p sandbox-db --test posting_bench -- --nocapture`: N concurrent tasks each run whole transactions (begin, journal::post of a USD authorize, commit) against ONE project for 5s; postings/s and p50/p99 of the whole transaction",
+  "phases": [
+    {
+      "label": "before: journal insert only (code of 1a97f99, pre-D-096)",
+      "levels": [
+        {"concurrency": 1, "posts": 4247, "posts_per_second": 849.4, "p50_us": 1046, "p99_us": 2602},
+        {"concurrency": 8, "posts": 15439, "posts_per_second": 3087.8, "p50_us": 2476, "p99_us": 4611},
+        {"concurrency": 32, "posts": 31161, "posts_per_second": 6232.2, "p50_us": 4929, "p99_us": 9159},
+        {"concurrency": 64, "posts": 39295, "posts_per_second": 7859.0, "p50_us": 7491, "p99_us": 20888}
+      ]
+    },
+    {
+      "label": "D-096 one row per account (3cbf268)",
+      "levels": [
+        {"concurrency": 1, "posts": 3828, "posts_per_second": 765.6, "p50_us": 1154, "p99_us": 2766},
+        {"concurrency": 8, "posts": 6010, "posts_per_second": 1202.0, "p50_us": 5503, "p99_us": 23633},
+        {"concurrency": 32, "posts": 5326, "posts_per_second": 1065.2, "p50_us": 19950, "p99_us": 143071},
+        {"concurrency": 64, "posts": 5428, "posts_per_second": 1085.6, "p50_us": 39926, "p99_us": 285916}
+      ]
+    },
+    {
+      "label": "D-096 with 16 stripes per account (this commit)",
+      "levels": [
+        {"concurrency": 1, "posts": 3943, "posts_per_second": 788.6, "p50_us": 1109, "p99_us": 2739},
+        {"concurrency": 8, "posts": 13365, "posts_per_second": 2673.0, "p50_us": 2815, "p99_us": 6538},
+        {"concurrency": 32, "posts": 23660, "posts_per_second": 4732.0, "p50_us": 5665, "p99_us": 22944},
+        {"concurrency": 64, "posts": 27421, "posts_per_second": 5484.2, "p50_us": 8107, "p99_us": 58035}
+      ]
+    }
+  ],
+  "reading": "The one-row-per-account design flattened at ~1,100 postings/s from 8 concurrent tasks (lock-wait dominated; p99 286ms at 64). 16 stripes (hash of the entry id) spread the rows: 5,484/s at 64 — about 5x the unstriped number and ~70% of the no-balance baseline; the residual gap is the upsert's own work plus ~1/16 same-stripe collisions. Baseline scaling continues past 64 only because journal inserts never contend."
+}

@@ -185,22 +185,7 @@ async fn explain_pages_stay_consistent_while_entries_commit_out_of_order() {
     // the posting transaction, so same-account postings serialize on it), and what this
     // test manufactures is a commit order that disagrees with the sequence order — the
     // accounts the later commit touches do not matter to that.
-    {
-        let mut tx = app.db.pool.begin().await.unwrap();
-        let later = Recipe::Authorize
-            .post(Currency::Eur, Amount::new(50).unwrap())
-            .unwrap();
-        journal::post(
-            &mut tx,
-            scope,
-            entry_id(uuid::Uuid::now_v7(), Recipe::Authorize),
-            &later,
-            EntryRefs::default(),
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-    }
+    later_commit(&app.db.pool, scope).await;
 
     // Pages of two lines: the explanation must page several times across the late commit
     // (review N12: with one page this test passed even without D-042's fix).
@@ -264,6 +249,28 @@ async fn explain_pages_stay_consistent_while_entries_commit_out_of_order() {
     );
     app.cleanup().await;
     sim.remove().await;
+}
+
+/// A posting that allocates and commits immediately, on EUR accounts (see the caller:
+/// chosen so it never waits on another test transaction's USD balance-row locks).
+async fn later_commit(pool: &sqlx::PgPool, scope: sandbox_db::ProjectScope) {
+    use sandbox_db::journal::{self, EntryRefs};
+    use sandbox_domain::identity::entry_id;
+    use sandbox_domain::{Amount, Currency, Recipe};
+    let entry = Recipe::Authorize
+        .post(Currency::Eur, Amount::new(50).unwrap())
+        .unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    journal::post(
+        &mut tx,
+        scope,
+        entry_id(uuid::Uuid::now_v7(), Recipe::Authorize),
+        &entry,
+        EntryRefs::default(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
 }
 
 /// Review finding 16: after a restore, the sequence restarts at the backup's value, so the

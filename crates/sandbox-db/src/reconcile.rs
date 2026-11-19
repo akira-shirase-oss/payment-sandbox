@@ -188,10 +188,13 @@ async fn balance_mismatches(
          ), derived AS (
              -- Scoped in a subquery, not the ON clause: a FULL JOIN emits every row of
              -- both sides, so a scope in ON would only change the pairing, and rows of
-             -- other epochs would still appear as phantom mismatches.
-             SELECT currency, account_kind, balance_minor, line_count
+             -- other epochs would still appear as phantom mismatches. The stripes are
+             -- summed away: the balance is per account, not per stripe.
+             SELECT currency, account_kind,
+                    sum(balance_minor)::bigint AS balance_minor, sum(line_count)::bigint AS line_count
                FROM account_balances
               WHERE project_id = $1 AND dataset_epoch = $2
+              GROUP BY currency, account_kind
          )
          SELECT coalesce(j.currency, d.currency), coalesce(j.account_kind, d.account_kind),
                 coalesce(j.amount, 0)::bigint, coalesce(d.balance_minor, 0)::bigint
@@ -311,8 +314,11 @@ pub async fn explain(
         "SELECT coalesce(b.balance_minor, 0)::bigint - coalesce(inv.amount, 0)::bigint AS balance,
                 coalesce(b.line_count, 0)::bigint - coalesce(inv.lines, 0)::bigint AS lines
            FROM (SELECT 1) one
-           LEFT JOIN account_balances b
-             ON b.project_id = $1 AND b.dataset_epoch = $2 AND b.currency = $3 AND b.account_kind = $4
+           LEFT JOIN LATERAL (
+             SELECT sum(balance_minor)::bigint AS balance_minor, sum(line_count)::bigint AS line_count
+               FROM account_balances
+              WHERE project_id = $1 AND dataset_epoch = $2 AND currency = $3 AND account_kind = $4
+           ) b ON true
            LEFT JOIN LATERAL (
              SELECT sum(l.amount_minor)::bigint AS amount, count(*)::bigint AS lines
                FROM journal_lines l

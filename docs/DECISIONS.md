@@ -1507,9 +1507,21 @@ closes one of its findings, with the test that failed before the fix.
   about it: two postings to the same account now serialize — the balance row lock is held
   until the posting transaction commits — so an entry held open stalls same-account
   postings. The real posting transaction is short (the network call sits outside it), so
-  the held window is milliseconds; the delta rows are upserted in `account_kind` order so
-  concurrent postings take the locks in one order and never deadlock. The alternative
-  (deferred derivation) would break the same-transaction guarantee. Tests:
+  the held window is milliseconds; the alternative (deferred derivation) would break the
+  same-transaction guarantee. Measured before merge (`perf/results/20261119T1240Z-posting-hotrow-bench.json`,
+  development observation, M2 Pro, busy machine): one row per account flattened at
+  ~1,100 postings/s from 8 concurrent tasks against a journal-insert baseline of
+  7,859/s at 64 — the hot-row ceiling the coordinator predicted. Each entry now carries
+  one of **16 stripes** (`entry_id` hash, the uuid's random low bits) so concurrent
+  postings mostly touch different rows: 5,484/s at 64, ~5x the unstriped number; the
+  residual gap to baseline is the upsert's own work plus ~1/16 same-stripe collisions.
+  Reads and reconciliation sum the stripes, staying O(accounts x 16). The upsert's row
+  locks are taken in the SELECT's `ORDER BY (currency, account_kind, stripe)` — a total
+  order shared by every posting, so concurrent postings can never deadlock even if an
+  entry ever carries lines in two currencies (today entries are single-currency by
+  schema: `journal_entries.currency` is the only currency field and every line takes it).
+  Coverage: `ordered_upserts_cannot_deadlock_across_currencies_and_reversals` races
+  entries and their reversals across all four currencies. Tests:
   `derived_balances_are_kept_per_epoch`, `concurrent_postings_keep_the_derived_balances_exact`,
   the drift test above, and the existing random-postings property — its `balances()` read
   now goes through the derived table, so it is also the derived-equals-journal property.

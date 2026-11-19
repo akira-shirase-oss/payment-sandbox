@@ -417,6 +417,56 @@ async fn concurrent_postings_keep_the_derived_balances_exact() {
     db.cleanup().await;
 }
 
+/// Postings across currencies and their reversals racing each other cannot deadlock: the
+/// upsert orders the balance rows by (currency, `account_kind`, stripe) in its SELECT, so
+/// every posting takes the locks in the same order whatever its deltas are. Entries carry
+/// one currency by schema, so the two-currency case is approached by racing every
+/// currency at once; a deadlock would surface as a `PgDatabaseError`, not a wrong sum.
+#[tokio::test]
+async fn ordered_upserts_cannot_deadlock_across_currencies_and_reversals() {
+    let db = TestDb::new().await;
+    let scope = project(&db.pool, "store-order").await;
+    let mut handles = Vec::new();
+    for round in 0..8 {
+        for currency in Currency::ALL {
+            let pool = db.pool.clone();
+            handles.push(tokio::spawn(async move {
+                let entry = Recipe::Capture
+                    .post(currency, Amount::new(10 + round).unwrap())
+                    .unwrap();
+                let original = Uuid::now_v7();
+                let mut tx = pool.begin().await.unwrap();
+                journal::post(&mut tx, scope, original, &entry, EntryRefs::default())
+                    .await
+                    .unwrap();
+                journal::post(
+                    &mut tx,
+                    scope,
+                    Uuid::now_v7(),
+                    &entry.reversal(),
+                    EntryRefs {
+                        reverses: Some(original),
+                        ..EntryRefs::default()
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+            }));
+        }
+    }
+    for handle in handles {
+        handle.await.unwrap();
+    }
+    let report = reconcile::run(&db.pool, scope).await.unwrap();
+    assert!(
+        report.balance_mismatches.is_empty(),
+        "{:?}",
+        report.balance_mismatches
+    );
+    db.cleanup().await;
+}
+
 /// The property: for random recipe postings across currencies, every committed balance
 /// equals the sum the postings imply, and every currency sums to zero. The read goes
 /// through the derived balances (D-096), so this is also the derived-equals-journal

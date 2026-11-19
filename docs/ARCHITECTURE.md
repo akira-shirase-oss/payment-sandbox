@@ -130,9 +130,10 @@ identity, so a lost response is a reconcilable `uncertain`, not a lost
 charge. Cross-process truth is closed by readback; cross-system truth by
 inbox dedup and the fulfillment business key. The ledger closes the loop:
 every materialized balance must equal the sum of its journal entries.
-`account_balances` holds those sums per (project, epoch, currency, account),
-advanced by the same statement that posts the lines and re-derived by
-reconciliation — derived, never authoritative (D-096).
+`account_balances` holds those sums per (project, epoch, currency, account,
+stripe), advanced by the same statement that posts the lines, summed over
+the 16 stripes on read, and re-derived by reconciliation — derived, never
+authoritative (D-096).
 
 ## Failure cases
 

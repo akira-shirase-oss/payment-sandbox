@@ -63,21 +63,25 @@ pub async fn post(
                     AS l(line_no, account_kind, amount_minor)
          ), balances AS (
              -- The derived balance moves with the lines, in the same statement (D-096):
-             -- a committed line is always inside its account's balance.
+             -- a committed line is always inside its account's balance. The stripe comes
+             -- from the entry id, so concurrent postings mostly touch different rows.
              INSERT INTO account_balances
-                 (project_id, dataset_epoch, currency, account_kind, balance_minor, line_count)
+                 (project_id, dataset_epoch, currency, account_kind, stripe,
+                  balance_minor, line_count)
              SELECT entry.project_id, entry.dataset_epoch, entry.currency, d.account_kind,
-                    d.delta, d.n
+                    $13::smallint, d.delta, d.n
                FROM entry,
                     (SELECT account_kind, sum(amount_minor) AS delta, count(*) AS n
                        FROM unnest($10::smallint[], $11::text[], $12::bigint[])
                             AS l(line_no, account_kind, amount_minor)
-                      GROUP BY account_kind
-                      -- A fixed row order across every posting: concurrent upserts to
-                      -- the same accounts then take the row locks in the same order,
-                      -- never deadlock on each other.
-                      ORDER BY account_kind) d
-             ON CONFLICT (project_id, dataset_epoch, currency, account_kind)
+                      GROUP BY account_kind) d
+              -- The upsert's row locks are taken in this order across every posting:
+              -- (currency, account_kind, stripe). Entries carry one currency and one
+              -- stripe today, but the full key keeps the order total if an entry ever
+              -- carries lines in two currencies — the order comes from the SELECT's
+              -- ORDER BY, not from how the group happened to be hashed.
+              ORDER BY entry.currency, d.account_kind
+             ON CONFLICT (project_id, dataset_epoch, currency, account_kind, stripe)
              DO UPDATE SET balance_minor = account_balances.balance_minor + EXCLUDED.balance_minor,
                            line_count = account_balances.line_count + EXCLUDED.line_count
          )
@@ -95,6 +99,9 @@ pub async fn post(
     .bind(&line_nos)
     .bind(&accounts)
     .bind(&amounts)
+    // The entry's stripe: a hash of its id spread over 16 rows (D-096). The low bits of a
+    // version-7 uuid are its random tail, so they spread uniformly.
+    .bind(i16::try_from(id.as_u128() % 16).unwrap_or_default())
     .fetch_one(&mut *conn)
     .await?;
     Ok(PostedEntry {
@@ -119,9 +126,10 @@ pub struct Balance {
 /// reports any drift, so the journal stays the only authority.
 pub async fn balances(pool: &PgPool, scope: ProjectScope) -> Result<Vec<Balance>, DbError> {
     let rows = sqlx::query(
-        "SELECT currency, account_kind, balance_minor AS total
+        "SELECT currency, account_kind, sum(balance_minor)::bigint AS total
            FROM account_balances
           WHERE project_id = $1 AND dataset_epoch = $2
+          GROUP BY currency, account_kind
           ORDER BY currency, account_kind",
     )
     .bind(scope.project_id)
