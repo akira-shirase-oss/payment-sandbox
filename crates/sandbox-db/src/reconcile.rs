@@ -2,7 +2,10 @@
 //!
 //! - every currency's journal lines sum to zero;
 //! - every payment's committed sums equal the totals of its journal entries;
-//! - every succeeded operation has exactly one entry, and every entry's operation succeeded.
+//! - every succeeded operation has exactly one entry, and every entry's operation
+//!   succeeded;
+//! - every derived account balance (D-096) equals the journal's sums: the journal stays
+//!   the only authority and a drifted derivation is reported, never trusted.
 //!
 //! A mismatch is a defect, never a rounding error.
 
@@ -25,6 +28,10 @@ pub struct Report {
     /// Accounts whose journal balance differs from what the payments' committed sums
     /// imply: `(currency, account, journal, implied)`.
     pub account_mismatches: Vec<(String, String, i64, i64)>,
+    /// Accounts whose derived balance (D-096) disagrees with the journal's sums:
+    /// `(currency, account, journal, derived)`. The journal side is the truth a drift
+    /// is measured against.
+    pub balance_mismatches: Vec<(String, String, i64, i64)>,
     /// Operations still pending or uncertain.
     pub open_operations: i64,
     /// Payments checked.
@@ -40,6 +47,7 @@ impl Report {
             && self.payment_mismatches.is_empty()
             && self.operation_entry_mismatches == 0
             && self.account_mismatches.is_empty()
+            && self.balance_mismatches.is_empty()
     }
 }
 
@@ -69,32 +77,7 @@ pub async fn run(pool: &PgPool, scope: ProjectScope) -> Result<Report, DbError> 
     .bind(scope.epoch)
     .fetch_all(&mut *tx)
     .await?;
-    // Index-driven per payment (payments, then journal_entries_by_payment, then the lines'
-    // primary key), so the plan does not depend on fresh statistics: a just-written project
-    // otherwise invites a nested loop over sequential scans.
-    let payment_mismatches: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT p.id FROM payments p
-          CROSS JOIN LATERAL (
-              SELECT coalesce(sum(t.total) FILTER (WHERE t.recipe = 'authorize'), 0) AS authorized,
-                     coalesce(sum(t.total) FILTER (WHERE t.recipe = 'capture'), 0) AS captured,
-                     coalesce(sum(t.total) FILTER (WHERE t.recipe = 'void'), 0) AS voided,
-                     coalesce(sum(t.total) FILTER (WHERE t.recipe = 'refund'), 0) AS refunded
-                FROM (SELECT e.recipe,
-                             (SELECT sum(l.amount_minor) FROM journal_lines l
-                               WHERE l.project_id = e.project_id AND l.entry_id = e.id
-                                 AND l.amount_minor > 0) AS total
-                        FROM journal_entries e
-                       WHERE e.project_id = p.project_id AND e.payment_id = p.id) t
-          ) s
-          WHERE p.project_id = $1 AND p.dataset_epoch = $2
-            AND (p.authorized_minor <> s.authorized OR p.captured_minor <> s.captured
-                 OR p.voided_minor <> s.voided OR p.refunded_minor <> s.refunded)
-          ORDER BY p.id LIMIT 1000",
-    )
-    .bind(scope.project_id)
-    .bind(scope.epoch)
-    .fetch_all(&mut *tx)
-    .await?;
+    let payment_mismatches = payment_mismatches(&mut tx, scope).await?;
     let row = sqlx::query(
         "SELECT
             (SELECT count(*) FROM operations o
@@ -143,9 +126,11 @@ pub async fn run(pool: &PgPool, scope: ProjectScope) -> Result<Report, DbError> 
     .bind(scope.epoch)
     .fetch_all(&mut *tx)
     .await?;
+    let balance_mismatches = balance_mismatches(&mut tx, scope).await?;
     tx.commit().await?;
     Ok(Report {
         account_mismatches,
+        balance_mismatches,
         imbalanced_currencies,
         payment_mismatches,
         operation_entry_mismatches: row.try_get("mismatches")?,
@@ -153,6 +138,73 @@ pub async fn run(pool: &PgPool, scope: ProjectScope) -> Result<Report, DbError> 
         payments_checked: row.try_get("payments")?,
         entries_checked: row.try_get("entries")?,
     })
+}
+
+/// Index-driven per payment (payments, then `journal_entries_by_payment`, then the lines'
+/// primary key), so the plan does not depend on fresh statistics: a just-written project
+/// otherwise invites a nested loop over sequential scans.
+async fn payment_mismatches(
+    tx: &mut sqlx::PgConnection,
+    scope: ProjectScope,
+) -> Result<Vec<Uuid>, DbError> {
+    Ok(sqlx::query_scalar(
+        "SELECT p.id FROM payments p
+          CROSS JOIN LATERAL (
+              SELECT coalesce(sum(t.total) FILTER (WHERE t.recipe = 'authorize'), 0) AS authorized,
+                     coalesce(sum(t.total) FILTER (WHERE t.recipe = 'capture'), 0) AS captured,
+                     coalesce(sum(t.total) FILTER (WHERE t.recipe = 'void'), 0) AS voided,
+                     coalesce(sum(t.total) FILTER (WHERE t.recipe = 'refund'), 0) AS refunded
+                FROM (SELECT e.recipe,
+                             (SELECT sum(l.amount_minor) FROM journal_lines l
+                               WHERE l.project_id = e.project_id AND l.entry_id = e.id
+                                 AND l.amount_minor > 0) AS total
+                        FROM journal_entries e
+                       WHERE e.project_id = p.project_id AND e.payment_id = p.id) t
+          ) s
+          WHERE p.project_id = $1 AND p.dataset_epoch = $2
+            AND (p.authorized_minor <> s.authorized OR p.captured_minor <> s.captured
+                 OR p.voided_minor <> s.voided OR p.refunded_minor <> s.refunded)
+          ORDER BY p.id LIMIT 1000",
+    )
+    .bind(scope.project_id)
+    .bind(scope.epoch)
+    .fetch_all(&mut *tx)
+    .await?)
+}
+
+/// The derived balances re-derived from the journal (D-096): every row of each side must
+/// appear on the other with the same sum — a drifted, missing or phantom balance row is a
+/// mismatch, not a thing to be repaired silently.
+async fn balance_mismatches(
+    tx: &mut sqlx::PgConnection,
+    scope: ProjectScope,
+) -> Result<Vec<(String, String, i64, i64)>, DbError> {
+    Ok(sqlx::query_as(
+        "WITH journal AS (
+             SELECT currency, account_kind, sum(amount_minor) AS amount, count(*) AS lines
+               FROM journal_lines
+              WHERE project_id = $1 AND dataset_epoch = $2
+              GROUP BY currency, account_kind
+         ), derived AS (
+             -- Scoped in a subquery, not the ON clause: a FULL JOIN emits every row of
+             -- both sides, so a scope in ON would only change the pairing, and rows of
+             -- other epochs would still appear as phantom mismatches.
+             SELECT currency, account_kind, balance_minor, line_count
+               FROM account_balances
+              WHERE project_id = $1 AND dataset_epoch = $2
+         )
+         SELECT coalesce(j.currency, d.currency), coalesce(j.account_kind, d.account_kind),
+                coalesce(j.amount, 0)::bigint, coalesce(d.balance_minor, 0)::bigint
+           FROM journal j FULL JOIN derived d
+             ON d.currency = j.currency AND d.account_kind = j.account_kind
+          WHERE coalesce(j.amount, 0) <> coalesce(d.balance_minor, 0)
+             OR coalesce(j.lines, 0) <> coalesce(d.line_count, 0)
+          ORDER BY 1, 2",
+    )
+    .bind(scope.project_id)
+    .bind(scope.epoch)
+    .fetch_all(&mut *tx)
+    .await?)
 }
 
 /// One line of an account's explanation.
@@ -251,11 +303,24 @@ pub async fn explain(
             0,
         ),
     };
+    // The horizon balance comes from the derived balance minus the lines invisible to the
+    // snapshot — usually a small recent tail — in one statement, so the two reads share a
+    // moment (D-096). `line_count` is corrected the same way; an account with no lines at
+    // all reports zero, as the plain sum did.
     let (balance_minor, line_count): (i64, i64) = sqlx::query_as(
-        "SELECT coalesce(sum(l.amount_minor), 0)::bigint, count(*) FROM journal_lines l
-           JOIN journal_entries e ON e.project_id = l.project_id AND e.id = l.entry_id
-          WHERE l.project_id = $1 AND l.dataset_epoch = $2 AND l.currency = $3 AND l.account_kind = $4
-            AND (e.xmin <> e.created_xact::xid OR pg_visible_in_snapshot(e.created_xact, $5::pg_snapshot))",
+        "SELECT coalesce(b.balance_minor, 0)::bigint - coalesce(inv.amount, 0)::bigint AS balance,
+                coalesce(b.line_count, 0)::bigint - coalesce(inv.lines, 0)::bigint AS lines
+           FROM (SELECT 1) one
+           LEFT JOIN account_balances b
+             ON b.project_id = $1 AND b.dataset_epoch = $2 AND b.currency = $3 AND b.account_kind = $4
+           LEFT JOIN LATERAL (
+             SELECT sum(l.amount_minor)::bigint AS amount, count(*)::bigint AS lines
+               FROM journal_lines l
+               JOIN journal_entries e ON e.project_id = l.project_id AND e.id = l.entry_id
+              WHERE l.project_id = $1 AND l.dataset_epoch = $2 AND l.currency = $3 AND l.account_kind = $4
+                AND NOT (e.xmin <> e.created_xact::xid
+                         OR pg_visible_in_snapshot(e.created_xact, $5::pg_snapshot))
+           ) inv ON true",
     )
     .bind(scope.project_id)
     .bind(scope.epoch)

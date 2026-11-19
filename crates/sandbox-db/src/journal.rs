@@ -61,6 +61,25 @@ pub async fn post(
                     l.account_kind, l.amount_minor
                FROM entry, unnest($10::smallint[], $11::text[], $12::bigint[])
                     AS l(line_no, account_kind, amount_minor)
+         ), balances AS (
+             -- The derived balance moves with the lines, in the same statement (D-096):
+             -- a committed line is always inside its account's balance.
+             INSERT INTO account_balances
+                 (project_id, dataset_epoch, currency, account_kind, balance_minor, line_count)
+             SELECT entry.project_id, entry.dataset_epoch, entry.currency, d.account_kind,
+                    d.delta, d.n
+               FROM entry,
+                    (SELECT account_kind, sum(amount_minor) AS delta, count(*) AS n
+                       FROM unnest($10::smallint[], $11::text[], $12::bigint[])
+                            AS l(line_no, account_kind, amount_minor)
+                      GROUP BY account_kind
+                      -- A fixed row order across every posting: concurrent upserts to
+                      -- the same accounts then take the row locks in the same order,
+                      -- never deadlock on each other.
+                      ORDER BY account_kind) d
+             ON CONFLICT (project_id, dataset_epoch, currency, account_kind)
+             DO UPDATE SET balance_minor = account_balances.balance_minor + EXCLUDED.balance_minor,
+                           line_count = account_balances.line_count + EXCLUDED.line_count
          )
          SELECT seq FROM entry",
     )
@@ -95,14 +114,14 @@ pub struct Balance {
     pub signed_minor: i64,
 }
 
-/// Every non-empty account balance of the project's current epoch, summed from the journal
-/// (D-028).
+/// Every account balance of the project's current epoch, read from the derived balances
+/// kept with each posting (D-096); reconciliation re-derives them from the journal and
+/// reports any drift, so the journal stays the only authority.
 pub async fn balances(pool: &PgPool, scope: ProjectScope) -> Result<Vec<Balance>, DbError> {
     let rows = sqlx::query(
-        "SELECT currency, account_kind, sum(amount_minor)::bigint AS total
-           FROM journal_lines
+        "SELECT currency, account_kind, balance_minor AS total
+           FROM account_balances
           WHERE project_id = $1 AND dataset_epoch = $2
-          GROUP BY currency, account_kind
           ORDER BY currency, account_kind",
     )
     .bind(scope.project_id)

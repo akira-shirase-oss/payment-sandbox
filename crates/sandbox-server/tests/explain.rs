@@ -155,7 +155,7 @@ async fn explain_pages_stay_consistent_while_entries_commit_out_of_order() {
     let sim = TestSim::start().await;
     let app = TestApp::with_sim(&sim, &[]).await;
     let (_, key) = app.project("store").await;
-    let pids = purchases(&app, &key).await;
+    let _pids = purchases(&app, &key).await;
     let (_, project) = app.get("/v1/project", &key).await;
     let scope = sandbox_db::ProjectScope {
         project_id: project["project"]["id"].as_str().unwrap().parse().unwrap(),
@@ -180,16 +180,27 @@ async fn explain_pages_stay_consistent_while_entries_commit_out_of_order() {
     )
     .await
     .unwrap();
-    // Meanwhile a later posting commits.
-    let (status, _) = app
-        .post(
-            &format!("/v1/payments/{}/refunds", pids[1]),
-            &key,
-            Some("late"),
-            json!({"amount": 50}),
+    // Meanwhile a later posting commits. It lands on EUR accounts: a USD posting would
+    // wait on the held transaction's balance-row locks (D-096 derives balances inside
+    // the posting transaction, so same-account postings serialize on it), and what this
+    // test manufactures is a commit order that disagrees with the sequence order — the
+    // accounts the later commit touches do not matter to that.
+    {
+        let mut tx = app.db.pool.begin().await.unwrap();
+        let later = Recipe::Authorize
+            .post(Currency::Eur, Amount::new(50).unwrap())
+            .unwrap();
+        journal::post(
+            &mut tx,
+            scope,
+            entry_id(uuid::Uuid::now_v7(), Recipe::Authorize),
+            &later,
+            EntryRefs::default(),
         )
-        .await;
-    assert_eq!(status, StatusCode::CREATED);
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
 
     // Pages of two lines: the explanation must page several times across the late commit
     // (review N12: with one page this test passed even without D-042's fix).
@@ -242,13 +253,14 @@ async fn explain_pages_stay_consistent_while_entries_commit_out_of_order() {
         sum, balance,
         "the pages' lines must sum to the balance they report"
     );
-    // A fresh explanation sees both new postings.
+    // A fresh explanation sees the late commit's line too (the mid posting was EUR: it
+    // adds nothing to USD merchant_pending).
     let (_, fresh) = app
         .get("/v1/balances/USD/merchant_pending/explain?limit=1000", &key)
         .await;
     assert_eq!(
         fresh["explanation"]["line_count"].as_i64().unwrap(),
-        committed + 2
+        committed + 1
     );
     app.cleanup().await;
     sim.remove().await;

@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 
 use proptest::prelude::*;
 use sandbox_db::journal::{self, EntryRefs};
+use sandbox_db::reconcile;
 use sandbox_db::testing::TestDb;
 use sandbox_db::{DbError, ProjectScope, projects};
 use sandbox_domain::identity::entry_id;
@@ -295,8 +296,131 @@ async fn a_correction_is_a_reversing_entry_and_both_stay_in_history() {
     db.cleanup().await;
 }
 
+/// The derived balances (D-096) are per epoch: a reset's new epoch starts empty and never
+/// mixes with the archived epoch's sums, which stay as they were.
+#[tokio::test]
+async fn derived_balances_are_kept_per_epoch() {
+    let db = TestDb::new().await;
+    let scope = project(&db.pool, "store-epochs").await;
+    post(&db.pool, scope, Recipe::Authorize, Currency::Usd, 500).await;
+    sqlx::query("UPDATE projects SET dataset_epoch = dataset_epoch + 1 WHERE id = $1")
+        .bind(scope.project_id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let scope2 = ProjectScope {
+        project_id: scope.project_id,
+        epoch: 2,
+    };
+    post(&db.pool, scope2, Recipe::Authorize, Currency::Usd, 700).await;
+    let get = |balances: &[journal::Balance], account: AccountKind| {
+        balances
+            .iter()
+            .find(|b| b.account == account && b.currency == Currency::Usd)
+            .map_or(0, |b| b.signed_minor)
+    };
+    let epoch1 = journal::balances(&db.pool, scope).await.unwrap();
+    let epoch2 = journal::balances(&db.pool, scope2).await.unwrap();
+    assert_eq!(get(&epoch1, AccountKind::PayerFunding), 500);
+    assert_eq!(get(&epoch1, AccountKind::PayerHeld), -500);
+    assert_eq!(get(&epoch2, AccountKind::PayerFunding), 700);
+    assert_eq!(get(&epoch2, AccountKind::PayerHeld), -700);
+    // Both epochs' derived balances re-derive exactly from their own journals (these
+    // posts have no payment rows, so the payments-implied check is not the measure here).
+    for epoch in [scope, scope2] {
+        let report = reconcile::run(&db.pool, epoch).await.unwrap();
+        assert!(
+            report.balance_mismatches.is_empty(),
+            "epoch {}: {:?}",
+            epoch.epoch,
+            report.balance_mismatches
+        );
+    }
+    db.cleanup().await;
+}
+
+/// A balance row that was drifted outside the posting path (D-096) is reported by
+/// reconciliation — the journal stays the truth it is measured against, and the drift is
+/// a finding, never silently repaired or trusted.
+#[tokio::test]
+async fn a_drifted_derived_balance_is_reported_not_trusted() {
+    let db = TestDb::new().await;
+    let scope = project(&db.pool, "store-drift").await;
+    post(&db.pool, scope, Recipe::Authorize, Currency::Usd, 500).await;
+    sqlx::query(
+        "UPDATE account_balances SET balance_minor = balance_minor + 1
+          WHERE project_id = $1 AND account_kind = 'payer_funding'",
+    )
+    .bind(scope.project_id)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let report = reconcile::run(&db.pool, scope).await.unwrap();
+    assert!(!report.is_clean());
+    assert_eq!(
+        report.balance_mismatches,
+        vec![("USD".to_string(), "payer_funding".to_string(), 500, 501)]
+    );
+    // The ledger itself is untouched: the currency's journal lines still sum to zero —
+    // only the derivation drifted.
+    assert_eq!(report.imbalanced_currencies, Vec::<(String, i64)>::new());
+    // The read path serves the derived number; the drift is caught by the re-derivation,
+    // not hidden by re-summing the journal on read.
+    let balances = journal::balances(&db.pool, scope).await.unwrap();
+    let funding = balances
+        .iter()
+        .find(|b| b.account == AccountKind::PayerFunding)
+        .unwrap();
+    assert_eq!(funding.signed_minor, 501);
+    db.cleanup().await;
+}
+
+/// Postings on separate transactions racing the same accounts leave the derived balances
+/// exactly equal to the journal's sums: the conflicting upserts serialize on the account
+/// row and every delta lands once.
+#[tokio::test]
+async fn concurrent_postings_keep_the_derived_balances_exact() {
+    let db = TestDb::new().await;
+    let scope = project(&db.pool, "store-race").await;
+    let tasks: Vec<_> = (0..8)
+        .map(|_| {
+            let pool = db.pool.clone();
+            tokio::spawn(async move {
+                for _ in 0..5 {
+                    let entry = Recipe::Authorize
+                        .post(Currency::Usd, Amount::new(100).unwrap())
+                        .unwrap();
+                    let mut tx = pool.begin().await.unwrap();
+                    journal::post(&mut tx, scope, Uuid::now_v7(), &entry, EntryRefs::default())
+                        .await
+                        .unwrap();
+                    tx.commit().await.unwrap();
+                }
+            })
+        })
+        .collect();
+    for task in tasks {
+        task.await.unwrap();
+    }
+    let balances = journal::balances(&db.pool, scope).await.unwrap();
+    let funding = balances
+        .iter()
+        .find(|b| b.account == AccountKind::PayerFunding && b.currency == Currency::Usd)
+        .unwrap();
+    assert_eq!(funding.signed_minor, 8 * 5 * 100);
+    let report = reconcile::run(&db.pool, scope).await.unwrap();
+    assert!(
+        report.balance_mismatches.is_empty(),
+        "{:?}",
+        report.balance_mismatches
+    );
+    db.cleanup().await;
+}
+
 /// The property: for random recipe postings across currencies, every committed balance
-/// equals the sum the postings imply, and every currency sums to zero.
+/// equals the sum the postings imply, and every currency sums to zero. The read goes
+/// through the derived balances (D-096), so this is also the derived-equals-journal
+/// property.
 #[test]
 fn random_postings_always_balance_and_match_their_model() {
     let runtime = tokio::runtime::Runtime::new().unwrap();

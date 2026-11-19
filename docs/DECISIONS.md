@@ -1486,6 +1486,34 @@ closes one of its findings, with the test that failed before the fix.
   as executed, and its retry under the same identity executes once — what the crash left
   is exactly what the caller was told, nothing more.
 
+- **D-096 — Balances are derived per account, kept with each posting, reconciled to the
+  journal.** `/v1/balances` and every explain page summed the epoch's journal lines on
+  each call; the m5-explain full run (D-092's classification) spent its database time on
+  those repeated scans. `account_balances` (migration 0014) now holds one row per
+  `(project, dataset_epoch, currency, account)` — `balance_minor` and `line_count` — and
+  the same statement that inserts an entry's lines adds its per-account deltas
+  (`INSERT … ON CONFLICT DO UPDATE`): a committed line is inside its balance by
+  construction, no worker or read-repair needed. The journal stays the only authority:
+  the table is a derivation the backfill recreates, and reconciliation re-derives every
+  balance and line count from the lines and reports drift, missing or phantom rows in a
+  new `balance_mismatches` field — `a_drifted_derived_balance_is_reported_not_trusted`
+  proves a planted +1 is reported while the journal's own checks stay clean. The explain
+  pages keep their snapshot honesty: the horizon balance is the live derived balance
+  minus the lines invisible to that snapshot (the usually-small recent tail), computed in
+  one statement so the two reads share a moment; the page's lines still come straight
+  from the journal. Epoch is part of the key because a posting caught mid-reset can
+  legally land in the archived epoch — a balance column on `accounts` (which has no
+  epoch) would have silently folded it into the new epoch. A new blocking edge is honest
+  about it: two postings to the same account now serialize — the balance row lock is held
+  until the posting transaction commits — so an entry held open stalls same-account
+  postings. The real posting transaction is short (the network call sits outside it), so
+  the held window is milliseconds; the delta rows are upserted in `account_kind` order so
+  concurrent postings take the locks in one order and never deadlock. The alternative
+  (deferred derivation) would break the same-transaction guarantee. Tests:
+  `derived_balances_are_kept_per_epoch`, `concurrent_postings_keep_the_derived_balances_exact`,
+  the drift test above, and the existing random-postings property — its `balances()` read
+  now goes through the derived table, so it is also the derived-equals-journal property.
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

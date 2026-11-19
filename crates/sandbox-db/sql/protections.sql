@@ -41,7 +41,8 @@ WITH expected_triggers (tbl, name, digest) AS (
            ('operations_resolved_is_final', 'ad4f3d10a4cc76f979df1abac1648a39'),
            ('projects_epoch_moves_forward', 'f419c2cbb6002139fafd2d24eb5aee23')
 ), expected_grants (tbl, privileges) AS (
-    VALUES ('accounts', 'INSERT,SELECT'),
+    VALUES ('account_balances', 'INSERT,SELECT,UPDATE'),
+           ('accounts', 'INSERT,SELECT'),
            ('api_keys', 'INSERT,SELECT,UPDATE'),
            ('audit_events', 'INSERT,SELECT'),
            ('checkout_attempts', 'INSERT,SELECT'),

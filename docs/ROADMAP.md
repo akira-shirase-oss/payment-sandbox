@@ -135,7 +135,7 @@ to it as automated tests; a load scenario with thresholds under `perf/`.
 | Sealed explanation cursors, card-guarded query strings (review N3, D-056) | `a_cursor_the_server_did_not_issue_is_refused_before_any_query`; `tests/logs.rs`; `cursor::tests` |
 | **Full run** | GitHub-hosted runner, 2026-11-17 (D-089): **miss**, 298 reads/s served of 2,500 offered over 100,002 postings, 60% failed, the explain gate held (`perf/results/20261117T182158Z-m5-explain-full.json`) |
 | **Re-run** | 2026-11-17 with the CPU recorded: **miss**, PostgreSQL spent about 2 cores summing every journal line per read (D-092) (`perf/results/20261117T194338Z-m5-explain-full.json`) |
-| **Owed** | Derived per-account balances kept with each posting and reconciled to the journal, then a new run; a load run of the report budget itself (429 under saturation; D-047's defaults are chosen, not measured) |
+| **Owed** | ~~Derived per-account balances kept with each posting and reconciled to the journal, then a new run;~~ landed (D-096) — the re-run is owed; a load run of the report budget itself (429 under saturation; D-047's defaults are chosen, not measured) |
 
 ### M6 status — In progress (functional gates pass; full load run missed on latency)
 

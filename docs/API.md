@@ -54,7 +54,7 @@ does not serve, fails the gate.
 | `POST /v1/payments/{payment_id}/captures` | payments:write | Captures part or all of the hold. |
 | `POST /v1/payments/{payment_id}/void` | payments:write | Releases the uncaptured remainder. |
 | `POST /v1/payments/{payment_id}/refunds` | payments:write | Refunds captured money. |
-| `GET /v1/balances` | read | Every account balance, summed from the journal. |
+| `GET /v1/balances` | read | Every account balance, derived from the journal and reconciled to it. |
 | `GET /v1/balances/{currency}/{account}/explain` | read | The journal lines that make up one balance, a page at a time. |
 | `GET /v1/reconciliation` | read | The reconciliation report (and, with `?network=true`, against the network's records). |
 | `POST /v1/checkout_sessions` | payments:write | Creates a hosted checkout session; the answer holds the payer's URL. |
