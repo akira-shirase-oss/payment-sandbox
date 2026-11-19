@@ -324,6 +324,7 @@ pub async fn explain(
                FROM journal_lines l
                JOIN journal_entries e ON e.project_id = l.project_id AND e.id = l.entry_id
               WHERE l.project_id = $1 AND l.dataset_epoch = $2 AND l.currency = $3 AND l.account_kind = $4
+                AND e.created_xact >= pg_snapshot_xmin($5::pg_snapshot)
                 AND NOT (e.xmin <> e.created_xact::xid
                          OR pg_visible_in_snapshot(e.created_xact, $5::pg_snapshot))
            ) inv ON true",

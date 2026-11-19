@@ -7,12 +7,13 @@
 // 400 s (1,000,000 requests). MODE=smoke: 100 purchases, 200 reads/s for 20 s.
 import { check, fail } from 'k6';
 import exec from 'k6/execution';
-import { call, projects } from './lib.js';
+import { call, projects, statusThresholds } from './lib.js';
 
 const full = (__ENV.MODE || 'smoke') === 'full';
-const seed = full ? 33334 : 100;
-const rate = full ? 2500 : 200;
-const seconds = full ? 400 : 20;
+// RATE/SECONDS/SEED override the full shape for a shorter reproduction (CI leaves them unset).
+const seed = full ? Number(__ENV.SEED || 33334) : 100;
+const rate = full ? Number(__ENV.RATE || 2500) : 200;
+const seconds = full ? Number(__ENV.SECONDS || 400) : 20;
 const accounts = ['payer_funding', 'payer_held', 'merchant_pending'];
 
 export const options = {
@@ -33,6 +34,7 @@ export const options = {
     'checks{phase:gate}': ['rate==1'],
     'http_req_duration{op:balances}': ['p(95)<50', 'p(99)<100'],
     'http_req_duration{op:explain}': ['p(95)<50', 'p(99)<100'],
+    ...statusThresholds(['balances', 'explain']),
   },
   summaryTrendStats: ['min', 'med', 'avg', 'p(90)', 'p(95)', 'p(99)', 'max'],
 };

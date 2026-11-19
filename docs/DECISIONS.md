@@ -1560,6 +1560,32 @@ closes one of its findings, with the test that failed before the fix.
   `PS_DB_MAX_CONNECTIONS` (32, 1 s acquire), the listener's 512/512, and a batching
   linger in the sim writer for its fsync ceiling.
 
+- **D-098 — The explain horizon bounds its invisible tail by the snapshot's xmin.** The
+  m5-explain full run on `d7b9740` (CI `44528148592`, kept:
+  `perf/results/20261119T125632Z-m5-explain-full.json`) failed ~11% of balances and ~9% of
+  explain reads with a bimodal shape: median 2 ms, p90 2 s — fast reads plus a
+  backlog/refusal tail, not slow answers across the board. `EXPLAIN (ANALYZE, BUFFERS)`
+  on a fabricated 100k-entry / 200k-line epoch (`tests/explain_plans.rs`, committed:
+  `perf/results/20261119T1357Z-explain-plans.json`, development observation) found one
+  real query defect: the horizon's invisible-tail scanned **every entry of the epoch**
+  per call — a parallel seq scan of 100k rows removing all by filter, 9.36 ms — so read
+  cost grew with the journal exactly as feared, and ~575 explain calls/s of that is ~5
+  core-seconds of scan per second on a 4-core runner. Entries invisible to a snapshot
+  necessarily have `created_xact >= pg_snapshot_xmin(snapshot)` (in-flight then, or
+  committed after — a strict superset of the invisible set; restored rows, whose
+  `xmin <> created_xact`, are treated as always-visible and unaffected). Migration 0015
+  adds `journal_entries_by_xact (project_id, created_xact)` and the horizon query takes
+  the bound: **9.36 ms → 0.10 ms**, an index range visiting ~0 rows. The other reads were
+  already cheap at scale: the stripe-sum balances read is 0.035 ms, the explain page
+  0.34 ms (entries-by-seq + lines-PK probes). Not fixed by this entry: the 2 s tail is
+  also the shared API listener's bounded `accept_wait` when stalled VUs fill its places —
+  the same admission-backlog shape as m2 (D-097). A 2 s pending wait on a 50 ms-p95 read
+  endpoint is a real design smell the coordinator flagged; the honest options (a shorter
+  read-side wait or reads on their own listener/admission budget) need their own
+  measurement and are deliberately left open rather than tuned here. The scenario now
+  records `op_status{balances,explain}` counts so the next run's failures name themselves,
+  and `RATE`/`SECONDS`/`SEED` allow per-core reproductions like m2's.
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

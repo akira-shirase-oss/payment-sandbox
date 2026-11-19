@@ -1,0 +1,31 @@
+{
+  "scenario": "explain-plans",
+  "mode": "development-observation",
+  "started_utc": "20261119T1357Z",
+  "commit": "uncommitted-d098",
+  "machine": {
+    "cpu": "Apple M2 Pro",
+    "cores": 12,
+    "os": "macOS",
+    "note": "busy dev machine, load avg ~14; local PG on :56432"
+  },
+  "dataset": "100k entries, 200k journal_lines (payer_funding+merchant_pending), 16 derived stripes, one project",
+  "results_ms": {
+    "balances": {
+      "before": 0.035,
+      "after": 0.054,
+      "note": "16-row stripe sum; already cheap"
+    },
+    "horizon_invisible_tail": {
+      "before": 9.356,
+      "after": 0.100,
+      "note": "was a parallel seq scan of all 100k entries (50k rows removed per worker); now an index range on (project_id, created_xact >= snapshot xmin) visiting ~0 rows"
+    },
+    "explain_page_100": {
+      "before": 0.336,
+      "after": 0.352,
+      "note": "already entries-by-seq + PK probe; unchanged"
+    }
+  },
+  "plans_after": "\n=== balances ===\nSort  (cost=1.39..1.39 rows=1 width=26) (actual time=0.033..0.033 rows=1.00 loops=1)\n  Sort Key: currency, account_kind\n  Sort Method: quicksort  Memory: 25kB\n  Buffers: shared hit=1\n  ->  HashAggregate  (cost=1.36..1.38 rows=1 width=26) (actual time=0.029..0.029 rows=1.00 loops=1)\n        Group Key: currency, account_kind\n        Batches: 1  Memory Usage: 32kB\n        Buffers: shared hit=1\n        ->  Seq Scan on account_balances  (cost=0.00..1.24 rows=16 width=26) (actual time=0.005..0.007 rows=16.00 loops=1)\n              Filter: ((project_id = '01a1f414-3b52-736b-b6d4-7a43a02ee6e3'::uuid) AND (dataset_epoch = 1))\n              Buffers: shared hit=1\nPlanning:\n  Buffers: shared hit=29\nPlanning Time: 0.155 ms\nExecution Time: 0.054 ms\n=== horizon ===\nNested Loop Left Join  (cost=17.68..17.73 rows=1 width=32) (actual time=0.027..0.028 rows=1.00 loops=1)\n  Buffers: shared hit=3\n  ->  Nested Loop Left Join  (cost=1.36..1.39 rows=1 width=32) (actual time=0.009..0.010 rows=1.00 loops=1)\n        Buffers: shared hit=1\n        ->  Result  (cost=0.00..0.01 rows=1 width=0) (actual time=0.000..0.001 rows=1.00 loops=1)\n        ->  Aggregate  (cost=1.36..1.37 rows=1 width=32) (actual time=0.008..0.008 rows=1.00 loops=1)\n              Buffers: shared hit=1\n              ->  Seq Scan on account_balances  (cost=0.00..1.32 rows=16 width=8) (actual time=0.004..0.006 rows=16.00 loops=1)\n                    Filter: ((project_id = '01a1f414-3b52-736b-b6d4-7a43a02ee6e3'::uuid) AND (dataset_epoch = 1) AND (currency = 'EUR'::text) AND (account_kind = 'payer_funding'::text))\n                    Buffers: shared hit=1\n  ->  Aggregate  (cost=16.32..16.33 rows=1 width=32) (actual time=0.015..0.016 rows=1.00 loops=1)\n        Buffers: shared hit=2\n        ->  Nested Loop  (cost=0.72..16.31 rows=1 width=8) (actual time=0.015..0.015 rows=0.00 loops=1)\n              Buffers: shared hit=2\n              ->  Index Scan using journal_entries_by_xact on journal_entries e  (cost=0.30..6.08 rows=1 width=32) (actual time=0.015..0.015 rows=0.00 loops=1)\n                    Index Cond: ((project_id = '01a1f414-3b52-736b-b6d4-7a43a02ee6e3'::uuid) AND (created_xact >= pg_snapshot_xmin(pg_current_snapshot())))\n                    Filter: ((xmin = (created_xact)::xid) AND (NOT pg_visible_in_snapshot(created_xact, pg_current_snapshot())))\n                    Index Searches: 1\n                    Buffers: shared hit=2\n              ->  Index Scan using journal_lines_pkey on journal_lines l  (cost=0.42..10.22 rows=1 width=40) (never executed)\n                    Index Cond: ((project_id = '01a1f414-3b52-736b-b6d4-7a43a02ee6e3'::uuid) AND (entry_id = e.id))\n                    Filter: ((dataset_epoch = 1) AND (currency = 'EUR'::text) AND (account_kind = 'payer_funding'::text))\n                    Index Searches: 0\nPlanning:\n  Buffers: shared hit=277\nPlanning Time: 0.523 ms\nExecution Time: 0.100 ms\n=== page ===\nLimit  (cost=1.44..77.76 rows=100 width=18) (actual time=0.133..0.335 rows=100.00 loops=1)\n  Buffers: shared hit=412\n  ->  Incremental Sort  (cost=1.44..74811.46 rows=98026 width=18) (actual time=0.132..0.330 rows=100.00 loops=1)\n        Sort Key: e.seq, l.line_no\n        Presorted Key: e.seq\n        Full-sort Groups: 4  Sort Method: quicksort  Average Memory: 27kB  Peak Memory: 27kB\n        Buffers: shared hit=412\n        ->  Nested Loop  (cost=0.71..70400.29 rows=98026 width=18) (actual time=0.020..0.314 rows=101.00 loops=1)\n              Buffers: shared hit=412\n              ->  Index Scan using journal_entries_seq_key on journal_entries e  (cost=0.29..4536.29 rows=100000 width=40) (actual time=0.013..0.021 rows=101.00 loops=1)\n                    Index Cond: (seq > 0)\n                    Filter: (project_id = '01a1f414-3b52-736b-b6d4-7a43a02ee6e3'::uuid)\n                    Index Searches: 1\n                    Buffers: shared hit=7\n              ->  Index Scan using journal_lines_pkey on journal_lines l  (cost=0.42..0.65 rows=1 width=42) (actual time=0.003..0.003 rows=1.00 loops=101)\n                    Index Cond: ((project_id = '01a1f414-3b52-736b-b6d4-7a43a02ee6e3'::uuid) AND (entry_id = e.id))\n                    Filter: ((dataset_epoch = 1) AND (currency = 'EUR'::text) AND (account_kind = 'payer_funding'::text))\n                    Rows Removed by Filter: 1\n                    Index Searches: 101\n                    Buffers: shared hit=405\nPlanning:\n  Buffers: shared hit=119\nPlanning Time: 0.222 ms\nExecution Time: 0.352 ms\ntest explain_plans_at_300k_lines ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.04s\n\n"
+}
