@@ -1,9 +1,14 @@
 // Shared helpers for the payment scenarios. SIMULATED MONEY ONLY: every request goes to
 // the local server, whose network is the local simulator.
 import http from 'k6/http';
-import { check, fail } from 'k6';
+import { check, fail, sleep } from 'k6';
+import { Counter } from 'k6/metrics';
 
 export const BASE = __ENV.BASE_URL || 'http://127.0.0.1:56090';
+
+// Status codes per op (m2/m3's 2026-11-19 full misses: the failed rate alone could not say
+// which answer the failures were — timeouts, sheds or honest non-2xx states).
+const statuses = new Counter('op_status');
 
 export function call(method, path, key, body, idem, tags) {
   const headers = { authorization: `Bearer ${key}` };
@@ -14,11 +19,26 @@ export function call(method, path, key, body, idem, tags) {
   // the first full m3 run, costing the load generator the memory and CPU it shares with
   // the server (D-090).
   const name = `${BASE}${path.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, '{id}').split('?')[0]}`;
-  return http.request(method, `${BASE}${path}`, body === undefined ? null : JSON.stringify(body), {
+  const res = http.request(method, `${BASE}${path}`, body === undefined ? null : JSON.stringify(body), {
     headers,
     responseType: 'text',
     tags: { name, ...tags },
   });
+  // `0` is what k6 reports for a request that never got a response (its own timeout).
+  statuses.add(1, { op: (tags && (tags.op || tags.path)) || 'other', status: String(res.status) });
+  return res;
+}
+
+// The JSON summary keeps only threshold-referenced sub-metrics: enumerate the plausible
+// answers per op so every op's status counts survive `--summary-export` (D-097).
+export function statusThresholds(ops) {
+  const t = {};
+  for (const op of [...ops, 'other']) {
+    for (const s of ['0', '200', '201', '202', '400', '401', '403', '404', '409', '422', '429', '500', '502', '503', '504']) {
+      t[`op_status{op:${op},status:${s}}`] = ['count>=0'];
+    }
+  }
+  return t;
 }
 
 // Creates `n` projects with the operator token; returns their admin keys.
@@ -36,10 +56,21 @@ export function projects(n, prefix) {
 }
 
 // The correctness gate: zero imbalance, every payment equal to its journal, nothing open.
+// Operations legitimately close AFTER the load stops — the sweeps only see them past a
+// grace (`reconcile_grace`) and their `next_check_at` backoff — so the gate waits a bounded
+// drain window instead of demanding zero the instant the offer ends (D-097).
+const drain = Number(__ENV.RECONCILE_DRAIN_MS || 60000);
+
 export function reconcile(keys) {
   for (const key of keys) {
-    const res = call('GET', '/v1/reconciliation', key, undefined, null, { phase: 'reconcile' });
-    const body = res.status === 200 ? res.json() : null;
+    let body = null;
+    const deadline = Date.now() + drain;
+    for (;;) {
+      const res = call('GET', '/v1/reconciliation', key, undefined, null, { phase: 'reconcile' });
+      body = res.status === 200 ? res.json() : null;
+      if (body === null || body.report.open_operations === 0 || Date.now() >= deadline) break;
+      sleep(2);
+    }
     check(body, {
       'reconciliation clean': (b) => b !== null && b.clean === true,
       'no operation left open': (b) => b !== null && b.report.open_operations === 0,

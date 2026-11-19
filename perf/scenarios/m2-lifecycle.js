@@ -6,10 +6,12 @@
 // 3,000 s: about 1,170,000 requests. MODE=smoke: 25/s with one 5× burst, 24 s.
 import { check } from 'k6';
 import exec from 'k6/execution';
-import { call, projects, reconcile } from './lib.js';
+import { call, projects, reconcile, statusThresholds } from './lib.js';
 
 const full = (__ENV.MODE || 'smoke') === 'full';
-const base = full ? 100 : 25;
+// RATE/ROUNDS override the full shape for a shorter reproduction (CI leaves them unset).
+const base = full ? Number(__ENV.RATE || 100) : 25;
+const rounds = Number(__ENV.ROUNDS || 30);
 
 function stages() {
   if (!full) {
@@ -20,7 +22,7 @@ function stages() {
     ];
   }
   const out = [{ target: base, duration: '5s' }];
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < rounds; i++) {
     out.push({ target: base, duration: '88s' }, { target: base * 5, duration: '1s' },
       { target: base * 5, duration: '10s' }, { target: base, duration: '1s' });
   }
@@ -47,6 +49,7 @@ export const options = {
     'http_req_duration{op:refund}': ['p(95)<100', 'p(99)<250'],
     'checks{phase:load}': ['rate>0.9999'],
     'checks{phase:reconcile}': ['rate==1'],
+    ...statusThresholds(['authorize', 'capture', 'refund']),
   },
   summaryTrendStats: ['min', 'med', 'avg', 'p(90)', 'p(95)', 'p(99)', 'max'],
 };

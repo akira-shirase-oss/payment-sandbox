@@ -154,11 +154,17 @@ if docker compose -f deploy/compose.yaml ps -q postgres >/dev/null 2>&1; then
   lock_waits="$(docker compose -f deploy/compose.yaml logs --no-log-prefix --since "$started_iso" postgres 2>&1 \
     | grep -c 'still waiting for' || true)"
 fi
-rss_kb="$(ps -o rss= -p "$server" | tr -d ' ' || echo 0)"
+# Every probe degrades to a placeholder: a restricted dev machine (no ps/sysctl, or an exec
+# denial) must still get its result JSON — telemetry is metadata, not the run. The || true
+# must sit inside $(): under pipefail a denied probe exits 126 and `set -e` would kill the
+# script before the ${:-} default applied.
+rss_kb="$(ps -o rss= -p "$server" 2>/dev/null | tr -d ' ' || true)"; rss_kb="${rss_kb:-0}"
 
 if [ "$(uname -s)" = "Darwin" ]; then
-  cpu="$(sysctl -n machdep.cpu.brand_string)"; cores="$(sysctl -n hw.ncpu)"
-  mem_gb="$(( $(sysctl -n hw.memsize) / 1073741824 ))"; os="macOS $(sw_vers -productVersion)"
+  cpu="$(sysctl -n machdep.cpu.brand_string 2>/dev/null || true)"; cpu="${cpu:-unknown}"
+  cores="$(sysctl -n hw.ncpu 2>/dev/null || true)"; cores="${cores:-0}"
+  mem_bytes="$(sysctl -n hw.memsize 2>/dev/null || true)"
+  mem_gb="$(( ${mem_bytes:-0} / 1073741824 ))"; os="macOS $(sw_vers -productVersion 2>/dev/null || echo unknown)"
 else
   cpu="$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ //')"; cores="$(nproc)"
   mem_gb="$(( $(grep MemTotal /proc/meminfo | awk '{print $2}') / 1048576 ))"; os="$(uname -sr)"

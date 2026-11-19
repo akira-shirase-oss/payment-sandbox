@@ -10,7 +10,7 @@
 import { check, sleep } from 'k6';
 import exec from 'k6/execution';
 import { Counter } from 'k6/metrics';
-import { call, projects } from './lib.js';
+import { call, projects, statusThresholds } from './lib.js';
 
 const full = (__ENV.MODE || 'smoke') === 'full';
 const rate = full ? 300 : 30;
@@ -36,6 +36,7 @@ export const options = {
     'checks{phase:load}': ['rate>0.9999'],
     'checks{phase:reconcile}': ['rate==1'],
     'http_req_duration{path:approve}': ['p(95)<100', 'p(99)<250'],
+    ...statusThresholds(['approve', 'uncertain']),
   },
   summaryTrendStats: ['min', 'med', 'avg', 'p(90)', 'p(95)', 'p(99)', 'max'],
 };

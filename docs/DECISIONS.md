@@ -1526,6 +1526,40 @@ closes one of its findings, with the test that failed before the fix.
   the drift test above, and the existing random-postings property — its `balances()` read
   now goes through the derived table, so it is also the derived-equals-journal property.
 
+- **D-097 — Name the misses: status counts per op, a drain window for the open gate.**
+  The m2/m3 full re-run on `1a97f99` (CI `44517004777`, kept:
+  `perf/results/20261119T114227Z-m2-lifecycle-full.json` and `…T114231Z-m3-uncertain-full.json`)
+  failed ~26%/~20% of requests with authorize p95 = p99 ≈ 2.0 s, and "no operation left
+  open" at teardown. The summary could not say *which* answers the failures got — the
+  plateau could have been timeouts, sheds or honest `uncertain`s. Three measurements
+  closed the classification: (1) the run's own `network_stats` showed the sim's listener
+  never saturated (`refused=0`, place waits ~0) and its store commit-bound
+  (`commit_ms_total` ≈ `batch_ms_total`, ~2.2 ms/commit, max ~1.5 s on the shared
+  runner's disk) — a queue under the 2 s `sim_timeout`, never a shed (`shed=0`); (2) a
+  local reproduction at the same arrival rate per core (`RATE=285 ROUNDS=1`, ~830 req/s
+  on 12 cores vs 284 req/s on the CI's 4) reproduced the exact 2.0 s pin with the sim
+  **idle** (waits ≤64 ms, commits ≤34 ms, 0 sheds) — the server's *own* listener
+  saturated instead: `cap=512, pending=512` in the server log, plus `PaymentBusy` 503s
+  from the payment-queue wait. Once latency stretches, k6's arrival-rate executor ramps
+  VUs (1,025–1,026) — each stalled request holds a connection, the 1,024 places fill,
+  and pending connections ride `accept_wait=2s` to a named 503: the plateau is D-094's
+  bounded refusal, not a silent timeout, and the instant-refusals show as
+  `http_req_duration min=0s`. (3) The leftover ops were `pending`/`uncertain` ops still
+  inside `reconcile_grace` (3 s) or their `next_check_at` backoff, plus a sweep draining
+  a ~300k backlog at its bounded rate — "not yet closed," never lost; the journal was
+  clean in both runs. Changes landed: `op_status{op,status}` counter in `perf/scenarios/lib.js`
+  with `statusThresholds()` enumerating plausible codes per op (the JSON summary only
+  keeps threshold-referenced sub-metrics); a bounded drain window in the reconcile gate
+  (`RECONCILE_DRAIN_MS`, 60 s default — m3 already drains 150 s); `RATE`/`ROUNDS` env
+  overrides on m2 for per-core-equivalent reproductions; `load.sh`'s machine telemetry
+  probes (`ps`, `sysctl`) now degrade to placeholders under `pipefail`+`set -e` instead
+  of aborting the run's result on a restricted dev machine. Still open for the next run:
+  whether the ~4-core runner can hold the offered rate at all — the refusal path is
+  already honest and now visible, so a capacity miss will report named 503s, not a
+  2 s-shaped question mark. Candidate knobs, deliberately not tuned on this evidence:
+  `PS_DB_MAX_CONNECTIONS` (32, 1 s acquire), the listener's 512/512, and a batching
+  linger in the sim writer for its fsync ceiling.
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is
