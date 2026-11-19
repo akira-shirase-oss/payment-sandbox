@@ -80,8 +80,8 @@ to it as automated tests; a load scenario with thresholds under `perf/`.
 | Regressions from the first race smoke (D-033) | `a_hot_payment_cannot_starve_the_pool_for_other_payments`, `recording_an_approval_survives_a_transient_lock_timeout` — each shown to fail without its fix |
 | Load | `perf/scenarios/m2-refund-race.js` smoke: 2,065 requests, exactly 630 admitted / 1,370 refused / 0 shed, refund p99 39 ms, 0 lock waits over 50 ms, reconciliation clean — passed. `perf/scenarios/m2-lifecycle.js` smoke: 3,121 requests, 0 failed, reconciliation clean, **latency thresholds missed** (p95 512 ms, p99 635 ms against 100/250 ms) with the machine at load average 33–43 — both busy-machine observations on commit `d6228f5` + working tree |
 | **Full runs** | GitHub-hosted runners, 2026-11-17 (D-089): `m2-lifecycle` **miss**, 1,063,905 requests, 9.5% failed under the bursts, p99 13.8 s, reconciliation clean (`perf/results/20261117T182142Z-m2-lifecycle-full.json`); `m2-refund-race` **pass** at its defined size (36,000 offered, below the 1,000,000 rule by design), refund p99 8 ms (`perf/results/20261117T182143Z-m2-refund-race-full.json`) |
-| **Re-run** | 2026-11-17 with the CPU recorded: **miss**, 12.2% failed, authorize p99 59 s while the CPU was 40% busy: the product, not the runner (D-092) (`perf/results/20261117T194350Z-m2-lifecycle-full.json`) |
-| **Owed** | Profile the waiting (the network's durable write per request, the per-payment queue), fix it with evidence, re-run |
+| **Re-run** | 2026-11-17 with the CPU recorded: **miss**, 12.2% failed, authorize p99 59 s while the CPU was 40% busy: the product, not the runner (D-092) (`perf/results/20261117T194350Z-m2-lifecycle-full.json`). Since: the network's own wait telemetry in every new result (`network_stats`, D-093) and the bounded accept wait — an over-cap connection is refused `503` + `Retry-After` after at most `accept_wait` instead of sitting unmeasured in the kernel backlog (D-094). Owed: a re-run |
+| **Owed** | The re-run on CI (the profile hooks are in place: `network_stats` in the result tells the network's durable commit and its queue wait from its listener's refusals; the unbounded backlog wait itself is fixed by D-094) |
 
 ### M3 status — In progress (functional gates pass; full load run missed)
 
@@ -100,8 +100,8 @@ to it as automated tests; a load scenario with thresholds under `perf/`.
 | Supervised background tasks (review 19, D-051) | `supervisor::tests`; drill `a_panicking_reconciler_is_restarted_and_still_resolves_uncertain_operations` |
 | A restore into another cluster (review N2, D-055) | `a_restore_into_another_cluster_explains_the_same_and_keeps_posted_entries_closed` (second cluster `postgres-restore`, 56450, local and CI); the rehearsal fails on a weakened source (`the_rehearsal_fails_when_the_source_itself_was_weakened`, D-058) |
 | **Full run** | GitHub-hosted runner, 2026-11-17 (D-089): **miss**, 1,836,007 requests, load thresholds met, but the end-of-run wait for the reconciler hit `teardown()`'s 180 s limit, so the reconciliation gate was not measured (`perf/results/20261117T182149Z-m3-uncertain-full.json`) |
-| **Re-run** | 2026-11-17, after D-090's harness fixes: **miss**, the reconciliation gate held (nothing open, network complete) but 3.35% of load checks failed with the CPU 64% busy: a product cause (D-092) (`perf/results/20261117T194359Z-m3-uncertain-full.json`) |
-| **Owed** | Profile and fix the failed load checks (D-092's suspect: the network's durable write per request); the reconciler's defaults (D-048) are chosen, not measured |
+| **Re-run** | 2026-11-17, after D-090's harness fixes: **miss**, the reconciliation gate held (nothing open, network complete) but 3.35% of load checks failed with the CPU 64% busy: a product cause (D-092) (`perf/results/20261117T194359Z-m3-uncertain-full.json`). Since: `network_stats` (D-093) and the bounded accept wait (D-094) as for `m2-lifecycle`. Owed: a re-run |
+| **Owed** | The re-run on CI (as for `m2-lifecycle`: `network_stats` classifies the next result from evidence); the reconciler's defaults (D-048) are chosen, not measured |
 
 ### M4 status — In progress (functional gates pass; full load run passed; a saturation run owed)
 

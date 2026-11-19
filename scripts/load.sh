@@ -142,6 +142,12 @@ if [ -n "$sampler" ]; then
 fi
 rm -f "$cpu_samples"
 set -e
+# The network's own view of the run (D-093): its write path (batch sizes, durable-commit
+# times, queue waits, sheds) and its listener's (cap waits, refusals). Read before the sim
+# stops; never lose a run's result to its own bookkeeping.
+sim_stats="$(curl -fsS -m 5 -H "authorization: Bearer $sim_token" \
+  "http://127.0.0.1:${sim_port}/v1/stats" 2>/dev/null || true)"
+jq -e . <<<"${sim_stats:-}" >/dev/null 2>&1 || sim_stats='{"note": "the network stats could not be read"}'
 load_after="$(uptime | sed 's/.*load averages*: *//')"
 lock_waits=null
 if docker compose -f deploy/compose.yaml ps -q postgres >/dev/null 2>&1; then
@@ -169,6 +175,7 @@ jq -n \
   --arg load_before "$load_before" --arg load_after "$load_after" \
   --arg rss_kb "$rss_kb" --argjson k6_status "$k6_status" --argjson lock_waits "$lock_waits" \
   --argjson cpu_use "$cpu_use" \
+  --argjson sim_stats "$sim_stats" \
   --slurpfile summary "$summary" '
   {
     scenario: $scenario, mode: $mode, started_utc: $stamp,
@@ -178,6 +185,7 @@ jq -n \
               note: "same-machine load generator: a development observation, not capacity"},
     server_rss_kb_at_end: ($rss_kb|tonumber),
     cpu: $cpu_use,
+    network_stats: $sim_stats,
     postgres_lock_waits_over_50ms: $lock_waits,
     thresholds_passed: ($k6_status == 0),
     k6_exit_status: $k6_status,

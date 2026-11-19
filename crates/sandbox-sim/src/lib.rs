@@ -59,6 +59,8 @@ pub struct SimState {
     pub access: Arc<Access>,
     /// Connection cap and transport deadlines (D-054).
     pub transport: sandbox_http::Limits,
+    /// The listener's telemetry (D-093), reported by `/v1/stats`.
+    pub http: Arc<sandbox_http::ServeStats>,
 }
 
 /// The network listener's default transport limits (chosen, not measured; D-054): more
@@ -87,6 +89,7 @@ pub fn app(state: SimState) -> Router {
     let network = Router::new()
         .route("/v1/operations", post(execute).get(list))
         .route("/v1/operations/{id}", get(readback))
+        .route("/v1/stats", get(stats))
         .route_layer(middleware::from_fn_with_state(
             Arc::new(state.access.network.clone()),
             require,
@@ -204,6 +207,17 @@ const fn default_limit() -> i64 {
     500
 }
 
+/// The network's own telemetry (D-093): its write path (batch sizes, durable-commit times,
+/// queue waits, sheds) and its listener's (cap waits, refusals). Counters since startup.
+async fn stats(State(state): State<SimState>) -> Response {
+    Json(json!({
+        "store": state.store.stats(),
+        "transport": state.http.snapshot(),
+        "simulated": true,
+    }))
+    .into_response()
+}
+
 async fn list(State(state): State<SimState>, Query(q): Query<ListQuery>) -> Response {
     let page = match q.project_id {
         Some(project) => state.store.list_project(project, q.after, q.limit).await,
@@ -259,7 +273,8 @@ pub async fn serve(
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
     let limits = state.transport;
-    sandbox_http::serve(listener, app(state), limits, grace, shutdown)
+    let telemetry = state.http.clone();
+    sandbox_http::serve(listener, app(state), limits, grace, shutdown, telemetry)
         .await
         .map(|_| ())
 }

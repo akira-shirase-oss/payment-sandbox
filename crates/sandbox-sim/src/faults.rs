@@ -93,6 +93,52 @@ impl Faults {
     }
 }
 
+/// Crash points for the durability drills (tests/drills.rs), compiled in only with the
+/// `fault-injection` feature; otherwise an empty inline function. `PS_SIM_FAULT=<point>`
+/// aborts the process the `PS_SIM_FAULT_AFTER`-th time the point is reached (default 1) —
+/// no destructors, no flush, like a power cut.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Point {
+    /// A batch of commands is run and staged, its commit not yet durable.
+    StoreCommit,
+}
+
+impl Point {
+    /// The `PS_SIM_FAULT` value naming this point.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::StoreCommit => "store_commit",
+        }
+    }
+}
+
+/// Aborts at `point` per `PS_SIM_FAULT`/`PS_SIM_FAULT_AFTER` (fault-injection only).
+#[cfg(feature = "fault-injection")]
+pub fn point(point: Point) {
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static FAULT: OnceLock<(Option<String>, Option<String>)> = OnceLock::new();
+    static HITS: AtomicU64 = AtomicU64::new(0);
+    let (armed, after) = FAULT.get_or_init(|| {
+        (
+            std::env::var("PS_SIM_FAULT").ok(),
+            std::env::var("PS_SIM_FAULT_AFTER").ok(),
+        )
+    });
+    if armed.as_deref() == Some(point.name()) {
+        let want: u64 = after.as_deref().and_then(|v| v.parse().ok()).unwrap_or(1);
+        if HITS.fetch_add(1, Ordering::SeqCst).saturating_add(1) >= want {
+            eprintln!("fault injection: aborting at {}", point.name());
+            std::process::abort();
+        }
+    }
+}
+
+/// No-op outside fault-injection builds.
+#[cfg(not(feature = "fault-injection"))]
+#[inline(always)]
+pub const fn point(_point: Point) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

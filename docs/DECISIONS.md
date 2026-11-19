@@ -1442,6 +1442,50 @@ closes one of its findings, with the test that failed before the fix.
   run with the generator on its own machine. No threshold was changed. The product misses
   are owed fixes, each to be profiled and proven with a new run before v1.0.0 claims them.
 
+- **D-093 — The network reports its own waits.** D-092 could not prove where m2's 59 s
+  tails waited because neither side of the link had wait telemetry: k6's
+  `http_req_waiting` showed requests unanswered, not why. The simulator now counts its
+  write path — batches run, their largest size, the total and the longest durable commit,
+  each command's enqueue-to-answer wait, commits that failed and commands shed at the full
+  queue — and its listener the accepted, refused, served and active connections, how long
+  the over-cap ones waited and the longest wait. `GET /v1/stats` on the network reports
+  both under the network credential (control stays off in load runs); `scripts/load.sh`
+  writes it into every result as `network_stats`, so the next miss is classified from
+  evidence, not from a second round of guessing. `crates/sandbox-sim/src/store.rs` keeps
+  the counters next to the writer they measure; `crates/sandbox-http` counts the
+  transports it serves.
+
+- **D-094 — A connection waits for a serving place only so long, then is refused.** The
+  old accept loop took a semaphore permit before `accept()`: past the connection cap the
+  excess waited in the kernel's listen backlog with no deadline and no count, which is the
+  shape of m2's tail (authorize median 6 ms, p99 ≈ k6's own 60 s timeout, CPU 40% busy —
+  sent and un-answered, not computing). Accepted connections now have an application-level
+  wait bounded two ways: a pending bound (`max_pending`, default the connection cap) that
+  refuses instantly when full, and a deadline (`accept_wait`, default 2 s) for how long a
+  pending connection may wait for a serving place. A refusal answers `503` with
+  `Retry-After: 1`, `connection: close` and the sandbox marker inside `write_timeout`, so
+  an over-cap client is told quickly and may retry — honest pressure relief instead of an
+  unbounded queue the product cannot see. `accept_wait` is deliberately shorter than the
+  server's 5 s request timeout, so a request that waited near the deadline is still
+  answered inside the budget the caller gave it. Nothing else changed: the cap, the
+  read/write timeouts, the per-connection request and age limits, the drain and the
+  journal-side waits are as D-054/D-057 left them. Test:
+  `crates/sandbox-http/src/lib.rs::a_connection_past_the_cap_is_refused_with_a_bounded_wait`
+  holds the only serving place, sends a second connection and requires a 503 well inside
+  the client's own patience.
+
+- **D-095 — The network's commit-crash drill.** The server crash drills kill the real
+  binary at compiled-in fault points; the network's store never had one, so "answers only
+  after its durable commit" was asserted in comments and reasoned, not drilled. Under
+  `fault-injection` (never in a release build) the store now has `store_commit`: a batch
+  is run and staged inside the write transaction but aborted before `txn.commit()`
+  returns — `PS_SIM_FAULT=store_commit`, `PS_SIM_FAULT_AFTER` picking which hit.
+  `crates/sandbox-sim/tests/drills.rs` runs the real `sandbox-sim` binary, executes two
+  commands to clean answers, then crashes the third batch. Afterwards the acknowledged
+  ids are still `executed`, the unacknowledged one reads back `unknown` and never appears
+  as executed, and its retry under the same identity executes once — what the crash left
+  is exactly what the caller was told, nothing more.
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

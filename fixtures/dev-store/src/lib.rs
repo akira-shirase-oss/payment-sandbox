@@ -250,6 +250,7 @@ pub async fn serve(
         limits,
         Duration::from_secs(5),
         shutdown,
+        std::sync::Arc::new(sandbox_http::ServeStats::default()),
     )
     .await
     .map(|_| ())

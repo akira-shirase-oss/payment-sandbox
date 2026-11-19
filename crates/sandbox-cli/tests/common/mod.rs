@@ -63,6 +63,7 @@ impl Stack {
                 control: None,
             }),
             transport: sandbox_sim::SIM_LIMITS,
+            http: Arc::new(sandbox_http::ServeStats::default()),
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let sim_url = format!("http://{}", listener.local_addr().unwrap());

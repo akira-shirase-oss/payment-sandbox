@@ -5,8 +5,12 @@
 //! never runs, and nothing bounds idle keep-alive connections, the number of connections,
 //! or a client that stops reading. [`serve`] replaces it:
 //!
-//! - **a connection cap before accept** ([`Limits::max_connections`]): past it, new
-//!   connections wait in the kernel's listen backlog instead of taking descriptors;
+//! - **a connection cap with a bounded wait** ([`Limits::max_connections`],
+//!   [`Limits::accept_wait`], [`Limits::max_pending`]): every connection is accepted, and
+//!   past the cap it waits for a serving place at most [`Limits::accept_wait`] while at
+//!   most [`Limits::max_pending`] connections wait; otherwise it is refused with `503`
+//!   and `Retry-After` and closed — a request never waits in the kernel's listen backlog
+//!   until the client gives up (D-094);
 //! - **a read timeout** ([`Limits::read_timeout`]): a request head must arrive within it
 //!   (hyper restarts this timer whenever a keep-alive connection waits for its next request,
 //!   so it is also the idle timeout), and a request body may not pause longer than it;
@@ -35,7 +39,7 @@ use axum::Router;
 use axum::http::{HeaderValue, Request, header};
 use hyper::body::Incoming;
 use hyper_util::rt::{TokioIo, TokioTimer};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 use tokio::task::JoinSet;
@@ -50,8 +54,12 @@ pub const CLIENT_POOL_IDLE: Duration = Duration::from_secs(4);
 /// The bounds of one listener.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
-    /// Connections served at once; more wait in the listen backlog.
+    /// Connections served at once.
     pub max_connections: usize,
+    /// Longest a connection past the cap waits for a serving place before it is refused.
+    pub accept_wait: Duration,
+    /// Connections waiting for a place at once; the rest are refused at once.
+    pub max_pending: usize,
     /// Longest wait for a request head (also the idle keep-alive timeout) and longest pause
     /// inside a request body.
     pub read_timeout: Duration,
@@ -64,11 +72,15 @@ pub struct Limits {
 }
 
 impl Limits {
-    /// The defaults with `max_connections` connections: 10 s read and write timeouts,
-    /// 10,000 requests and 10 minutes per connection. Chosen, not measured (D-054).
+    /// The defaults with `max_connections` connections: a 2 s bounded wait for a place
+    /// with as many waiting connections as the cap, 10 s read and write timeouts,
+    /// 10,000 requests and 10 minutes per connection. Chosen, not measured (D-054; the
+    /// wait's bound is D-094).
     pub const fn with_connections(max_connections: usize) -> Self {
         Self {
             max_connections,
+            accept_wait: Duration::from_secs(2),
+            max_pending: max_connections,
             read_timeout: Duration::from_secs(10),
             write_timeout: Duration::from_secs(10),
             max_requests: 10_000,
@@ -76,7 +88,8 @@ impl Limits {
         }
     }
 
-    /// Reads `<prefix>MAX_CONNECTIONS`, `<prefix>READ_TIMEOUT_MS`, `<prefix>WRITE_TIMEOUT_MS`,
+    /// Reads `<prefix>MAX_CONNECTIONS`, `<prefix>ACCEPT_WAIT_MS`, `<prefix>MAX_PENDING`,
+    /// `<prefix>READ_TIMEOUT_MS`, `<prefix>WRITE_TIMEOUT_MS`,
     /// `<prefix>MAX_REQUESTS_PER_CONNECTION` and `<prefix>MAX_CONNECTION_AGE_MS` through
     /// `lookup`, over `defaults`. Every problem is reported.
     pub fn from_lookup(
@@ -103,6 +116,15 @@ impl Limits {
             max_connections: usize::try_from(number(
                 "MAX_CONNECTIONS",
                 u64::try_from(defaults.max_connections).unwrap_or(u64::MAX),
+            ))
+            .unwrap_or(usize::MAX),
+            accept_wait: Duration::from_millis(number(
+                "ACCEPT_WAIT_MS",
+                millis(defaults.accept_wait),
+            )),
+            max_pending: usize::try_from(number(
+                "MAX_PENDING",
+                u64::try_from(defaults.max_pending).unwrap_or(u64::MAX),
             ))
             .unwrap_or(usize::MAX),
             read_timeout: Duration::from_millis(number(
@@ -140,6 +162,111 @@ pub enum ShutdownOutcome {
     DeadlineExceeded,
 }
 
+/// What a bounded listener has seen (D-093): counters an operator can scrape. Every value
+/// is approximate telemetry — atomics updated without coordination, never per-request data.
+#[derive(Debug)]
+pub struct ServeStats {
+    accepted_total: AtomicU64,
+    refused_total: AtomicU64,
+    served_total: AtomicU64,
+    active: AtomicU64,
+    active_peak: AtomicU64,
+    place_wait_ns_total: AtomicU64,
+    place_wait_ns_max: AtomicU64,
+    born: std::time::Instant,
+    last_warn_ms: AtomicU64,
+}
+
+/// One reading of [`ServeStats`]; milliseconds where the counters are durations.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ServeStatsSnapshot {
+    /// TCP connections accepted.
+    pub accepted: u64,
+    /// Connections refused over the cap (after `accept_wait`, or over `max_pending` at once).
+    pub refused: u64,
+    /// Connections that won a serving place.
+    pub served: u64,
+    /// Serving places held right now.
+    pub active: u64,
+    /// Most serving places ever held at once.
+    pub active_peak: u64,
+    /// Total time accepted connections spent waiting for a place.
+    pub place_wait_ms_total: u64,
+    /// Longest single wait for a place.
+    pub place_wait_ms_max: u64,
+}
+
+/// At most one cap warning this often.
+const WARN_EVERY: Duration = Duration::from_secs(10);
+
+impl Default for ServeStats {
+    fn default() -> Self {
+        Self {
+            accepted_total: AtomicU64::new(0),
+            refused_total: AtomicU64::new(0),
+            served_total: AtomicU64::new(0),
+            active: AtomicU64::new(0),
+            active_peak: AtomicU64::new(0),
+            place_wait_ns_total: AtomicU64::new(0),
+            place_wait_ns_max: AtomicU64::new(0),
+            born: std::time::Instant::now(),
+            last_warn_ms: AtomicU64::new(0),
+        }
+    }
+}
+
+impl ServeStats {
+    fn accepted(&self) {
+        self.accepted_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn served(&self) {
+        self.served_total.fetch_add(1, Ordering::Relaxed);
+        let active = self
+            .active
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        self.active_peak.fetch_max(active, Ordering::Relaxed);
+    }
+
+    fn released(&self) {
+        self.active.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    fn waited(&self, wait: Duration) {
+        let nanos = u64::try_from(wait.as_nanos()).unwrap_or(u64::MAX);
+        self.place_wait_ns_total.fetch_add(nanos, Ordering::Relaxed);
+        self.place_wait_ns_max.fetch_max(nanos, Ordering::Relaxed);
+    }
+
+    /// Counts one refusal; true when a warning is due (at most one per [`WARN_EVERY`]).
+    fn refused(&self) -> bool {
+        self.refused_total.fetch_add(1, Ordering::Relaxed);
+        let now = u64::try_from(self.born.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let warn_ms = u64::try_from(WARN_EVERY.as_millis()).unwrap_or(u64::MAX);
+        let last = self.last_warn_ms.load(Ordering::Relaxed);
+        now.saturating_sub(last) >= warn_ms
+            && self
+                .last_warn_ms
+                .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+    }
+
+    /// One reading of the counters.
+    pub fn snapshot(&self) -> ServeStatsSnapshot {
+        let ms = |nanos: u64| nanos / 1_000_000;
+        ServeStatsSnapshot {
+            accepted: self.accepted_total.load(Ordering::Relaxed),
+            refused: self.refused_total.load(Ordering::Relaxed),
+            served: self.served_total.load(Ordering::Relaxed),
+            active: self.active.load(Ordering::Relaxed),
+            active_peak: self.active_peak.load(Ordering::Relaxed),
+            place_wait_ms_total: ms(self.place_wait_ns_total.load(Ordering::Relaxed)),
+            place_wait_ms_max: ms(self.place_wait_ns_max.load(Ordering::Relaxed)),
+        }
+    }
+}
+
 /// Serves `router` on `listener` within `limits` until `shutdown` resolves, then drains for
 /// at most `grace`.
 pub async fn serve(
@@ -148,23 +275,21 @@ pub async fn serve(
     limits: Limits,
     grace: Duration,
     shutdown: impl Future<Output = ()> + Send,
+    stats: Arc<ServeStats>,
 ) -> io::Result<ShutdownOutcome> {
     let service = tower::ServiceBuilder::new()
         .layer(RequestBodyTimeoutLayer::new(limits.read_timeout))
         .service(router);
     let permits = Arc::new(Semaphore::new(limits.max_connections.max(1)));
+    let pending = Arc::new(Semaphore::new(limits.max_pending.max(1)));
     let (stop, stopping) = watch::channel(false);
     let mut connections = JoinSet::new();
     tokio::pin!(shutdown);
     loop {
-        // A place first: past the cap, connections wait in the backlog, unaccepted.
-        let permit = tokio::select! {
-            permit = permits.clone().acquire_owned() => match permit {
-                Ok(permit) => permit,
-                Err(_) => break,
-            },
-            () = &mut shutdown => break,
-        };
+        // Every offer is accepted at once (D-094): a connection past the cap waits for a
+        // serving place as a task — bounded in count by `pending` and in time by
+        // `accept_wait` — instead of sitting in the kernel's listen backlog, where nothing
+        // bounded how long a request waited before it was ever looked at.
         let stream = tokio::select! {
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => stream,
@@ -179,12 +304,15 @@ pub async fn serve(
         };
         while connections.try_join_next().is_some() {}
         let _ = stream.set_nodelay(true);
-        connections.spawn(connection(
+        stats.accepted();
+        connections.spawn(wait_for_place(
             stream,
             service.clone(),
             limits,
             stopping.clone(),
-            permit,
+            permits.clone(),
+            pending.clone(),
+            stats.clone(),
         ));
     }
     drop(listener);
@@ -203,6 +331,49 @@ pub async fn serve(
 
 type BoundedService = tower_http::timeout::RequestBodyTimeout<Router>;
 
+/// A connection's path to a serving place: at most `max_pending` connections may wait for
+/// one, each at most `accept_wait`; then the refusal is a bounded, honest `503` (D-094).
+async fn wait_for_place(
+    stream: TcpStream,
+    service: BoundedService,
+    limits: Limits,
+    stopping: watch::Receiver<bool>,
+    permits: Arc<Semaphore>,
+    pending: Arc<Semaphore>,
+    stats: Arc<ServeStats>,
+) {
+    let Ok(waiting) = pending.try_acquire_owned() else {
+        refuse(stream, limits, &stats).await;
+        return;
+    };
+    let started = Instant::now();
+    if let Ok(Ok(permit)) = tokio::time::timeout(limits.accept_wait, permits.acquire_owned()).await
+    {
+        stats.waited(started.elapsed());
+        // The waiting place is freed; the serving place is the permit's.
+        drop(waiting);
+        connection(stream, service, limits, stopping, permit, stats).await;
+    } else {
+        stats.waited(started.elapsed());
+        refuse(stream, limits, &stats).await;
+    }
+}
+
+/// One bounded, honest refusal: `503`, `Retry-After` and `Connection: close`.
+async fn refuse(mut stream: TcpStream, limits: Limits, stats: &Arc<ServeStats>) {
+    if stats.refused() {
+        tracing::warn!(
+            cap = limits.max_connections,
+            pending = limits.max_pending,
+            "the connection cap is full; refusing the excess"
+        );
+    }
+    let _ = tokio::time::timeout(limits.write_timeout, stream.write_all(OVER_CAP_RESPONSE)).await;
+}
+
+/// What a refused connection reads.
+const OVER_CAP_RESPONSE: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\nretry-after: 1\r\nsandbox-simulated: true\r\n\r\n";
+
 /// One accepted connection; its place is released when it ends.
 async fn connection(
     stream: TcpStream,
@@ -210,8 +381,11 @@ async fn connection(
     limits: Limits,
     stopping: watch::Receiver<bool>,
     permit: OwnedSemaphorePermit,
+    stats: Arc<ServeStats>,
 ) {
+    stats.served();
     serve_connection(stream, service, limits, stopping).await;
+    stats.released();
     drop(permit);
 }
 
@@ -402,7 +576,7 @@ impl<I: AsyncWrite + Unpin> AsyncWrite for Watched<I> {
 #[cfg(test)]
 mod tests {
     use axum::routing::get;
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::io::AsyncReadExt as _;
 
     use super::*;
 
@@ -449,7 +623,11 @@ mod tests {
         assert_eq!(limits.max_connections, 8);
         assert_eq!(limits.read_timeout, Duration::from_millis(500));
         assert_eq!(limits.max_requests, 10_000);
-        let bad = [("X_WRITE_TIMEOUT_MS", "0"), ("X_MAX_CONNECTIONS", "many")];
+        let bad = [
+            ("X_WRITE_TIMEOUT_MS", "0"),
+            ("X_MAX_CONNECTIONS", "many"),
+            ("X_ACCEPT_WAIT_MS", "0"),
+        ];
         let lookup = |k: &str| {
             bad.iter()
                 .find(|(n, _)| *n == k)
@@ -459,7 +637,86 @@ mod tests {
             Limits::from_lookup("X_", lookup, Limits::with_connections(64))
                 .unwrap_err()
                 .len(),
-            2
+            3
         );
+    }
+
+    /// A connection past the cap is refused within `accept_wait`, not left waiting for the
+    /// client to give up (D-094): the first GitHub full runs' 60 s tails were requests
+    /// queued in the kernel's listen backlog until k6's own deadline.
+    #[tokio::test]
+    async fn a_connection_past_the_cap_is_refused_with_a_bounded_wait() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let limits = Limits {
+            max_connections: 1,
+            accept_wait: Duration::from_millis(150),
+            max_pending: 1,
+            ..Limits::with_connections(1)
+        };
+        let stats = Arc::new(ServeStats::default());
+        let router = Router::new().route("/", get(|| async { "ok" }));
+        let (_stop, stopping) = watch::channel(false);
+        let serving = {
+            let stats = stats.clone();
+            tokio::spawn(async move {
+                serve(
+                    listener,
+                    router,
+                    limits,
+                    Duration::from_millis(200),
+                    async move {
+                        let mut rx = stopping;
+                        let _ = rx.wait_for(|s| *s).await;
+                    },
+                    stats,
+                )
+                .await
+            })
+        };
+        // The one place is held by an idle keep-alive connection.
+        let holder = TcpStream::connect(addr).await.unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while stats.snapshot().active == 0 && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(stats.snapshot().active, 1);
+
+        // The next connection waits for the place only until `accept_wait`, then reads a
+        // bounded 503 — before the fix it waited in the backlog until the client gave up.
+        // Nothing is sent: the refusal is at the connection level, not the request's.
+        let mut second = TcpStream::connect(addr).await.unwrap();
+        let started = std::time::Instant::now();
+        let mut answer = Vec::new();
+        let read =
+            tokio::time::timeout(Duration::from_secs(3), second.read_to_end(&mut answer)).await;
+        let answered = read
+            .expect("the over-cap connection was never refused")
+            .expect("reading the refusal failed");
+        let waited = started.elapsed();
+        assert!(
+            waited < Duration::from_secs(2),
+            "the refusal took {waited:?}"
+        );
+        assert!(answered > 0);
+        let text = String::from_utf8_lossy(&answer);
+        assert!(text.starts_with("HTTP/1.1 503"), "{text}");
+        assert!(text.contains("retry-after"), "{text}");
+
+        // A third connection, over the pending bound, is refused at once.
+        let mut third = TcpStream::connect(addr).await.unwrap();
+        let mut early = Vec::new();
+        let answer_at = tokio::time::timeout(Duration::from_secs(3), third.read_to_end(&mut early))
+            .await
+            .expect("the over-pending connection was never refused")
+            .expect("reading the refusal failed");
+        assert!(answer_at > 0);
+        assert!(String::from_utf8_lossy(&early).starts_with("HTTP/1.1 503"));
+
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.refused, 2, "{snapshot:?}");
+        assert_eq!(snapshot.served, 1, "{snapshot:?}");
+        drop(holder);
+        drop(serving);
     }
 }

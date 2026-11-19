@@ -49,6 +49,7 @@ http-body-util.workspace = true
 proptest.workspace = true
 sandbox-dev-store.workspace = true
 sandbox-sim.workspace = true
+sandbox-http.workspace = true
 sandbox-db = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["test-util"] }
 

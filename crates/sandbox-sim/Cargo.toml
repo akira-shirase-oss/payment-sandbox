@@ -7,9 +7,18 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# Crash points for the durability drill (tests/drills.rs). Never in a release build.
+fault-injection = []
+
 [[bin]]
 name = "sandbox-sim"
 path = "src/main.rs"
+
+# The commit-crash drill needs the crash point compiled into the binary it spawns.
+[[test]]
+name = "drills"
+required-features = ["fault-injection"]
 
 [dependencies]
 sandbox-http.workspace = true

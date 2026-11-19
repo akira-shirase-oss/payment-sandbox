@@ -11,7 +11,7 @@ scripts/check-toolchain.sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 # The crash points exist only in fault-injection builds; lint that build too.
-cargo clippy -p sandbox-server --features fault-injection --all-targets --locked -- -D warnings
+cargo clippy -p sandbox-server -p sandbox-sim --features fault-injection --all-targets --locked -- -D warnings
 scripts/check-architecture.sh
 # The check must be able to fail: banning a crate the domain does use must trip it.
 if ARCH_BANNED="sha2" scripts/check-architecture.sh >/dev/null 2>&1; then
@@ -27,6 +27,9 @@ export PS_TEST_DATABASE_URL
 cargo test --workspace --locked
 # Drill (a) and the both-processes restart: the real server binary, killed at fault points.
 cargo test -p sandbox-server --features fault-injection --test drills --locked
+# The network's own crash drill (D-095): aborted between batching and its durable commit,
+# it must lose no acknowledged command and record no unacknowledged one.
+cargo test -p sandbox-sim --features fault-injection --test drills --locked
 
 # The checkout, the dashboard and the SDK (M6, M7): strict type checks, component and unit
 # tests, then the journeys in Chromium against the real processes (which build both apps),

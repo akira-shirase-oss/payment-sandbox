@@ -16,9 +16,10 @@
 //! Records are immutable: there is no code path that updates or deletes an operation.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError, RwLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use redb::{
     Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, Table, TableDefinition,
@@ -126,12 +127,117 @@ enum Command {
     Hold(oneshot::Sender<()>, oneshot::Receiver<()>),
 }
 
+/// A command and when it was queued: the queue wait is what a slow commit costs a caller.
+struct Queued {
+    command: Command,
+    at: Instant,
+}
+
+impl std::fmt::Debug for Queued {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Queued")
+    }
+}
+
+/// Approximate write-path telemetry (D-093): counters the `/v1/stats` route reports. Each
+/// wait is one command's enqueue-to-durable-answer time — the queueing a slow commit costs.
+#[derive(Debug, Default)]
+pub struct StoreStats {
+    commands_total: AtomicU64,
+    batches_total: AtomicU64,
+    batch_max: AtomicU64,
+    batch_ns_total: AtomicU64,
+    commit_ns_total: AtomicU64,
+    commit_ns_max: AtomicU64,
+    commit_failures: AtomicU64,
+    wait_ns_total: AtomicU64,
+    wait_ns_max: AtomicU64,
+    shed_total: AtomicU64,
+}
+
+/// One reading of [`StoreStats`]; milliseconds where the counters are durations.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StoreStatsSnapshot {
+    /// Commands the writer has run so far.
+    pub commands: u64,
+    /// Write transactions committed (the batches the commands ran in).
+    pub batches: u64,
+    /// Most commands in one batch.
+    pub batch_max: u64,
+    /// Total wall time of the batches (their work and their commits).
+    pub batch_ms_total: u64,
+    /// Total wall time of the durable commits inside them.
+    pub commit_ms_total: u64,
+    /// Longest single durable commit.
+    pub commit_ms_max: u64,
+    /// Batches that failed: nothing was committed and every caller was refused.
+    pub commit_failures: u64,
+    /// Total enqueue-to-answer wait of the commands the writer ran (committed or refused
+    /// together when their batch failed).
+    pub wait_ms_total: u64,
+    /// Longest single wait.
+    pub wait_ms_max: u64,
+    /// Commands refused because the queue was full.
+    pub shed: u64,
+}
+
+impl StoreStats {
+    fn shed(&self) {
+        self.shed_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn note_batch(&self, commands: usize, batch: Duration) {
+        let commands = u64::try_from(commands).unwrap_or(u64::MAX);
+        self.commands_total.fetch_add(commands, Ordering::Relaxed);
+        self.batches_total.fetch_add(1, Ordering::Relaxed);
+        self.batch_max.fetch_max(commands, Ordering::Relaxed);
+        self.batch_ns_total.fetch_add(
+            u64::try_from(batch.as_nanos()).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
+    }
+
+    fn note_commit(&self, commit: Duration) {
+        let nanos = u64::try_from(commit.as_nanos()).unwrap_or(u64::MAX);
+        self.commit_ns_total.fetch_add(nanos, Ordering::Relaxed);
+        self.commit_ns_max.fetch_max(nanos, Ordering::Relaxed);
+    }
+
+    fn note_commit_failure(&self) {
+        self.commit_failures.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn note_wait(&self, wait: Duration) {
+        let nanos = u64::try_from(wait.as_nanos()).unwrap_or(u64::MAX);
+        self.wait_ns_total.fetch_add(nanos, Ordering::Relaxed);
+        self.wait_ns_max.fetch_max(nanos, Ordering::Relaxed);
+    }
+
+    /// One reading of the counters.
+    pub fn snapshot(&self) -> StoreStatsSnapshot {
+        let ms = |nanos: u64| nanos / 1_000_000;
+        StoreStatsSnapshot {
+            commands: self.commands_total.load(Ordering::Relaxed),
+            batches: self.batches_total.load(Ordering::Relaxed),
+            batch_max: self.batch_max.load(Ordering::Relaxed),
+            batch_ms_total: ms(self.batch_ns_total.load(Ordering::Relaxed)),
+            commit_ms_total: ms(self.commit_ns_total.load(Ordering::Relaxed)),
+            commit_ms_max: ms(self.commit_ns_max.load(Ordering::Relaxed)),
+            commit_failures: self.commit_failures.load(Ordering::Relaxed),
+            wait_ms_total: ms(self.wait_ns_total.load(Ordering::Relaxed)),
+            wait_ms_max: ms(self.wait_ns_max.load(Ordering::Relaxed)),
+            shed: self.shed_total.load(Ordering::Relaxed),
+        }
+    }
+}
+
 /// The network's store: a handle to the writer thread and to the readers.
 #[derive(Debug, Clone)]
 pub struct Store {
-    commands: mpsc::Sender<Command>,
+    commands: mpsc::Sender<Queued>,
     path: PathBuf,
     readers: Arc<Readers>,
+    stats: Arc<StoreStats>,
 }
 
 /// The read side: the open database (until [`Store::close`]) and the bound on readers.
@@ -153,6 +259,8 @@ impl Store {
         let path = path.to_path_buf();
         let (commands, receiver) = mpsc::channel(QUEUE);
         let (ready_tx, ready_rx) = oneshot::channel();
+        let stats = Arc::new(StoreStats::default());
+        let writer_stats = stats.clone();
         let thread_path = path.clone();
         thread::Builder::new()
             .name("sim-store".to_owned())
@@ -160,7 +268,7 @@ impl Store {
                 Ok(db) => {
                     let db = Arc::new(db);
                     let _ = ready_tx.send(Ok(db.clone()));
-                    writer(db, receiver);
+                    writer(db, receiver, &writer_stats);
                 }
                 Err(e) => {
                     let _ = ready_tx.send(Err(e));
@@ -175,7 +283,14 @@ impl Store {
                 db: RwLock::new(Some(db)),
                 permits: Arc::new(Semaphore::new(READERS)),
             }),
+            stats,
         })
+    }
+
+    /// The write path's telemetry: batch sizes, commit times, queue waits and sheds
+    /// (D-093).
+    pub fn stats(&self) -> StoreStatsSnapshot {
+        self.stats.snapshot()
     }
 
     /// The store's file.
@@ -199,7 +314,11 @@ impl Store {
             drop(permits);
         }
         let (tx, rx) = oneshot::channel();
-        if self.commands.send(Command::Close(tx)).await.is_ok() {
+        let queued = Queued {
+            command: Command::Close(tx),
+            at: Instant::now(),
+        };
+        if self.commands.send(queued).await.is_ok() {
             let _ = rx.await;
         }
     }
@@ -209,8 +328,15 @@ impl Store {
         make: impl FnOnce(oneshot::Sender<Result<T, StoreError>>) -> Command,
     ) -> Result<T, StoreError> {
         let (tx, rx) = oneshot::channel();
-        self.commands.try_send(make(tx)).map_err(|e| match e {
-            mpsc::error::TrySendError::Full(_) => StoreError::Overloaded,
+        let queued = Queued {
+            command: make(tx),
+            at: Instant::now(),
+        };
+        self.commands.try_send(queued).map_err(|e| match e {
+            mpsc::error::TrySendError::Full(_) => {
+                self.stats.shed();
+                StoreError::Overloaded
+            }
             mpsc::error::TrySendError::Closed(_) => StoreError::Closed,
         })?;
         rx.await.map_err(|_| StoreError::Closed)?
@@ -332,8 +458,8 @@ type Reply = Box<dyn FnOnce() + Send>;
 
 /// The writer loop: drain up to `BATCH` commands, run them in one transaction, answer
 /// after the durable commit.
-fn writer(db: Arc<Database>, mut receiver: mpsc::Receiver<Command>) {
-    let mut batch: Vec<Command> = Vec::with_capacity(BATCH);
+fn writer(db: Arc<Database>, mut receiver: mpsc::Receiver<Queued>, stats: &StoreStats) {
+    let mut batch: Vec<Queued> = Vec::with_capacity(BATCH);
     while let Some(first) = receiver.blocking_recv() {
         batch.push(first);
         while batch.len() < BATCH {
@@ -343,21 +469,36 @@ fn writer(db: Arc<Database>, mut receiver: mpsc::Receiver<Command>) {
             }
         }
         let mut closing = None;
-        if let Some(index) = batch.iter().position(|c| matches!(c, Command::Close(_))) {
+        if let Some(index) = batch
+            .iter()
+            .position(|q| matches!(q.command, Command::Close(_)))
+        {
             // Run what came before the close; what came after it is refused (dropped
             // senders answer `Closed`).
             batch.truncate(index.saturating_add(1));
-            if let Some(Command::Close(done)) = batch.pop() {
+            if let Some(Queued {
+                command: Command::Close(done),
+                ..
+            }) = batch.pop()
+            {
                 closing = Some(done);
             }
             receiver.close();
         }
+        let ats: Vec<Instant> = batch.iter().map(|q| q.at).collect();
         let mut replies: Vec<Reply> = Vec::with_capacity(batch.len());
-        if let Err(e) = run_batch(&db, batch.drain(..), &mut replies) {
+        let started = Instant::now();
+        let commands = batch.len();
+        if let Err(e) = run_batch(&db, batch.drain(..).map(|q| q.command), &mut replies, stats) {
             tracing::error!(error = %e, "the network's store failed to commit a batch");
+            stats.note_commit_failure();
             // Nothing in the batch is durable: every caller learns it failed (an honest
             // "unknown" for the server, which reads back later).
             replies.clear();
+        }
+        stats.note_batch(commands, started.elapsed());
+        for at in ats {
+            stats.note_wait(at.elapsed());
         }
         for reply in replies {
             reply();
@@ -381,8 +522,9 @@ struct Tables<'t> {
 
 fn run_batch(
     db: &Database,
-    commands: std::vec::Drain<'_, Command>,
+    commands: impl Iterator<Item = Command>,
     replies: &mut Vec<Reply>,
+    stats: &StoreStats,
 ) -> Result<(), StoreError> {
     let txn = db.begin_write().map_err(storage)?;
     {
@@ -417,7 +559,12 @@ fn run_batch(
             }
         }
     }
+    // The crash point for the durability drill (fault-injection builds only): the batch is
+    // run but not yet durable. A crash here must acknowledge nothing and record nothing.
+    crate::faults::point(crate::faults::Point::StoreCommit);
+    let commit_started = Instant::now();
     txn.commit().map_err(storage)?;
+    stats.note_commit(commit_started.elapsed());
     Ok(())
 }
 
@@ -731,7 +878,10 @@ impl Store {
         let (held, is_held) = oneshot::channel();
         assert!(
             self.commands
-                .send(Command::Hold(held, released))
+                .send(Queued {
+                    command: Command::Hold(held, released),
+                    at: Instant::now(),
+                })
                 .await
                 .is_ok()
         );

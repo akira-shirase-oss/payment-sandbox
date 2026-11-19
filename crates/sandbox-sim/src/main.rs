@@ -78,6 +78,7 @@ async fn main() -> anyhow::Result<()> {
             sandbox_sim::SIM_LIMITS,
         )
         .map_err(|problems| anyhow::anyhow!("{}", problems.join("; ")))?,
+        http: Arc::new(sandbox_http::ServeStats::default()),
     };
     let listener = tokio::net::TcpListener::bind(listen)
         .await

@@ -1,6 +1,6 @@
 [package]
 name = "sandbox-http"
-description = "The Payment Sandbox's bounded HTTP/1 serving (SIMULATED MONEY ONLY): a connection cap before accept, read and write deadlines, per-connection request and age limits."
+description = "The Payment Sandbox's bounded HTTP/1 serving (SIMULATED MONEY ONLY): a connection cap with a bounded wait, read and write deadlines, per-connection request and age limits."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,7 +11,9 @@ publish.workspace = true
 axum.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
-tokio.workspace = true
+serde.workspace = true
+# `io-util` for the bounded refusal write (`AsyncWriteExt::write_all`).
+tokio = { workspace = true, features = ["io-util"] }
 tower.workspace = true
 tower-http.workspace = true
 tracing.workspace = true

@@ -32,6 +32,7 @@ rcgen.workspace = true
 rustls = { workspace = true, features = ["aws_lc_rs"] }
 time.workspace = true
 tokio-rustls.workspace = true
+sandbox-http.workspace = true
 sandbox-db = { workspace = true, features = ["test-support"] }
 sandbox-dev-store.workspace = true
 sandbox-server.workspace = true
