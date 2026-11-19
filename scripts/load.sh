@@ -28,6 +28,7 @@ script="perf/scenarios/${scenario}.js"
 : "${PS_DATABASE_URL:?export PS_DATABASE_URL (scripts/stack.sh env)}"
 port="${PS_LOAD_PORT:-56090}"
 sim_port="$((port + 1))"
+read_port="$((port + 4))"
 
 cargo build --release --locked -p sandbox-server -p sandbox-sim -p sandbox-dev-store >/dev/null
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -81,6 +82,7 @@ PS_SIM_URL="http://127.0.0.1:${sim_port}" PS_SIM_TOKEN="$sim_token" PS_RECONCILE
 PS_WEBHOOK_PORTS="$((port + 2))" \
 PS_SECRET_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
 PS_BOOTSTRAP_TOKEN="$bootstrap" PS_LISTEN="127.0.0.1:${port}" PS_LOG=warn PS_LOG_FORMAT=json \
+PS_READ_LISTEN="127.0.0.1:${read_port}" \
   env ${checkout_env[@]+"${checkout_env[@]}"} ./target/release/sandbox-server >"$log" 2>&1 &
 server=$!
 trap 'kill "$server" "$sim" "$store" 2>/dev/null || true; rm -f "$summary"' EXIT
@@ -110,7 +112,7 @@ fi
 run_started=$SECONDS
 set +e
 STORE_URL="http://127.0.0.1:${store_port}" STORE_TOKEN="$store_control" CHECKOUT_URL="$checkout_url" \
-BOOTSTRAP="$bootstrap" BASE_URL="http://127.0.0.1:${port}" MODE="$mode" k6 run --quiet \
+BOOTSTRAP="$bootstrap" BASE_URL="http://127.0.0.1:${port}" READ_URL="http://127.0.0.1:${read_port}" MODE="$mode" k6 run --quiet \
   --summary-export "$summary" "$script"
 k6_status=$?
 run_seconds=$((SECONDS - run_started))

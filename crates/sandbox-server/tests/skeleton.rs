@@ -296,7 +296,7 @@ async fn slow_handlers_hit_the_deadline_and_panics_become_opaque_500s() {
 async fn excess_in_flight_requests_are_shed_immediately() {
     let cfg = config(
         "postgres://x@127.0.0.1:1/none",
-        &[("PS_MAX_IN_FLIGHT", "1")],
+        &[("PS_MAX_IN_FLIGHT", "1"), ("PS_READ_IN_FLIGHT", "1")],
     );
     let st = state(cfg.clone());
     let router = test_router(&cfg, &st);
@@ -304,9 +304,9 @@ async fn excess_in_flight_requests_are_shed_immediately() {
         let router = router.clone();
         async move { call(&router, get_req("/slow")).await }
     });
-    // Wait until the first request holds the only permit.
+    // Wait until the first request holds the only read permit (GETs read-admit, D-099).
     let deadline = Instant::now() + Duration::from_secs(5);
-    while st.gate.available_permits() > 0 {
+    while st.gate.read().available_permits() > 0 {
         assert!(Instant::now() < deadline, "the first request never started");
         tokio::task::yield_now().await;
     }

@@ -121,6 +121,21 @@ async fn serve() -> anyhow::Result<()> {
     let dashboard = bind_site(config.dashboard.as_ref(), "dashboard").await?;
     let grace = config.shutdown_grace;
     let transport = config.transport;
+    // The read edge (D-099): the same API on its own listener, whose connections get
+    // their own serving places and a short bounded wait — write connections can never
+    // queue ahead of them. `PS_READ_LISTEN` turns it on.
+    let read = match config.read_edge.listen {
+        Some(addr) => Some((
+            TcpListener::bind(addr)
+                .await
+                .with_context(|| format!("binding the read edge on {addr}"))?,
+            sandbox_http::Limits {
+                accept_wait: config.read_edge.accept_wait,
+                ..transport
+            },
+        )),
+        None => None,
+    };
     let state = AppState::new(config, db.clone());
     let app = sandbox_server::app(&state);
     let sites = site_routers(&state, checkout, dashboard);
@@ -162,7 +177,7 @@ async fn serve() -> anyhow::Result<()> {
     }
     tracing::info!(%local, "listening");
 
-    let outcome = serve_all(listener, app, sites, transport, grace, signal).await?;
+    let outcome = serve_all(listener, app, sites, read, transport, grace, signal).await?;
     match outcome {
         shutdown::ShutdownOutcome::Graceful => tracing::info!("drained; exiting"),
         shutdown::ShutdownOutcome::DeadlineExceeded => {
@@ -218,6 +233,7 @@ async fn serve_all(
     listener: TcpListener,
     app: axum::Router,
     sites: Vec<(&'static str, TcpListener, axum::Router)>,
+    read: Option<(TcpListener, sandbox_http::Limits)>,
     transport: sandbox_http::Limits,
     grace: Duration,
     signal: impl std::future::Future<Output = &'static str> + Send + 'static,
@@ -233,6 +249,18 @@ async fn serve_all(
         let _ = rx.wait_for(|stop| *stop).await;
     };
     let mut site_tasks = tokio::task::JoinSet::new();
+    if let Some((read_listener, read_limits)) = read {
+        let addr = read_listener
+            .local_addr()
+            .context("reading the read edge's bound address")?;
+        tracing::info!(site = "read", %addr, "listening");
+        let rx = stopping.clone();
+        let app = app.clone();
+        site_tasks.spawn(async move {
+            let served = shutdown::serve(read_listener, app, read_limits, grace, stopped(rx)).await;
+            ("read", served)
+        });
+    }
     for (name, site_listener, router) in sites {
         let addr = site_listener
             .local_addr()

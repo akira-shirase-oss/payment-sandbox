@@ -7,7 +7,12 @@
 // 400 s (1,000,000 requests). MODE=smoke: 100 purchases, 200 reads/s for 20 s.
 import { check, fail } from 'k6';
 import exec from 'k6/execution';
-import { call, projects, statusThresholds } from './lib.js';
+import { call, projects, statusThresholds, BASE } from './lib.js';
+
+// Reads take the read edge when the server binds one (D-099): writes on the API
+// listener can then never hold their serving places. Setup and teardown — the seeded
+// writes and the correctness gate — stay on the main listener.
+const readBase = __ENV.READ_URL || BASE;
 
 const full = (__ENV.MODE || 'smoke') === 'full';
 // RATE/SECONDS/SEED override the full shape for a shorter reproduction (CI leaves them unset).
@@ -54,11 +59,11 @@ export function setup() {
 export default function (data) {
   const n = exec.scenario.iterationInTest;
   if (n % 2 === 0) {
-    const res = call('GET', '/v1/balances', data.key, undefined, null, { op: 'balances', phase: 'load' });
+    const res = call('GET', '/v1/balances', data.key, undefined, null, { op: 'balances', phase: 'load' }, readBase);
     check(res, { 'balances': (r) => r.status === 200 }, { phase: 'load' });
   } else {
     const account = accounts[(n >> 1) % 3];
-    const res = call('GET', `/v1/balances/EUR/${account}/explain?limit=100`, data.key, undefined, null, { op: 'explain', phase: 'load' });
+    const res = call('GET', `/v1/balances/EUR/${account}/explain?limit=100`, data.key, undefined, null, { op: 'explain', phase: 'load' }, readBase);
     check(res, { 'explained': (r) => r.status === 200 }, { phase: 'load' });
   }
 }

@@ -10,7 +10,8 @@ export const BASE = __ENV.BASE_URL || 'http://127.0.0.1:56090';
 // which answer the failures were — timeouts, sheds or honest non-2xx states).
 const statuses = new Counter('op_status');
 
-export function call(method, path, key, body, idem, tags) {
+export function call(method, path, key, body, idem, tags, base) {
+  const origin = base || BASE;
   const headers = { authorization: `Bearer ${key}` };
   if (body !== undefined) headers['content-type'] = 'application/json';
   if (idem) headers['idempotency-key'] = idem;
@@ -18,8 +19,8 @@ export function call(method, path, key, body, idem, tags) {
   // time series per distinct tag set, and a tag per payment grew to 6.4 million series in
   // the first full m3 run, costing the load generator the memory and CPU it shares with
   // the server (D-090).
-  const name = `${BASE}${path.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, '{id}').split('?')[0]}`;
-  const res = http.request(method, `${BASE}${path}`, body === undefined ? null : JSON.stringify(body), {
+  const name = `${origin}${path.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, '{id}').split('?')[0]}`;
+  const res = http.request(method, `${origin}${path}`, body === undefined ? null : JSON.stringify(body), {
     headers,
     responseType: 'text',
     tags: { name, ...tags },

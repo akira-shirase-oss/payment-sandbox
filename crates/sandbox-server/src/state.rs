@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use sqlx::PgPool;
-use tokio::sync::Semaphore;
 
 use crate::config::Config;
 use crate::locks::PaymentLocks;
@@ -19,8 +18,8 @@ pub struct AppState {
     pub db: PgPool,
     /// Validated configuration.
     pub config: Arc<Config>,
-    /// Load-shedding gate for `/v1`.
-    pub gate: Arc<Semaphore>,
+    /// Load-shedding gate for `/v1` (D-099: writes and reads admit separately).
+    pub gate: Arc<crate::middleware::LoadGate>,
     /// The simulated network.
     pub network: Network,
     /// Per-payment queues ahead of the database (D-033).
@@ -43,7 +42,11 @@ impl AppState {
     /// Only if the HTTP client cannot be built, which needs a broken TLS-less reqwest build
     /// (the network credential was already validated by the configuration).
     pub fn new(config: Config, db: PgPool) -> Self {
-        let gate = Arc::new(Semaphore::new(config.max_in_flight));
+        let gate = Arc::new(crate::middleware::LoadGate::new(
+            config.max_in_flight,
+            config.read_edge.in_flight,
+            config.read_edge.queue_wait,
+        ));
         #[expect(
             clippy::expect_used,
             reason = "invariant: a plain-HTTP reqwest client always builds, and the credential was validated as visible ASCII by the config"

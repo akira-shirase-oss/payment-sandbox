@@ -3,12 +3,13 @@
 
 use std::any::Any;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
     Router,
     body::Body,
     extract::{DefaultBodyLimit, MatchedPath, Request, State},
-    http::{HeaderName, HeaderValue, StatusCode, header},
+    http::{HeaderName, HeaderValue, Method, StatusCode, header},
     middleware::{self as axum_mw, Next},
     response::{IntoResponse, Response},
 };
@@ -162,15 +163,56 @@ fn panic_response(payload: Box<dyn Any + Send + 'static>) -> Response {
     ApiError::Internal(anyhow::anyhow!("handler panicked: {message}")).into_response()
 }
 
+/// Request-admission budgets (D-099): non-read requests share `max_in_flight` and are
+/// shed at once; `GET`/`HEAD` get their own permits and may wait `read_wait` for one —
+/// an overloaded write path can neither hold a read's permit nor make a read wait on a
+/// write's. A read refused anyway is a fast `Overloaded`, never a quiet queue.
+#[derive(Debug)]
+pub struct LoadGate {
+    write: Arc<Semaphore>,
+    read: Arc<Semaphore>,
+    read_wait: Duration,
+}
+
+impl LoadGate {
+    /// `write`/`read` in-flight permits; a read waits at most `read_wait` for its own.
+    pub fn new(write: usize, read: usize, read_wait: Duration) -> Self {
+        Self {
+            write: Arc::new(Semaphore::new(write)),
+            read: Arc::new(Semaphore::new(read)),
+            read_wait,
+        }
+    }
+
+    /// The write budget, for tests that fill it to observe a shed.
+    pub fn write(&self) -> &Arc<Semaphore> {
+        &self.write
+    }
+
+    /// The read budget, for tests that fill it to observe the bounded read wait.
+    pub fn read(&self) -> &Arc<Semaphore> {
+        &self.read
+    }
+}
+
 /// Rejects at once when `max_in_flight` `/v1` requests are running, instead of queueing
 /// until every request times out.
 pub async fn shed_load(
-    State(gate): State<Arc<Semaphore>>,
+    State(gate): State<Arc<LoadGate>>,
     request: Request,
     next: Next,
 ) -> Response {
-    let Ok(permit) = gate.try_acquire() else {
-        return ApiError::Overloaded.into_response();
+    let permit = if matches!(request.method(), &Method::GET | &Method::HEAD) {
+        match tokio::time::timeout(gate.read_wait, gate.read.clone().acquire_owned()).await {
+            Ok(Ok(permit)) => permit,
+            // The gate is never closed: a miss is the deadline, i.e. overloaded.
+            _ => return ApiError::Overloaded.into_response(),
+        }
+    } else {
+        match gate.write.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => return ApiError::Overloaded.into_response(),
+        }
     };
     let response = next.run(request).await;
     drop(permit);
@@ -257,6 +299,43 @@ mod tests {
         assert!(sandbox_domain::card_guard::contains_pan_like(
             &percent_decode("d=4242%2E4242%2E4242%2E4242")
         ));
+    }
+
+    /// D-099: a write flood can hold every write permit and a read still answers from
+    /// its own budget; a read with no read permit left waits `read_wait`, then `503`s.
+    #[tokio::test(start_paused = true)]
+    async fn reads_have_their_own_budget_when_writes_saturate() {
+        use axum::routing::get;
+        use tower::ServiceExt as _;
+        let gate = Arc::new(LoadGate::new(1, 1, Duration::from_millis(100)));
+        let router = || {
+            Router::new()
+                .route("/", get(|| async { "ok" }).post(|| async { "ok" }))
+                .route_layer(axum_mw::from_fn_with_state(gate.clone(), shed_load))
+        };
+        let held_write = gate.write.clone().try_acquire_owned().expect("permit");
+        let refused = router()
+            .oneshot(Request::post("/").body(Body::empty()).expect("request"))
+            .await
+            .expect("response");
+        assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let answered = router()
+            .oneshot(Request::get("/").body(Body::empty()).expect("request"))
+            .await
+            .expect("response");
+        assert_eq!(answered.status(), StatusCode::OK);
+        drop(held_write);
+
+        // Exhaust the read budget too: the next read waits `read_wait`, then a fast 503.
+        let held_read = gate.read.clone().try_acquire_owned().expect("permit");
+        let started = tokio::time::Instant::now();
+        let refused = router()
+            .oneshot(Request::get("/").body(Body::empty()).expect("request"))
+            .await
+            .expect("response");
+        assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(started.elapsed(), Duration::from_millis(100));
+        drop(held_read);
     }
 
     #[test]

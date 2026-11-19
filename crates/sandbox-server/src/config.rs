@@ -56,6 +56,9 @@ pub struct Config {
     pub max_body_bytes: usize,
     /// Most requests in flight on `/v1` before shedding with `503`.
     pub max_in_flight: usize,
+    /// The read edge (D-099): `GET`/`HEAD` admit separately at both layers — their own
+    /// in-flight permits and, when `listen` names one, their own listener too.
+    pub read_edge: ReadEdge,
     /// Deadline of the readiness probe's database ping.
     pub readiness_timeout: Duration,
     /// Hard deadline for draining in-flight requests at shutdown.
@@ -109,6 +112,21 @@ pub struct Config {
     /// The checkout's public origin, which session URLs name (`PS_CHECKOUT_ORIGIN`, by
     /// default `http://` and the checkout's listen address).
     pub checkout_origin: String,
+}
+
+/// The read edge's own admission (D-099): reads never queue behind writes.
+#[derive(Debug, Clone)]
+pub struct ReadEdge {
+    /// A second API listener for reads, off unless `PS_READ_LISTEN` names one. Its
+    /// connections never wait behind write connections for a serving place.
+    pub listen: Option<SocketAddr>,
+    /// In-flight permits reserved for reads (`PS_READ_IN_FLIGHT`, D-099): a write flood
+    /// can hold every write permit without a read ever waiting on one.
+    pub in_flight: usize,
+    /// Longest a read waits for its own permit before a fast named `503`.
+    pub queue_wait: Duration,
+    /// The edge's bounded wait for a serving place (`PS_READ_ACCEPT_WAIT_MS`).
+    pub accept_wait: Duration,
 }
 
 /// A browser-facing site on its own listener, hence its own origin (D-029, D-061).
@@ -219,6 +237,7 @@ impl Config {
         let request_timeout = parse.millis("PS_REQUEST_TIMEOUT_MS", 5_000);
         let max_body_bytes: usize = parse.value("PS_MAX_BODY_BYTES", Some(16 * 1024));
         let max_in_flight: usize = parse.value("PS_MAX_IN_FLIGHT", Some(512));
+        let read_edge = parse.read_edge();
         let readiness_timeout = parse.millis("PS_READINESS_TIMEOUT_MS", 500);
         let shutdown_grace = parse.millis("PS_SHUTDOWN_GRACE_MS", 10_000);
         let sim_timeout = parse.millis("PS_SIM_TIMEOUT_MS", 2_000);
@@ -234,7 +253,7 @@ impl Config {
         let reports = parse.reports();
         let transport = parse.transport();
         let sim_url = lookup("PS_SIM_URL").unwrap_or_else(|| "http://127.0.0.1:56081".to_owned());
-        let sites = parse.sites(listen, &sim_url, &database_url);
+        let sites = parse.sites(listen, read_edge.listen, &sim_url, &database_url);
         let reconcile = parse.reconcile_tuning(reconcile_batch);
         let secret_key = lookup("PS_SECRET_KEY");
         if let Some(key) = &secret_key
@@ -271,6 +290,7 @@ impl Config {
             request_timeout,
             max_body_bytes,
             max_in_flight,
+            read_edge,
             readiness_timeout,
             shutdown_grace,
             log_format,
@@ -358,6 +378,17 @@ impl Config {
         }
         if max_in_flight == 0 {
             errors.push("PS_MAX_IN_FLIGHT must be at least 1".to_owned());
+        }
+        if self.read_edge.in_flight == 0 {
+            errors.push("PS_READ_IN_FLIGHT must be at least 1".to_owned());
+        }
+        if let Some(read) = self.read_edge.listen {
+            if !read.ip().is_loopback() {
+                errors.push("PS_READ_LISTEN must be a loopback address (D-023)".to_owned());
+            }
+            if ports.contains(&read.port()) {
+                errors.push("PS_READ_LISTEN must use its own port".to_owned());
+            }
         }
         if request_timeout <= pool.statement_timeout {
             errors.push(
@@ -452,16 +483,45 @@ impl<F: Fn(&str) -> Option<String>> Parser<'_, F> {
         }
     }
 
+    /// The read edge (D-099): `PS_READ_LISTEN` (the edge is off without it), the reads'
+    /// own in-flight budget and both bounded waits.
+    fn read_edge(&mut self) -> ReadEdge {
+        ReadEdge {
+            listen: self.optional_listen("PS_READ_LISTEN"),
+            in_flight: self.value("PS_READ_IN_FLIGHT", Some(128)),
+            queue_wait: self.millis("PS_READ_QUEUE_WAIT_MS", 100),
+            accept_wait: self.millis("PS_READ_ACCEPT_WAIT_MS", 100),
+        }
+    }
+
+    /// `Option`al listen address: absent is off, present-but-unparseable is an error.
+    fn optional_listen(&mut self, name: &str) -> Option<SocketAddr> {
+        let raw = (self.lookup)(name)?;
+        if let Ok(address) = raw.parse() {
+            Some(address)
+        } else {
+            self.errors.push(format!("{name} is not a socket address"));
+            None
+        }
+    }
+
     /// The two sites, the profile and the webhook ports (which may target neither site).
-    fn sites(&mut self, listen: SocketAddr, sim_url: &str, database_url: &str) -> Sites {
+    fn sites(
+        &mut self,
+        listen: SocketAddr,
+        read_listen: Option<SocketAddr>,
+        sim_url: &str,
+        database_url: &str,
+    ) -> Sites {
         let profile = self.profile();
         let (checkout, checkout_origin) = self.ui_site("CHECKOUT", 56083, profile);
         let (dashboard, dashboard_origin) = self.ui_site("DASHBOARD", 56084, profile);
-        let own_ports: Vec<u16> = [&checkout, &dashboard]
+        let mut own_ports: Vec<u16> = [&checkout, &dashboard]
             .into_iter()
             .flatten()
             .map(|site| site.listen.port())
             .collect();
+        own_ports.extend(read_listen.map(|read| read.port()));
         let webhook_ports = self.webhook_ports(listen, sim_url, database_url, &own_ports, profile);
         if checkout_origin == dashboard_origin {
             self.errors.push(

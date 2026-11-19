@@ -9,14 +9,20 @@ cd "$(dirname "$0")/.."
 export PS_LOAD_PORT="${PS_LOAD_PORT:-56090}"
 
 before="$(ls -t target/perf/*m2-lifecycle-smoke.json 2>/dev/null | head -1 || true)"
-MODE=smoke bash scripts/load.sh m2-lifecycle >/dev/null 2>&1 || true
-latest="$(ls -t target/perf/*m2-lifecycle-smoke.json | head -1)"
-[ "$latest" != "$before" ] || { echo "selfcheck: no new smoke result written" >&2; exit 1; }
+load_log=target/perf/selfcheck-load.log
+mkdir -p target/perf
+MODE=smoke bash scripts/load.sh m2-lifecycle >"$load_log" 2>&1 || true
+latest="$(ls -t target/perf/*m2-lifecycle-smoke.json 2>/dev/null | head -1 || true)"
+if [ -z "$latest" ] || [ "$latest" = "$before" ]; then
+  echo "selfcheck: no new smoke result written; load.sh said:" >&2
+  tail -20 "$load_log" >&2
+  exit 1
+fi
 
 # The assertion the coordinator asked for: the JSON must contain op_status sub-metrics
 # with nonzero counts — the failed runs showed only the aggregate until now.
 jq -e '
-  ([.k6_summary | to_entries[] | select(.key | startswith("op_status{op:authorize,status:201}") and .value.count > 0)] | length > 0)
+  ([.k6_summary | to_entries[] | select((.key | startswith("op_status{op:authorize,status:201}")) and (.value.count > 0))] | length > 0)
   and ([.k6_summary | to_entries[] | select(.key | startswith("op_status{")) | .value.count] | add) > 0
 ' "$latest" >/dev/null \
   && echo "selfcheck: $latest carries per-op status counts" \

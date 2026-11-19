@@ -1586,6 +1586,33 @@ closes one of its findings, with the test that failed before the fix.
   records `op_status{balances,explain}` counts so the next run's failures name themselves,
   and `RATE`/`SECONDS`/`SEED` allow per-core reproductions like m2's.
 
+- **D-099 — Reads admit separately from writes, at both layers.** The ~2 s pin the
+  classified runs kept showing (D-097, D-098's open tail) is a *shared* admission
+  budget: a connection's wait for a serving place (`accept_wait` 2 s, D-094) is FIFO —
+  under a write flood, a read connection queues behind write connections it would
+  outlive a hundred times over, and past the place the shared `max_in_flight` gate can
+  be entirely held by writes. Two layers now separate them. **Requests**: `GET`/`HEAD`
+  take their own permits (`LoadGate`: `PS_READ_IN_FLIGHT`, default 128, over
+  `PS_MAX_IN_FLIGHT`'s 512) and wait at most `PS_READ_QUEUE_WAIT_MS` (100 ms) — writes
+  shed instantly as before; a refused read is the same named `503 overloaded` +
+  `Retry-After`. **Connections**: `PS_READ_LISTEN` binds the same router on a second
+  listener (the "read edge") whose own serving places and `PS_READ_ACCEPT_WAIT_MS`
+  (100 ms) mean a write flood can never queue a read connection ~2 s. `load.sh` binds
+  it on `port+4`; m5's reads now go through it (`READ_URL`), so the re-dispatched run
+  measures the fixed path. Measured (`perf/results/20261119T1723Z-read-edge-probe.json`,
+  development observation, M2 Pro at load 33–150 — a machine the slot's other worktree
+  was saturating; the comparison is intra-run, both edges under the same conditions):
+  writes flooded the main listener at ~855 offered/s, 45k of 56k authorizes refused —
+  all named 503s, ~117 status-0 timeouts in 61k requests. **Refused** reads on main
+  showed the old split (min 9–11 µs instant sheds, p99 ≈ 2.01 s place waits); on the
+  edge every refused read had a **~1 s floor** — `PS_DB_ACQUIRE_TIMEOUT_MS` — i.e. it
+  always reached request handling (conn place ≤100 ms, read permit granted) and was
+  refused only at the shared database pool. The 2 s admission plateau is gone on the
+  read path; the residual shared budget is the 32-connection pool itself, whose reads
+  still lose to held write work — a pool-level reservation is deliberately left out
+  (bigger surgery, and under a healthy machine the acquire deadline, not the queue,
+  bounds it). Everything still refuses honestly: named 503, `Retry-After: 1`.
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is
