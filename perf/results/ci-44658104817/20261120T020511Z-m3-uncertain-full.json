@@ -1,0 +1,842 @@
+{
+  "scenario": "m3-uncertain",
+  "mode": "full",
+  "started_utc": "20261120T020511Z",
+  "commit": "be5823db3ce9380edda42707c25629ff6330a5f3",
+  "tree_dirty": false,
+  "machine": {
+    "cpu": "AMD EPYC 9V45 96-Core Processor",
+    "cores": 4,
+    "memory_gb": 15,
+    "os": "Linux 7.0.0-1019-azure",
+    "load_average_before": "3.60, 1.10, 0.39",
+    "load_average_after": "3.09, 4.72, 4.78",
+    "note": "GitHub-hosted runner: the load generator, the server, the network and PostgreSQL share one runner VM on shared cloud hardware; an observation, not capacity",
+    "label": "GitHub-hosted runner",
+    "runner": {
+      "image": "ubuntu26/20261111.196.1",
+      "arch": "X64",
+      "workflow_run": 44658104817
+    }
+  },
+  "server_rss_kb_at_end": 67560,
+  "cpu": {
+    "cores": 4,
+    "run_seconds": 3437,
+    "samples_5s": 686,
+    "busy_mean": 0.533,
+    "busy_p50": 0.520,
+    "busy_p90": 0.586,
+    "saturated_share": 0.015,
+    "server_cpu_seconds": 1223,
+    "network_cpu_seconds": 508,
+    "postgres_cpu_seconds": 2921,
+    "note": "busy share of all cores per 5 s sample; saturated = at least 95% busy; what the three processes do not account for is mostly k6, the load generator, on the same machine"
+  },
+  "network_stats": {
+    "simulated": true,
+    "store": {
+      "batch_max": 36,
+      "batch_ms_total": 804541,
+      "batches": 1271636,
+      "commands": 1412151,
+      "commit_failures": 0,
+      "commit_ms_max": 226,
+      "commit_ms_total": 706828,
+      "shed": 0,
+      "wait_ms_max": 288,
+      "wait_ms_total": 2451345
+    },
+    "transport": {
+      "accepted": 74761,
+      "active": 2,
+      "active_peak": 101,
+      "place_wait_ms_max": 0,
+      "place_wait_ms_total": 90,
+      "refused": 0,
+      "served": 74761
+    }
+  },
+  "postgres_lock_waits_over_50ms": 1069,
+  "thresholds_passed": false,
+  "k6_exit_status": 99,
+  "requests": 1614347,
+  "requests_per_second": 469.7061457315675,
+  "failed_rate": 0.17151145323774877,
+  "dropped_iterations": 681,
+  "latency_ms": {
+    "min": 1.931661,
+    "med": 4.727452,
+    "avg": 458.1855703456366,
+    "p(90)": 2000.9817774,
+    "p(95)": 2002.0245256,
+    "p(99)": 2008.44796986,
+    "max": 15370.410466
+  },
+  "thresholds": [
+    {
+      "metric": "op_status{op:approve,status:404}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "http_req_duration{path:approve}",
+      "thresholds": {
+        "p(95)<100": true,
+        "p(99)<250": true
+      }
+    },
+    {
+      "metric": "op_status{op:approve,status:401}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:0}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:uncertain,status:503}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:approve,status:409}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:500}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:approve,status:202}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "checks{phase:reconcile}",
+      "thresholds": {
+        "rate==1": false
+      }
+    },
+    {
+      "metric": "op_status{op:uncertain,status:200}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:409}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:uncertain,status:504}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:uncertain,status:0}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:uncertain,status:500}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:uncertain,status:403}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:uncertain,status:202}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:200}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:uncertain,status:422}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:approve,status:429}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:approve,status:403}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:uncertain,status:401}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:uncertain,status:429}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:uncertain,status:409}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:approve,status:503}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:uncertain,status:502}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:approve,status:400}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:approve,status:502}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:503}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:approve,status:422}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:201}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:400}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:approve,status:200}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:202}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:504}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:403}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:uncertain,status:404}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:422}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:approve,status:0}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:uncertain,status:400}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:approve,status:201}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:approve,status:500}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:uncertain,status:201}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:approve,status:504}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:429}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:502}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:404}",
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    {
+      "metric": "checks{phase:load}",
+      "thresholds": {
+        "rate>0.9999": true
+      }
+    },
+    {
+      "metric": "op_status{op:other,status:401}",
+      "thresholds": {
+        "count>-1": false
+      }
+    }
+  ],
+  "k6_summary": {
+    "op_status{op:approve,status:404}": {
+      "rate": 0,
+      "count": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "http_req_duration{path:approve}": {
+      "max": 3392.116273,
+      "min": 2.743154,
+      "med": 4.59133,
+      "avg": 338.2747381727777,
+      "p(90)": 2000.625591,
+      "p(95)": 2000.9788834,
+      "p(99)": 2001.50366648,
+      "thresholds": {
+        "p(95)<100": true,
+        "p(99)<250": true
+      }
+    },
+    "op_status{op:approve,status:401}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:other,status:0}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status": {
+      "count": 1614347,
+      "rate": 469.7061457315675
+    },
+    "op_status{op:uncertain,status:503}": {
+      "count": 54761,
+      "rate": 15.933116143187535,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "iterations": {
+      "count": 1019320,
+      "rate": 296.5786590287599
+    },
+    "data_sent": {
+      "count": 510276051,
+      "rate": 148468.57408867782
+    },
+    "op_status{op:approve,status:409}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:other,status:500}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "iteration_duration": {
+      "min": 2.071963,
+      "med": 11.460646,
+      "avg": 725.951016734071,
+      "p(90)": 2001.9082271,
+      "p(95)": 2004.09591015,
+      "p(99)": 2018.0619931999997,
+      "max": 5942.401886
+    },
+    "http_req_receiving": {
+      "med": 0.034131,
+      "avg": 0.04883674262844161,
+      "p(90)": 0.072439,
+      "p(95)": 0.119801,
+      "p(99)": 0.32193654000000005,
+      "max": 11.015802,
+      "min": 0.00661
+    },
+    "op_status{op:approve,status:202}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "http_req_sending": {
+      "p(90)": 0.020131,
+      "p(95)": 0.032249,
+      "p(99)": 0.129556,
+      "max": 9.469023,
+      "min": 0.002474,
+      "med": 0.012749,
+      "avg": 0.017946604194142336
+    },
+    "checks{phase:reconcile}": {
+      "passes": 4,
+      "fails": 0,
+      "thresholds": {
+        "rate==1": false
+      },
+      "value": 1
+    },
+    "http_req_blocked": {
+      "max": 8.822856,
+      "min": 0.000511,
+      "med": 0.003716,
+      "avg": 0.03792173073818442,
+      "p(90)": 0.13933040000000016,
+      "p(95)": 0.18135279999999981,
+      "p(99)": 0.4583802000000011
+    },
+    "vus": {
+      "max": 843,
+      "value": 0,
+      "min": 0
+    },
+    "op_status{op:uncertain,status:200}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "http_req_failed": {
+      "passes": 276879,
+      "fails": 1337468,
+      "value": 0.17151145323774877
+    },
+    "op_status{op:other,status:409}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:uncertain,status:504}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:uncertain,status:0}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:uncertain,status:500}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:uncertain,status:403}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:uncertain,status:202}": {
+      "count": 149103,
+      "rate": 43.38261566256444,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:other,status:200}": {
+      "count": 2,
+      "rate": 0.0005819147255597062,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:uncertain,status:422}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "http_req_duration{expected_response:true}": {
+      "p(99)": 2009.70211364,
+      "max": 15370.410466,
+      "min": 1.931661,
+      "med": 4.355566,
+      "avg": 138.81304514658717,
+      "p(90)": 47.62113260000001,
+      "p(95)": 2003.1482712
+    },
+    "op_status{op:approve,status:429}": {
+      "rate": 0,
+      "count": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:approve,status:403}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:uncertain,status:401}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:uncertain,status:429}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:uncertain,status:409}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:approve,status:503}": {
+      "count": 222116,
+      "rate": 64.62628559120985,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:uncertain,status:502}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:approve,status:400}": {
+      "rate": 0,
+      "count": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:approve,status:502}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "http_req_waiting": {
+      "p(95)": 2001.9378047,
+      "p(99)": 2008.36579732,
+      "max": 15370.299012,
+      "min": 1.88796,
+      "med": 4.664565,
+      "avg": 458.1187869988083,
+      "p(90)": 2000.915377
+    },
+    "http_req_duration": {
+      "avg": 458.1855703456366,
+      "p(90)": 2000.9817774,
+      "p(95)": 2002.0245256,
+      "p(99)": 2008.44796986,
+      "max": 15370.410466,
+      "min": 1.931661,
+      "med": 4.727452
+    },
+    "op_status{op:other,status:503}": {
+      "rate": 0.0005819147255597062,
+      "count": 2,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:approve,status:422}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "http_reqs": {
+      "count": 1614347,
+      "rate": 469.7061457315675
+    },
+    "uncertain_answers": {
+      "count": 149103,
+      "rate": 43.38261566256444
+    },
+    "op_status{op:other,status:201}": {
+      "count": 2,
+      "rate": 0.0005819147255597062,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "dropped_iterations": {
+      "count": 681,
+      "rate": 0.19814196405307996
+    },
+    "op_status{op:other,status:400}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:approve,status:200}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:other,status:202}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:other,status:504}": {
+      "rate": 0,
+      "count": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:other,status:403}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "vus_max": {
+      "value": 850,
+      "min": 200,
+      "max": 850
+    },
+    "op_status{op:uncertain,status:404}": {
+      "rate": 0,
+      "count": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "checks": {
+      "passes": 1337468,
+      "fails": 276877,
+      "value": 0.8284895731705428
+    },
+    "op_status{op:other,status:422}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "http_req_tls_handshaking": {
+      "avg": 0,
+      "p(90)": 0,
+      "p(95)": 0,
+      "p(99)": 0,
+      "max": 0,
+      "min": 0,
+      "med": 0
+    },
+    "op_status{op:approve,status:0}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:uncertain,status:400}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:approve,status:201}": {
+      "count": 1188361,
+      "rate": 345.762382590429,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:approve,status:500}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "data_received": {
+      "count": 1176280513,
+      "rate": 342247.4759518127
+    },
+    "op_status{op:uncertain,status:201}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:approve,status:504}": {
+      "rate": 0,
+      "count": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:other,status:429}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:other,status:502}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "op_status{op:other,status:404}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "checks{phase:load}": {
+      "passes": 1337464,
+      "fails": 276877,
+      "thresholds": {
+        "rate>0.9999": true
+      },
+      "value": 0.8284891482035084
+    },
+    "op_status{op:other,status:401}": {
+      "count": 0,
+      "rate": 0,
+      "thresholds": {
+        "count>-1": false
+      }
+    },
+    "http_req_connecting": {
+      "min": 0,
+      "med": 0,
+      "avg": 0.025072433250720425,
+      "p(90)": 0.093301,
+      "p(95)": 0.124248,
+      "p(99)": 0.3401625000000009,
+      "max": 8.017097
+    }
+  }
+}

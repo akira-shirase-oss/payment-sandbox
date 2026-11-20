@@ -3,7 +3,7 @@
 //! payer's URL, whose fragment holds the session's client secret (shown once, never stored).
 
 use axum::{
-    Json,
+    Extension, Json,
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -16,6 +16,7 @@ use serde::Deserialize;
 use crate::auth::Auth;
 use crate::error::ApiError;
 use crate::extract::{PathId, SandboxJson};
+use crate::middleware::DbPool;
 use crate::state::AppState;
 
 /// `POST /v1/checkout_sessions` body.
@@ -38,6 +39,7 @@ fn invalid(error: impl std::fmt::Display) -> ApiError {
 /// Creates a session; `201` with the session, its client secret and the payer's URL.
 pub async fn create(
     State(state): State<AppState>,
+    Extension(db): Extension<DbPool>,
     auth: Auth,
     SandboxJson(body): SandboxJson<CreateSession>,
 ) -> Result<Response, ApiError> {
@@ -69,7 +71,7 @@ pub async fn create(
     let secret = checkout::secret_from_bytes(random);
     let id = uuid::Uuid::now_v7();
     let session = sandbox_db::checkout::create(
-        &state.write_db,
+        &db.0,
         auth.scope(),
         &sandbox_db::checkout::NewSession {
             id,
@@ -84,7 +86,7 @@ pub async fn create(
         },
     )
     .await?;
-    let mut view = crate::checkout::merchant_view(&state.write_db, &session).await?;
+    let mut view = crate::checkout::merchant_view(&db.0, &session).await?;
     view["client_secret"] = serde_json::json!(secret);
     view["url"] = serde_json::json!(format!(
         "{}/c/{}#{}",
@@ -95,13 +97,13 @@ pub async fn create(
 
 /// A session with its attempts and their payments.
 pub async fn get(
-    State(state): State<AppState>,
+    Extension(db): Extension<DbPool>,
     auth: Auth,
     PathId(id): PathId,
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Read)?;
-    let session = sandbox_db::checkout::get(&state.read_db, auth.scope(), id)
+    let session = sandbox_db::checkout::get(&db.0, auth.scope(), id)
         .await?
         .ok_or(ApiError::NotFound("checkout session"))?;
-    Ok(Json(crate::checkout::merchant_view(&state.read_db, &session).await?).into_response())
+    Ok(Json(crate::checkout::merchant_view(&db.0, &session).await?).into_response())
 }

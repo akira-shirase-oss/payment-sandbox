@@ -68,7 +68,9 @@ export default function (data) {
   if (!check(auth, { 'authorized': (r) => r.status === 201 }, { phase: 'load' })) return;
   const pid = auth.json().payment.id;
   const cap = call('POST', `/v1/payments/${pid}/captures`, key, { amount: 600 }, `c-${id}`, tags('capture'));
-  check(cap, { 'captured': (r) => r.status === 201 }, { phase: 'load' });
+  // A shed capture leaves nothing to refund: without this early return the scenario
+  // refunds against captured=0 and counts the domain's honest 409 as a product failure.
+  if (!check(cap, { 'captured': (r) => r.status === 201 }, { phase: 'load' })) return;
   const ref = call('POST', `/v1/payments/${pid}/refunds`, key, { amount: 200 }, `r-${id}`, tags('refund'));
   check(ref, { 'refunded': (r) => r.status === 201 }, { phase: 'load' });
 }

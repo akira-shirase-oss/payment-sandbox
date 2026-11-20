@@ -2,7 +2,7 @@
 //! revoke the first (D-021).
 
 use axum::{
-    Json,
+    Extension, Json,
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -12,11 +12,13 @@ use sandbox_db::keys::{NewKey, RevokeOutcome};
 use sandbox_domain::keys::{self, Scope};
 use serde::Deserialize;
 use serde_json::json;
+use sqlx::Acquire as _;
 use uuid::Uuid;
 
 use crate::auth::{self, Auth};
 use crate::error::ApiError;
 use crate::extract::{PathId, SandboxJson};
+use crate::middleware::DbPool;
 use crate::state::AppState;
 
 /// `POST /v1/keys` body.
@@ -30,6 +32,7 @@ pub struct CreateKey {
 /// Creates a key; the secret is in this response only.
 pub async fn create(
     State(state): State<AppState>,
+    Extension(db): Extension<DbPool>,
     auth: Auth,
     SandboxJson(input): SandboxJson<CreateKey>,
 ) -> Result<Response, ApiError> {
@@ -60,7 +63,8 @@ pub async fn create(
         ApiError::Internal(anyhow::anyhow!("generated key failed its own shape check"))
     })?;
     let prefix = keys::display_prefix(&secret);
-    let mut tx = state.write_db.begin().await.map_err(DbError::from)?;
+    let mut conn = crate::poolstat::timed_acquire(&db.0, &state.pool_stats.write).await?;
+    let mut tx = conn.begin().await.map_err(DbError::from)?;
     let record = sandbox_db::keys::insert(
         &mut tx,
         auth.scope().project_id,
@@ -83,22 +87,21 @@ pub async fn create(
 }
 
 /// Lists the project's keys (never their secrets).
-pub async fn list(State(state): State<AppState>, auth: Auth) -> Result<Response, ApiError> {
+pub async fn list(Extension(db): Extension<DbPool>, auth: Auth) -> Result<Response, ApiError> {
     auth.require(Scope::Admin)?;
-    let keys = sandbox_db::keys::list(&state.read_db, auth.scope().project_id).await?;
+    let keys = sandbox_db::keys::list(&db.0, auth.scope().project_id).await?;
     Ok(Json(json!({"api_keys": keys, "simulated": true})).into_response())
 }
 
 /// Revokes a key of the caller's project. Idempotent; refuses the last admin key.
 pub async fn revoke(
-    State(state): State<AppState>,
+    Extension(db): Extension<DbPool>,
     auth: Auth,
     PathId(key_id): PathId,
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Admin)?;
     let actor = format!("key:{}", auth.key_id());
-    match sandbox_db::keys::revoke(&state.write_db, auth.scope().project_id, key_id, &actor).await?
-    {
+    match sandbox_db::keys::revoke(&db.0, auth.scope().project_id, key_id, &actor).await? {
         RevokeOutcome::Revoked => {
             Ok(Json(json!({"revoked": key_id, "simulated": true})).into_response())
         }

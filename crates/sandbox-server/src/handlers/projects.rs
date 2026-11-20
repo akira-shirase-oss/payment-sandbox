@@ -2,7 +2,7 @@
 //! sandbox, not a public sign-up.
 
 use axum::{
-    Json,
+    Extension, Json,
     extract::{FromRequest, Request, State},
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -14,11 +14,13 @@ use sandbox_domain::keys::{self, Scope};
 use sandbox_domain::project::{ProjectSlug, validate_name};
 use serde::Deserialize;
 use serde_json::json;
+use sqlx::Acquire as _;
 use uuid::Uuid;
 
 use crate::auth::{self, Auth};
 use crate::error::ApiError;
 use crate::extract::SandboxJson;
+use crate::middleware::DbPool;
 use crate::state::AppState;
 
 /// `POST /v1/projects` body.
@@ -30,7 +32,11 @@ pub struct CreateProject {
 }
 
 /// Creates a project with its chart of accounts and a first admin key, shown once.
-pub async fn create(State(state): State<AppState>, request: Request) -> Result<Response, ApiError> {
+pub async fn create(
+    State(state): State<AppState>,
+    Extension(db): Extension<DbPool>,
+    request: Request,
+) -> Result<Response, ApiError> {
     let (parts, body) = request.into_parts();
     if !auth::is_bootstrap(&parts, &state) {
         return Err(ApiError::BootstrapTokenRequired {
@@ -52,7 +58,8 @@ pub async fn create(State(state): State<AppState>, request: Request) -> Result<R
     let project_id = Uuid::now_v7();
     let key_id = Uuid::now_v7();
 
-    let mut tx = state.write_db.begin().await.map_err(DbError::from)?;
+    let mut conn = crate::poolstat::timed_acquire(&db.0, &state.pool_stats.write).await?;
+    let mut tx = conn.begin().await.map_err(DbError::from)?;
     let project =
         match sandbox_db::projects::create_in(&mut tx, project_id, slug.as_str(), name).await {
             Ok(project) => project,
@@ -92,9 +99,9 @@ pub async fn create(State(state): State<AppState>, request: Request) -> Result<R
 }
 
 /// `GET /v1/project`: the caller's project.
-pub async fn current(State(state): State<AppState>, auth: Auth) -> Result<Response, ApiError> {
+pub async fn current(Extension(db): Extension<DbPool>, auth: Auth) -> Result<Response, ApiError> {
     auth.require(Scope::Read)?;
-    let project = sandbox_db::projects::get(&state.read_db, auth.scope().project_id).await?;
+    let project = sandbox_db::projects::get(&db.0, auth.scope().project_id).await?;
     Ok(Json(json!({"project": project_json(&project), "simulated": true})).into_response())
 }
 
@@ -112,19 +119,19 @@ pub struct ResetBody {
 /// journal, payments, operations and events stay, archived; current reads, idempotency
 /// keys and explanations start afresh in the new epoch.
 pub async fn reset(
-    State(state): State<AppState>,
+    Extension(db): Extension<DbPool>,
     auth: Auth,
     SandboxJson(body): SandboxJson<ResetBody>,
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Admin)?;
-    let outcome = reset_project(&state, &auth, &body.confirm, body.epoch).await?;
+    let outcome = reset_project(&db.0, &auth, &body.confirm, body.epoch).await?;
     Ok(Json(outcome).into_response())
 }
 
 /// The reset itself, shared by the API and the dashboard (which reaches it with the
 /// session's identity, its Origin and its CSRF token).
 pub async fn reset_project(
-    state: &AppState,
+    db: &sqlx::PgPool,
     auth: &Auth,
     confirm: &str,
     epoch: i32,
@@ -132,15 +139,7 @@ pub async fn reset_project(
     auth.require(Scope::Admin)?;
     let actor = format!("key:{}", auth.key_id());
     let project_id = auth.scope().project_id;
-    match sandbox_db::projects::reset(
-        &state.write_db,
-        project_id,
-        epoch,
-        confirm,
-        &actor,
-        auth.key_id(),
-    )
-    .await?
+    match sandbox_db::projects::reset(db, project_id, epoch, confirm, &actor, auth.key_id()).await?
     {
         ResetOutcome::Reset {
             from,
@@ -148,7 +147,7 @@ pub async fn reset_project(
             archived_payments,
         } => {
             tracing::warn!(%project_id, from, to, archived_payments, "dataset reset: a new epoch is open");
-            let project = sandbox_db::projects::get(&state.write_db, project_id).await?;
+            let project = sandbox_db::projects::get(db, project_id).await?;
             Ok(json!({
                 "project": project_json(&project),
                 "reset": {"from_epoch": from, "to_epoch": to, "archived_payments": archived_payments,

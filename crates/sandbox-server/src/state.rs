@@ -36,6 +36,9 @@ pub struct AppState {
     pub tasks: Arc<Tasks>,
     /// Seals explanation cursors (D-056).
     pub cursors: Arc<crate::cursor::CursorKey>,
+    /// Per-pool saturation metrics (D-101): sampled occupancy plus acquire waits and
+    /// timeouts recorded by [`crate::poolstat::timed_acquire`].
+    pub pool_stats: Arc<crate::poolstat::PoolStats>,
 }
 
 impl AppState {
@@ -89,12 +92,15 @@ impl AppState {
             gate,
             network,
             payment_locks: Arc::new(PaymentLocks::default()),
+            pool_stats: Arc::new(crate::poolstat::PoolStats::default()),
         }
     }
 
     /// The pool a request's database work must use — the same read/write split the load
-    /// gate applies to admission (D-100). Anything request-scoped goes through here; a
-    /// handler that knows it writes may take `write_db` directly.
+    /// gate and `classify_pool` apply (D-100, D-101). `/v1` handlers draw
+    /// `Extension<DbPool>` instead (the classification already ran); this is for
+    /// request-scoped code outside the `/v1` routers — the sites' session checks — and
+    /// for background tasks, which always name `write_db`.
     pub fn db_for(&self, method: &axum::http::Method) -> &PgPool {
         if crate::middleware::is_read_method(method) {
             &self.read_db

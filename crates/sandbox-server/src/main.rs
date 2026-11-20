@@ -167,6 +167,7 @@ async fn serve() -> anyhow::Result<()> {
             move || sandbox_server::reconciler::run(state.clone(), stop.clone()),
         ))
     };
+    spawn_pool_metrics(&state, &tasks, &reconciler_stop);
     // The deliverer, when webhooks are on (PS_SECRET_KEY).
     let deliverer = sandbox_server::deliverer::Deliverer::new(
         &state,
@@ -210,6 +211,24 @@ async fn serve() -> anyhow::Result<()> {
     }
     db.close().await;
     Ok(())
+}
+
+/// The pool sampler (D-101): records each pool's occupancy so a saturated pool is
+/// evidence in a load run, not a guess. Stops on the same shutdown channel as the
+/// reconciler; a panic restarts it and readiness notices a missed beat.
+fn spawn_pool_metrics(
+    state: &AppState,
+    tasks: &std::sync::Arc<sandbox_server::supervisor::Tasks>,
+    stop: &tokio::sync::watch::Receiver<bool>,
+) {
+    tasks.register(sandbox_server::poolstat::TASK, Duration::from_secs(30));
+    let (tasks, state, stop) = (tasks.clone(), state.clone(), stop.clone());
+    tokio::spawn(supervise(
+        tasks,
+        sandbox_server::poolstat::TASK,
+        stop.clone(),
+        move || sandbox_server::poolstat::run(state.clone(), stop.clone()),
+    ));
 }
 
 /// A bound listener, its loaded site and its origin.

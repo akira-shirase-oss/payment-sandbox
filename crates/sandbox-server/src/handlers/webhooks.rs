@@ -1,7 +1,7 @@
 //! Webhook endpoints (admin) and events (read).
 
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -15,6 +15,7 @@ use uuid::Uuid;
 use crate::auth::Auth;
 use crate::error::ApiError;
 use crate::extract::{PathId, SandboxJson};
+use crate::middleware::DbPool;
 use crate::state::AppState;
 
 /// Why a target port is refused (review N10, D-059).
@@ -46,6 +47,7 @@ fn new_secret() -> Result<String, ApiError> {
 /// Registers an endpoint; its signing secret is in this response only.
 pub async fn create(
     State(state): State<AppState>,
+    Extension(db): Extension<DbPool>,
     auth: Auth,
     SandboxJson(body): SandboxJson<CreateEndpoint>,
 ) -> Result<Response, ApiError> {
@@ -61,20 +63,15 @@ pub async fn create(
     let sealed = secret_box
         .seal(&secret, auth.scope().project_id, id)
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("{e}")))?;
-    let endpoint = sandbox_db::webhooks::create_endpoint(
-        &state.write_db,
-        auth.scope(),
-        id,
-        &body.url,
-        &sealed,
-    )
-    .await?
-    .ok_or_else(|| {
-        ApiError::Conflict(format!(
-            "a project has at most {} active webhook endpoints; disable one first",
-            sandbox_db::webhooks::MAX_ENDPOINTS_PER_PROJECT
-        ))
-    })?;
+    let endpoint =
+        sandbox_db::webhooks::create_endpoint(&db.0, auth.scope(), id, &body.url, &sealed)
+            .await?
+            .ok_or_else(|| {
+                ApiError::Conflict(format!(
+                    "a project has at most {} active webhook endpoints; disable one first",
+                    sandbox_db::webhooks::MAX_ENDPOINTS_PER_PROJECT
+                ))
+            })?;
     Ok((
         StatusCode::CREATED,
         Json(json!({"endpoint": endpoint, "secret": secret, "simulated": true})),
@@ -93,14 +90,14 @@ pub struct ListEndpoints {
 
 /// Lists endpoints (never their secrets), a page at a time (review N4).
 pub async fn list(
-    State(state): State<AppState>,
+    Extension(db): Extension<DbPool>,
     auth: Auth,
     Query(q): Query<ListEndpoints>,
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Admin)?;
     let limit = q.limit.unwrap_or(100).clamp(1, 100);
     let endpoints =
-        sandbox_db::webhooks::list_endpoints(&state.read_db, auth.scope(), q.after, limit).await?;
+        sandbox_db::webhooks::list_endpoints(&db.0, auth.scope(), q.after, limit).await?;
     let next_after = (endpoints.len() == usize::try_from(limit).unwrap_or(0))
         .then(|| endpoints.last().map(|e| e.id))
         .flatten();
@@ -113,6 +110,7 @@ pub async fn list(
 /// Rotates the signing secret; the old one keeps signing for 24 hours.
 pub async fn rotate(
     State(state): State<AppState>,
+    Extension(db): Extension<DbPool>,
     auth: Auth,
     PathId(id): PathId,
 ) -> Result<Response, ApiError> {
@@ -122,9 +120,7 @@ pub async fn rotate(
     let sealed = secret_box
         .seal(&secret, auth.scope().project_id, id)
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("{e}")))?;
-    if !sandbox_db::webhooks::rotate(&state.write_db, auth.scope(), id, &sealed, ROTATION_OVERLAP)
-        .await?
-    {
+    if !sandbox_db::webhooks::rotate(&db.0, auth.scope(), id, &sealed, ROTATION_OVERLAP).await? {
         return Err(ApiError::NotFound("endpoint"));
     }
     Ok(Json(json!({"secret": secret, "previous_valid_for_seconds": ROTATION_OVERLAP.as_secs(), "simulated": true})).into_response())
@@ -132,12 +128,12 @@ pub async fn rotate(
 
 /// Disables an endpoint.
 pub async fn disable(
-    State(state): State<AppState>,
+    Extension(db): Extension<DbPool>,
     auth: Auth,
     PathId(id): PathId,
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Admin)?;
-    if !sandbox_db::webhooks::disable(&state.write_db, auth.scope(), id).await? {
+    if !sandbox_db::webhooks::disable(&db.0, auth.scope(), id).await? {
         return Err(ApiError::NotFound("endpoint"));
     }
     Ok(Json(json!({"disabled": id, "simulated": true})).into_response())
@@ -152,17 +148,13 @@ pub struct EventsQuery {
 
 /// Recent events with their delivery states.
 pub async fn events(
-    State(state): State<AppState>,
+    Extension(db): Extension<DbPool>,
     auth: Auth,
     Query(q): Query<EventsQuery>,
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Read)?;
-    let events = sandbox_db::webhooks::events(
-        &state.read_db,
-        auth.scope(),
-        q.payment_id,
-        q.limit.unwrap_or(100),
-    )
-    .await?;
+    let events =
+        sandbox_db::webhooks::events(&db.0, auth.scope(), q.payment_id, q.limit.unwrap_or(100))
+            .await?;
     Ok(Json(json!({"events": events, "simulated": true})).into_response())
 }

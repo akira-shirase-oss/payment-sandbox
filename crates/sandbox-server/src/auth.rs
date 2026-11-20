@@ -66,9 +66,15 @@ impl FromRequestParts<AppState> for Auth {
         }
         let token = bearer(parts).ok_or(ApiError::Unauthorized)?;
         let hash = keys::hash_presented(token).map_err(|_| ApiError::Unauthorized)?;
-        // A read request's lookup pays from the read pool (D-100): a write flood that
-        // holds every write connection cannot make a read fail at its credential check.
-        let identity = sandbox_db::keys::resolve(state.db_for(&parts.method), &hash)
+        // The classifier already chose this request's pool (D-101): a read's lookup
+        // pays from the read pool, so a write flood that holds every write connection
+        // cannot make a read fail at its credential check. `db_for` is the fallback
+        // for a request that never passed `classify_pool`.
+        let pool = parts
+            .extensions
+            .get::<crate::middleware::DbPool>()
+            .map_or_else(|| state.db_for(&parts.method), |db| &db.0);
+        let identity = sandbox_db::keys::resolve(pool, &hash)
             .await?
             .ok_or(ApiError::Unauthorized)?;
         Ok(Self(identity))

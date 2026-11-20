@@ -133,6 +133,10 @@ pub struct ReadEdge {
     /// The read pool's own acquire deadline (`PS_DB_READ_ACQUIRE_TIMEOUT_MS`, D-100): a
     /// saturated read pool refuses on its own budget, never on the write pool's.
     pub db_acquire_timeout: Duration,
+    /// The read pool's own statement deadline (`PS_DB_READ_STATEMENT_TIMEOUT_MS`, D-101):
+    /// reads are sub-millisecond lookups, so a read statement that runs long is a scan
+    /// defect and is cut off independently of the write deadline.
+    pub db_statement_timeout: Duration,
 }
 
 /// A browser-facing site on its own listener, hence its own origin (D-029, D-061).
@@ -243,6 +247,7 @@ impl Config {
             acquire_timeout: parse.millis("PS_DB_ACQUIRE_TIMEOUT_MS", 1_000),
             statement_timeout: parse.millis("PS_DB_STATEMENT_TIMEOUT_MS", 1_000),
             lock_timeout: parse.millis("PS_DB_LOCK_TIMEOUT_MS", 500),
+            read_only: false,
         };
         let request_timeout = parse.millis("PS_REQUEST_TIMEOUT_MS", 5_000);
         let max_body_bytes: usize = parse.value("PS_MAX_BODY_BYTES", Some(16 * 1024));
@@ -333,12 +338,15 @@ impl Config {
         }
     }
 
-    /// The read pool's settings (D-100): its own slice of the budget and its own acquire
-    /// deadline, sharing the write pool's statement and lock timeouts.
+    /// The read pool's settings (D-100, D-101): its own slice of the budget, its own
+    /// acquire and statement deadlines, and read-only transactions — a read path that
+    /// tries to write fails loudly (SQLSTATE 25006) instead of silently working.
     pub fn read_pool(&self) -> PoolSettings {
         PoolSettings {
             max_connections: self.read_edge.db_connections,
             acquire_timeout: self.read_edge.db_acquire_timeout,
+            statement_timeout: self.read_edge.db_statement_timeout,
+            read_only: true,
             ..self.pool
         }
     }
@@ -517,7 +525,10 @@ impl<F: Fn(&str) -> Option<String>> Parser<'_, F> {
             queue_wait: self.millis("PS_READ_QUEUE_WAIT_MS", 100),
             accept_wait: self.millis("PS_READ_ACCEPT_WAIT_MS", 100),
             db_connections: self.value("PS_DB_READ_CONNECTIONS", Some(8)),
-            db_acquire_timeout: self.millis("PS_DB_READ_ACQUIRE_TIMEOUT_MS", 500),
+            // The D-225 rule the bulkhead shares with Colophon: one second, then a
+            // named 503 + Retry-After.
+            db_acquire_timeout: self.millis("PS_DB_READ_ACQUIRE_TIMEOUT_MS", 1_000),
+            db_statement_timeout: self.millis("PS_DB_READ_STATEMENT_TIMEOUT_MS", 1_000),
         }
     }
 

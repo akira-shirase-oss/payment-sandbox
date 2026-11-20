@@ -269,10 +269,14 @@ pub fn router(state: &AppState, site: Arc<Site>, origin: &str, sessions: Arc<Ses
     let signed = signed.with_state(ctx.clone());
     let session_layer = axum_mw::from_fn_with_state(ctx.clone(), require_session);
     let gate = axum_mw::from_fn_with_state(state.gate.clone(), crate::middleware::shed_load);
+    // The dashboard's /api/* routes mount the same handlers as /v1 (D-101): they need
+    // the same one-place pool classification the API's route_layer provides.
+    let pools = axum_mw::from_fn_with_state(state.clone(), crate::middleware::classify_pool);
     let behind_session = |router: Router| {
         router
             .route_layer(session_layer.clone())
             .route_layer(gate.clone())
+            .route_layer(pools.clone())
     };
     let open = Router::new()
         .route("/api/session", post(sign_in))

@@ -64,6 +64,12 @@ pub fn app(state: &AppState) -> Router {
             post(handlers::webhooks::disable),
         )
         .route("/v1/events", get(handlers::webhooks::events))
+        // One classification, applied to both budgets (D-101): `shed_load` admits by
+        // method, `classify_pool` hands the request its pool by the same rule.
+        .route_layer(axum_mw::from_fn_with_state(
+            state.clone(),
+            middleware::classify_pool,
+        ))
         .route_layer(axum_mw::from_fn_with_state(
             state.gate.clone(),
             middleware::shed_load,
@@ -84,6 +90,10 @@ pub fn app(state: &AppState) -> Router {
             "/v1/balances/{currency}/{account}/explain",
             get(handlers::payments::explain),
         )
+        .route_layer(axum_mw::from_fn_with_state(
+            state.clone(),
+            middleware::classify_pool,
+        ))
         .route_layer(axum_mw::from_fn_with_state(
             state.gate.clone(),
             middleware::shed_load,

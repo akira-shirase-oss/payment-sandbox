@@ -140,3 +140,110 @@ async fn a_shared_pool_starves_the_same_read() {
         started.elapsed()
     );
 }
+
+/// D-101: the read pool's transactions are read-only — a read path that tries to write
+/// is refused by PostgreSQL itself (SQLSTATE 25006), so the defect fails loudly in the
+/// test that introduces it instead of silently borrowing write authority.
+#[tokio::test]
+async fn a_write_on_the_read_pool_is_refused_loudly() {
+    // The real write path: insert a project.
+    async fn write(
+        pool: &sqlx::PgPool,
+    ) -> Result<sandbox_db::projects::Project, sandbox_db::DbError> {
+        let mut tx = pool.begin().await.unwrap();
+        let outcome = sandbox_db::projects::create_in(
+            &mut tx,
+            uuid::Uuid::now_v7(),
+            "read-only-probe",
+            "probe",
+        )
+        .await;
+        tx.rollback().await.unwrap();
+        outcome
+    }
+
+    let db = TestDb::new().await;
+    let cfg = config(
+        &db.url(),
+        &[
+            ("PS_DB_MAX_CONNECTIONS", "2"),
+            ("PS_DB_READ_CONNECTIONS", "1"),
+        ],
+    );
+    let pool = sandbox_db::connect_lazy(cfg.database_url.expose(), &cfg.pool).unwrap();
+    let read = sandbox_db::connect_lazy(cfg.database_url.expose(), &cfg.read_pool()).unwrap();
+    let state = AppState::new(cfg, pool, read);
+
+    let error = write(&state.read_db)
+        .await
+        .expect_err("a write on the read pool must fail");
+    assert!(
+        error.sqlstate().as_deref() == Some("25006"),
+        "expected SQLSTATE 25006 (read-only transaction), got {error:?}"
+    );
+
+    // The write pool still writes: the identical call answers there.
+    write(&state.write_db).await.unwrap();
+}
+
+/// D-101: classification happens once in the middleware, not per handler — a `POST`
+/// draws the write pool and only a route registered through `post_read` reaches the
+/// read pool (the `ReadOnly` marker is the compile-checked opt-in).
+#[tokio::test]
+async fn a_post_reaches_the_read_pool_only_through_post_read() {
+    use axum::{Extension, Router, routing::post};
+    use sandbox_server::middleware::{self, DbPool};
+
+    // A handler that reports which pool it was handed.
+    async fn which_pool(Extension(db): Extension<DbPool>) -> String {
+        db.0.options().get_max_connections().to_string()
+    }
+
+    let db = TestDb::new().await;
+    let cfg = config(
+        &db.url(),
+        &[
+            ("PS_DB_MAX_CONNECTIONS", "4"),
+            ("PS_DB_READ_CONNECTIONS", "1"),
+        ],
+    );
+    let pool = sandbox_db::connect_lazy(cfg.database_url.expose(), &cfg.pool).unwrap();
+    let read = sandbox_db::connect_lazy(cfg.database_url.expose(), &cfg.read_pool()).unwrap();
+    let state = AppState::new(cfg, pool, read);
+    let (read_size, write_size) = (
+        state.read_db.options().get_max_connections(),
+        state.write_db.options().get_max_connections(),
+    );
+    assert_ne!(read_size, write_size, "the pools must be distinguishable");
+
+    let router = Router::new()
+        .route("/plain", post(which_pool))
+        .route("/read", middleware::post_read(&state, which_pool))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::classify_pool,
+        ))
+        .with_state(state.clone());
+
+    for (path, expected) in [("/plain", write_size), ("/read", read_size)] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(body.to_vec()).unwrap(),
+            expected.to_string(),
+            "{path} drew the wrong pool"
+        );
+    }
+}

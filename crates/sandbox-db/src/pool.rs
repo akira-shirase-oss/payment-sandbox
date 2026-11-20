@@ -20,6 +20,10 @@ pub struct PoolSettings {
     pub statement_timeout: Duration,
     /// Longest any statement may wait for a row lock (`lock_timeout`).
     pub lock_timeout: Duration,
+    /// `default_transaction_read_only=on` (D-101): every implicit or explicit
+    /// transaction on the pool is read-only, so a read path that tries to write fails
+    /// loudly (SQLSTATE 25006) in the test that introduced it, not in production.
+    pub read_only: bool,
 }
 
 impl Default for PoolSettings {
@@ -29,6 +33,7 @@ impl Default for PoolSettings {
             acquire_timeout: Duration::from_millis(1_000),
             statement_timeout: Duration::from_millis(2_000),
             lock_timeout: Duration::from_millis(1_000),
+            read_only: false,
         }
     }
 }
@@ -44,6 +49,10 @@ pub fn connect_options(url: &str, settings: &PoolSettings) -> Result<PgConnectOp
         (
             "lock_timeout",
             format!("{}ms", settings.lock_timeout.as_millis()),
+        ),
+        (
+            "default_transaction_read_only",
+            if settings.read_only { "on" } else { "off" }.to_owned(),
         ),
         // A connection left idle inside a transaction (a crashed handler) is cut off
         // instead of holding row locks forever.

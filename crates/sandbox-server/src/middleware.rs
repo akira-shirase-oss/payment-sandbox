@@ -196,9 +196,74 @@ impl LoadGate {
 }
 
 /// True when `method` is a read — `GET`/`HEAD`. One definition shared by request
-/// admission (D-099) and the database bulkhead (D-100), so the two layers always agree.
+/// admission (D-099), pool classification (D-101) and `AppState::db_for` (D-100), so
+/// the layers always agree. Everything else is a write; a read-only `POST` exists only
+/// through [`post_read`], whose [`ReadOnly`] marker is the compile-checked opt-in.
 pub fn is_read_method(method: &Method) -> bool {
     matches!(method, &Method::GET | &Method::HEAD)
+}
+
+/// The pool this request's database work must use (D-101), chosen once by
+/// [`classify_pool`] — handlers extract `Extension<DbPool>` and never name a pool
+/// themselves, so the method classification cannot drift per handler.
+#[derive(Debug, Clone)]
+pub struct DbPool(pub sqlx::PgPool);
+
+/// The marker a read-only `POST` route carries (D-101): naming the type is the
+/// compile-checked opt-in. Inserted by [`mark_read`] via [`post_read`] only.
+#[derive(Debug, Clone, Copy)]
+pub struct ReadOnly;
+
+/// Chooses the request's pool once, in this one place, by the same [`is_read_method`]
+/// the load gate applies to admission (D-101): a `GET`/`HEAD` draws `read_db`, anything
+/// else `write_db`. Runs on the same `route_layer` as [`shed_load`] so every `/v1`
+/// request — and every `/v1` auth lookup — carries `DbPool` before extraction.
+pub async fn classify_pool(
+    State(state): State<crate::state::AppState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let pool = if is_read_method(request.method()) {
+        state.read_db.clone()
+    } else {
+        state.write_db.clone()
+    };
+    request.extensions_mut().insert(DbPool(pool));
+    next.run(request).await
+}
+
+/// Marks the request read-only (D-101): overwrites `DbPool` with the read pool after
+/// [`classify_pool`] classified the `POST` as a write, and inserts [`ReadOnly`] so the
+/// opt-in is visible to anything that inspects the request.
+async fn mark_read(
+    State(state): State<crate::state::AppState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    request.extensions_mut().insert(ReadOnly);
+    request
+        .extensions_mut()
+        .insert(DbPool(state.read_db.clone()));
+    next.run(request).await
+}
+
+/// Registers a read-only `POST` route — the only way a `POST` reaches the read pool
+/// (D-101, Colophon's D-225 rule): a handler that wants `read_db` for a `POST` must be
+/// registered through here, which is a statement the compiler checks (`post(handler)`
+/// cannot produce the marker). Admission still pays the write-side budget — a `POST`
+/// body is shaped like a write — while its database work draws `read_db`.
+///
+/// No read-only `POST` exists today; the route exists so adding one is a deliberate,
+/// reviewable act rather than an accident of which pool name a handler typed.
+pub fn post_read<H, T>(
+    state: &crate::state::AppState,
+    handler: H,
+) -> axum::routing::MethodRouter<crate::state::AppState>
+where
+    H: axum::handler::Handler<T, crate::state::AppState>,
+    T: 'static,
+{
+    axum::routing::post(handler).route_layer(axum_mw::from_fn_with_state(state.clone(), mark_read))
 }
 
 /// Rejects at once when `max_in_flight` `/v1` requests are running, instead of queueing

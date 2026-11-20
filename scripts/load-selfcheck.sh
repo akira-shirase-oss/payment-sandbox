@@ -27,3 +27,13 @@ jq -e '
 ' "$latest" >/dev/null \
   && echo "selfcheck: $latest carries per-op status counts" \
   || { echo "selfcheck: op_status per-op counts missing or empty in $latest" >&2; exit 1; }
+
+# The m2 regression (run 44658104817, class (a)): a refund may only follow a captured
+# capture — the scenario returns early when the capture is shed, so an honest domain
+# 409 refund_exceeds_captured can never be produced by the script itself. A nonzero
+# count here means the guard regressed.
+jq -e '
+  [.k6_summary | to_entries[] | select(.key | startswith("op_status{op:refund,status:409}")) | .value.count] | add // 0 | . == 0
+' "$latest" >/dev/null \
+  && echo "selfcheck: no refund 409s — refunds are gated on capture" \
+  || { echo "selfcheck: refund 409s present — the capture-gate regressed" >&2; exit 1; }

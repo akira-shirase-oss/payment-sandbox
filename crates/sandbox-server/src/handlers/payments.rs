@@ -2,7 +2,7 @@
 //! `Idempotency-Key` and the `payments:write` scope; bodies pass the card guard first.
 
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -19,6 +19,7 @@ use crate::auth::Auth;
 use crate::error::ApiError;
 use crate::extract::{IdempotencyKeyHeader, PathId, SandboxJson};
 use crate::lifecycle::{self, AuthorizeInput, Outcome};
+use crate::middleware::DbPool;
 use crate::state::AppState;
 
 /// `POST /v1/payments` body.
@@ -141,13 +142,14 @@ pub async fn refund(
 /// A payment with its operations.
 pub async fn get(
     State(state): State<AppState>,
+    Extension(db): Extension<DbPool>,
     auth: Auth,
     PathId(payment_id): PathId,
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Read)?;
     // One snapshot: the payment and its operations always agree (D-076).
     let Some(snapshot) =
-        sandbox_db::payments::snapshot(&state.read_db, auth.scope(), payment_id, false).await?
+        sandbox_db::payments::snapshot(&db.0, auth.scope(), payment_id, false).await?
     else {
         return Err(lifecycle::missing_payment(&state, auth.scope(), payment_id).await);
     };
@@ -163,12 +165,13 @@ pub async fn get(
 /// so a page that shows all three never mixes two moments (D-076).
 pub async fn journal(
     State(state): State<AppState>,
+    Extension(db): Extension<DbPool>,
     auth: Auth,
     PathId(payment_id): PathId,
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Read)?;
     let Some(snapshot) =
-        sandbox_db::payments::snapshot(&state.read_db, auth.scope(), payment_id, true).await?
+        sandbox_db::payments::snapshot(&db.0, auth.scope(), payment_id, true).await?
     else {
         return Err(lifecycle::missing_payment(&state, auth.scope(), payment_id).await);
     };
@@ -192,15 +195,14 @@ pub struct ListQuery {
 /// The most recent payments, newest first, in pages: `next_before` names the next page
 /// when this one is full.
 pub async fn list(
-    State(state): State<AppState>,
+    Extension(db): Extension<DbPool>,
     auth: Auth,
     Query(q): Query<ListQuery>,
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Read)?;
     let limit = q.limit.unwrap_or(50).clamp(1, 500);
     let payments =
-        sandbox_db::payments::recent_payments(&state.read_db, auth.scope(), q.before, limit)
-            .await?;
+        sandbox_db::payments::recent_payments(&db.0, auth.scope(), q.before, limit).await?;
     let next_before = (i64::try_from(payments.len()).unwrap_or(i64::MAX) == limit)
         .then(|| payments.last().map(|p| p.id))
         .flatten();
@@ -213,9 +215,9 @@ pub async fn list(
 }
 
 /// Every account balance, summed from the journal (D-028).
-pub async fn balances(State(state): State<AppState>, auth: Auth) -> Result<Response, ApiError> {
+pub async fn balances(Extension(db): Extension<DbPool>, auth: Auth) -> Result<Response, ApiError> {
     auth.require(Scope::Read)?;
-    let balances = sandbox_db::journal::balances(&state.read_db, auth.scope()).await?;
+    let balances = sandbox_db::journal::balances(&db.0, auth.scope()).await?;
     let rows: Vec<Value> = balances
         .iter()
         .map(|b| {
@@ -244,6 +246,7 @@ pub struct ReconcileQuery {
 /// the network's operations the server has no record of (reverse reconciliation, D-015).
 pub async fn reconciliation(
     State(state): State<AppState>,
+    Extension(db): Extension<DbPool>,
     auth: Auth,
     Query(q): Query<ReconcileQuery>,
 ) -> Result<Response, ApiError> {
@@ -252,12 +255,11 @@ pub async fn reconciliation(
         auth.scope().project_id,
         crate::reports::reconciliation_cost(q.network),
     )?;
-    let report = sandbox_db::reconcile::run(&state.read_db, auth.scope()).await?;
+    let report = sandbox_db::reconcile::run(&db.0, auth.scope()).await?;
     let mut clean = report.is_clean();
     let mut body = json!({"report": report, "simulated": true});
     if q.network {
-        let agreement =
-            crate::reconciler::network_agreement(&state, &state.read_db, auth.scope()).await?;
+        let agreement = crate::reconciler::network_agreement(&state, &db.0, auth.scope()).await?;
         clean = clean && agreement.is_clean();
         body["network"] = json!(agreement);
     }
@@ -343,6 +345,7 @@ pub struct ExplainQuery {
 /// the ship gate's "every synthetic balance can be explained from journal entries".
 pub async fn explain(
     State(state): State<AppState>,
+    Extension(db): Extension<DbPool>,
     auth: Auth,
     Path((currency, account)): Path<(String, String)>,
     Query(q): Query<ExplainQuery>,
@@ -368,7 +371,7 @@ pub async fn explain(
         Some(Ok(crate::cursor::Opened::Unverified { generation })) => {
             // Not sealed by this process: a cursor of another restore generation is stale,
             // anything else is not ours.
-            let now = sandbox_db::reconcile::generation(&state.read_db).await?;
+            let now = sandbox_db::reconcile::generation(&db.0).await?;
             return Err(if generation == now {
                 ApiError::InvalidCursor
             } else {
@@ -378,7 +381,7 @@ pub async fn explain(
         Some(Err(crate::cursor::InvalidCursor)) => return Err(ApiError::InvalidCursor),
     };
     let explanation = sandbox_db::reconcile::explain(
-        &state.read_db,
+        &db.0,
         auth.scope(),
         currency.code(),
         account.code(),

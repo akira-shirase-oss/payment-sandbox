@@ -1639,7 +1639,43 @@ closes one of its findings, with the test that failed before the fix.
   deadline. Sizing honesty: 8 read connections is ~25% of the budget for reads whose
   measured cost is sub-millisecond at 100k entries (D-098's plans); the conn count is
   never the read path's binding constraint — CPU is — and reads saturated *anyway*
-  still get a named 503 on their own deadline, not a write's.
+  still get a named 503 on its own deadline, not a write's.
+- **D-101 — One classification, enforced, with read-only reads (Colophon's D-225 rule,
+  held here so the two products cannot diverge without reason).** D-100 split the
+  pools; this aligns the *rule* with Colophon's. **Classify once**: `classify_pool`,
+  a `route_layer` beside `shed_load`, applies `is_read_method` (`GET`/`HEAD` → read,
+  everything else → write) once per request and inserts `DbPool` into the request
+  extensions — `/v1` handlers extract `Extension<DbPool>` and never name a pool, so
+  the classification cannot drift per handler. Auth reads the same extension, so a
+  read's credential check still pays from the read pool; `db_for` is the fallback
+  for the sites' routers (which mount `/v1` handlers behind the same layer).
+  **Read-only POSTs opt in, compile-checked**: `middleware::post_read` is the only
+  way a `POST` route reaches `read_db` — it marks the request `ReadOnly` and swaps
+  the inserted `DbPool`; a plain `post(handler)` can never produce the marker. No
+  read-only POST exists today; registering one is now a deliberate, reviewable act.
+  Its admission still pays the write-side budget (a POST body is shaped like a
+  write); the pool is the resource that matters for starvation.
+  **Reads are read-only at the database too**: the read pool's connections carry
+  `default_transaction_read_only=on` — every implicit or explicit transaction is
+  `BEGIN READ ONLY` in effect — so a read path that tries to write fails loudly
+  (SQLSTATE 25006) in the test that introduces it, never silently works.
+  **Independent deadlines**: read acquire `PS_DB_READ_ACQUIRE_TIMEOUT_MS` (1,000 ms —
+  the D-225 "one second, then 503 + `Retry-After`"; the 503+`Retry-After` mapping was
+  already true via `DbError::Unavailable`) and read statement
+  `PS_DB_READ_STATEMENT_TIMEOUT_MS` (1,000 ms) are their own knobs.
+  **Bookkeeping writes during reads**: none exist (verified at the change — every
+  `read_db` call site is a SELECT); any future read path that wants one must use
+  `write_db.try_acquire()` and skip on `Err`, never await a saturated write pool.
+  **Metrics**: `AppState.pool_stats` — per pool, a supervised `pool_metrics` task
+  samples in-use occupancy (histogram, max, mean) and `timed_acquire` records
+  acquire-wait and timeout counts at explicit acquisitions; implicit acquires inside
+  `execute(&pool)` surface as the sampled occupancy plus the per-op 503s k6 already
+  counts (sqlx exposes no acquire-wait hook — that is the honest coverage).
+  **Proof**: `tests/pool_bulkhead.rs` keeps the D-100 halves and adds
+  `a_write_on_the_read_pool_is_refused_loudly` (SQLSTATE 25006 on the read pool;
+  the same statement succeeds on the write pool) and
+  `a_post_reaches_the_read_pool_only_through_post_read` (a plain `post` draws the
+  write pool; `post_read` draws the read pool — observed by pool size).
 
 ## Open questions (still open)
 

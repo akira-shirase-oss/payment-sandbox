@@ -17,6 +17,7 @@ pub mod lifecycle;
 pub mod locks;
 pub mod middleware;
 pub mod network;
+pub mod poolstat;
 pub mod reconciler;
 pub mod reports;
 pub mod routes;

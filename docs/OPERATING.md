@@ -57,7 +57,10 @@ Connection budget: `PS_DB_MAX_CONNECTIONS` is the whole pool the server may hold
 (default 32 — deliberately far under PostgreSQL's `max_connections`, so migrations,
 backups and admin sessions always find a free connection). Reads get their own slice,
 `PS_DB_READ_CONNECTIONS` (default 8), with their own acquire deadline
-`PS_DB_READ_ACQUIRE_TIMEOUT_MS` (500 ms); writes keep the rest and keep
+`PS_DB_READ_ACQUIRE_TIMEOUT_MS` (1,000 ms — then a `503` + `Retry-After`) and
+statement deadline `PS_DB_READ_STATEMENT_TIMEOUT_MS` (1,000 ms); the read pool's
+transactions are read-only (`default_transaction_read_only=on`), so a read path
+that tries to write fails loudly (D-101). Writes keep the rest and keep
 `PS_DB_ACQUIRE_TIMEOUT_MS` (1,000 ms). A write flood can hold every write connection
 without a `GET`/`HEAD` ever waiting on one — a refused read is a fast named `503`
 (D-100).
