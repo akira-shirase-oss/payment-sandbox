@@ -131,9 +131,12 @@ jobs:
           RUN_MODE: ${{ inputs.mode }}
         run: |
           # This run's result is the one file git does not know (earlier results are committed).
-          suffix=full; [ "$RUN_MODE" = capacity ] && suffix='*'
+          # The pattern is a regex, not a glob: capacity yields the step -full.json files
+          # plus the -capacity.json knee record (run 44747097733: a glob-shaped '*' matched
+          # nothing and the labelling failed on "expected new result(s), found 0").
+          pat="-${SCENARIO}-full\\.json$"; [ "$RUN_MODE" = capacity ] && pat="-${SCENARIO}-.*\\.json$"
           mapfile -t results < <(git status --porcelain --untracked-files=all -- perf/results \
-            | awk '/^\?\? / {print $2}' | grep -- "-$SCENARIO-$suffix.json$" || true)
+            | awk '/^\?\? / {print $2}' | grep -E "$pat" || true)
           [ "${#results[@]}" -ge 1 ] || { echo "expected new result(s), found ${#results[@]}" >&2; exit 1; }
           # Capacity runs yield the step files plus the knee record; every one is labelled.
           printf '%s\n' "${results[@]}" > /tmp/this-run-files

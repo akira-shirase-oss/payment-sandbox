@@ -9,7 +9,7 @@
 import { check } from 'k6';
 import exec from 'k6/execution';
 import { Counter } from 'k6/metrics';
-import { call, projects, reconcile } from './lib.js';
+import { call, projects, reconcile, seedSettled } from './lib.js';
 
 const full = (__ENV.MODE || 'smoke') === 'full';
 const accountPayments = full ? 400 : 20;
@@ -45,9 +45,10 @@ export const options = {
 
 function captured(key, n) {
   const auth = call('POST', '/v1/payments', key, { amount: 300, currency: 'EUR', token: 'tok_sim_approve' }, `race-a-${n}`);
+  seedSettled(auth, key, 'seed authorize');
   const pid = auth.json().payment.id;
   const cap = call('POST', `/v1/payments/${pid}/captures`, key, { amount: 300 }, `race-c-${n}`);
-  if (cap.status !== 201) throw new Error(`capture ${cap.status}`);
+  seedSettled(cap, key, 'seed capture');
   return pid;
 }
 

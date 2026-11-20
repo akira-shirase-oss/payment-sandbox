@@ -5,9 +5,9 @@
 //
 // RATE/READ_RATE/SECONDS override the shape; run it through scripts/load.sh like any
 // scenario. RATE defaults to the CI's per-core arrival rate on a 12-core machine.
-import { check, fail } from 'k6';
+import { check } from 'k6';
 import exec from 'k6/execution';
-import { call, projects, statusThresholds, BASE } from './lib.js';
+import { call, projects, seedSettled, statusThresholds, BASE } from './lib.js';
 
 const edge = __ENV.READ_URL || BASE;
 const rate = Number(__ENV.RATE || 855);
@@ -72,10 +72,10 @@ export function setup() {
   const [key] = projects(1, 'readedge');
   for (let n = 0; n < 200; n++) {
     const auth = call('POST', '/v1/payments', key, { amount: 1000, currency: 'EUR', token: 'tok_sim_approve' }, `s-${n}`);
-    if (auth.status !== 201) fail(`seed authorize ${auth.status}`);
+    seedSettled(auth, key, 'seed authorize');
     const pid = auth.json().payment.id;
-    call('POST', `/v1/payments/${pid}/captures`, key, { amount: 800 }, `sc-${n}`);
-    call('POST', `/v1/payments/${pid}/refunds`, key, { amount: 300 }, `sr-${n}`);
+    seedSettled(call('POST', `/v1/payments/${pid}/captures`, key, { amount: 800 }, `sc-${n}`), key, 'seed capture');
+    seedSettled(call('POST', `/v1/payments/${pid}/refunds`, key, { amount: 300 }, `sr-${n}`), key, 'seed refund');
   }
   return { key };
 }

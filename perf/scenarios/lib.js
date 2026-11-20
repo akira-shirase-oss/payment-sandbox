@@ -3,6 +3,7 @@
 import http from 'k6/http';
 import { check, fail, sleep } from 'k6';
 import { Counter } from 'k6/metrics';
+import { classify, outcomeOf } from './settle.js';
 
 export const BASE = __ENV.BASE_URL || 'http://127.0.0.1:56090';
 
@@ -42,6 +43,38 @@ export function statusThresholds(ops) {
     }
   }
   return t;
+}
+
+// Setup calls proceed on a settled state only: a 202 is the server's honest "not yet
+// known" (the operation committed, readback resolves it, D-015), so poll the payment
+// until the operation settles inside SEED_SETTLE_MS. A seed that cannot settle fails
+// with a named reason — the run is broken, not empty (CI run 44747097733 died on the
+// first unchecked 202 and uploaded nothing).
+const seedSettleMs = Number(__ENV.SEED_SETTLE_MS || 30000);
+
+export function seedSettled(res, key, what) {
+  let body = null;
+  if (res.status === 202 || res.status === 201) {
+    try { body = res.json(); } catch (e) { body = null; }
+  }
+  const first = classify(res.status, body);
+  if (first.kind === 'failed') fail(`${what}: ${first.reason} ${res.body}`);
+  if (first.kind === 'wait') {
+    const deadline = Date.now() + seedSettleMs;
+    let state = null;
+    while (state === null && Date.now() < deadline) {
+      sleep(0.25);
+      const got = call('GET', `/v1/payments/${first.payment}`, key, undefined, null, { phase: 'setup' });
+      if (got.status === 200) {
+        try { state = outcomeOf(got.json(), first.operation); } catch (e) { state = null; }
+      }
+    }
+    if (state === null) fail(`${what}: still uncertain after ${seedSettleMs} ms`);
+    if (state !== 'succeeded') fail(`${what}: ${state}`);
+    return;
+  }
+  const state = body && body.operation && body.operation.state;
+  if (state && state !== 'succeeded') fail(`${what}: ${state}`);
 }
 
 // Creates `n` projects with the operator token; returns their admin keys.
