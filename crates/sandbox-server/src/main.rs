@@ -91,6 +91,17 @@ async fn migrate_command() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The write and read pools (D-100): separate budgets and separate acquire deadlines,
+/// so a write flood can never starve a read at the database.
+fn pools(config: &Config) -> anyhow::Result<(sqlx::PgPool, sqlx::PgPool)> {
+    let url = config.database_url.expose();
+    let write =
+        sandbox_db::connect_lazy(url, &config.pool).context("configuring the database pool")?;
+    let read = sandbox_db::connect_lazy(url, &config.read_pool())
+        .context("configuring the read database pool")?;
+    Ok((write, read))
+}
+
 async fn serve() -> anyhow::Result<()> {
     let config = Config::from_env().context("loading configuration")?;
     telemetry::init(config.log_format, &config.log_filter).context("initialising telemetry")?;
@@ -100,8 +111,7 @@ async fn serve() -> anyhow::Result<()> {
     );
 
     let signal = shutdown::os_signal().context("installing signal handlers")?;
-    let db = sandbox_db::connect_lazy(config.database_url.expose(), &config.pool)
-        .context("configuring the database pool")?;
+    let (db, read_db) = pools(&config)?;
     // Refuse to serve as a role that could switch the journal's protections off (D-038).
     match sandbox_db::roles::check_runtime(&db).await {
         Ok(()) => {}
@@ -136,7 +146,7 @@ async fn serve() -> anyhow::Result<()> {
         )),
         None => None,
     };
-    let state = AppState::new(config, db.clone());
+    let state = AppState::new(config, db.clone(), read_db);
     let app = sandbox_server::app(&state);
     let sites = site_routers(&state, checkout, dashboard);
     // The background tasks run supervised (D-051): a panic is logged and restarted with

@@ -66,7 +66,9 @@ impl FromRequestParts<AppState> for Auth {
         }
         let token = bearer(parts).ok_or(ApiError::Unauthorized)?;
         let hash = keys::hash_presented(token).map_err(|_| ApiError::Unauthorized)?;
-        let identity = sandbox_db::keys::resolve(&state.db, &hash)
+        // A read request's lookup pays from the read pool (D-100): a write flood that
+        // holds every write connection cannot make a read fail at its credential check.
+        let identity = sandbox_db::keys::resolve(state.db_for(&parts.method), &hash)
             .await?
             .ok_or(ApiError::Unauthorized)?;
         Ok(Self(identity))

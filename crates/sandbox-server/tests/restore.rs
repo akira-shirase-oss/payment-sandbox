@@ -109,7 +109,7 @@ async fn a_logical_restore_is_the_same_ledger_with_the_same_protections() {
 
     let restored = TestApp::on(source.db.attach(&target).await, &vars);
     // A server may run on it: the runtime role is still neither superuser nor owner.
-    sandbox_db::roles::check_runtime(&restored.state.db)
+    sandbox_db::roles::check_runtime(&restored.state.write_db)
         .await
         .unwrap();
     let after = restored.assert_reconciled(&key).await;
@@ -290,7 +290,7 @@ async fn a_restore_into_another_cluster_explains_the_same_and_keeps_posted_entri
         if !advance_xids_to(&mut admin, xact).await {
             continue;
         }
-        let mut tx = restored.state.db.begin().await.unwrap();
+        let mut tx = restored.state.write_db.begin().await.unwrap();
         let now: i64 = sqlx::query_scalar("SELECT pg_current_xact_id()::text::bigint")
             .fetch_one(&mut *tx)
             .await

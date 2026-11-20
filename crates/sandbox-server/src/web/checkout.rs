@@ -22,6 +22,7 @@ use sandbox_domain::checkout as rules;
 use sandbox_domain::keys;
 use sandbox_domain::scenario::Scenario;
 use serde::Deserialize;
+use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::site::Site;
@@ -81,14 +82,14 @@ async fn same_origin(State(ctx): State<Checkout>, request: Request, next: Next) 
 
 /// The session `id`, if the request presents its client secret. An unknown session and a
 /// wrong secret are the same answer, so the API is no oracle for either.
-async fn authenticate(ctx: &Checkout, id: Uuid, headers: &HeaderMap) -> Result<Session, ApiError> {
+async fn authenticate(db: &PgPool, id: Uuid, headers: &HeaderMap) -> Result<Session, ApiError> {
     let presented = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .filter(|secret| rules::is_secret_shaped(secret))
         .ok_or(ApiError::Unauthorized)?;
-    let session = sandbox_db::checkout::find(&ctx.state.db, id)
+    let session = sandbox_db::checkout::find(db, id)
         .await?
         .ok_or(ApiError::Unauthorized)?;
     if keys::constant_time_eq(&keys::digest(presented), &session.secret_hash) {
@@ -103,8 +104,8 @@ async fn view(
     PathId(id): PathId,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let session = authenticate(&ctx, id, &headers).await?;
-    Ok(Json(crate::checkout::payer_view(&ctx.state, &session).await?).into_response())
+    let session = authenticate(&ctx.state.read_db, id, &headers).await?;
+    Ok(Json(crate::checkout::payer_view(&ctx.state.read_db, &session).await?).into_response())
 }
 
 /// `POST /api/sessions/{id}/attempts` body: the scenario the payer picked.
@@ -121,10 +122,10 @@ async fn attempt(
     IdempotencyKeyHeader(key): IdempotencyKeyHeader,
     SandboxJson(body): SandboxJson<AttemptBody>,
 ) -> Result<Response, ApiError> {
-    let session = authenticate(&ctx, id, &headers).await?;
+    let session = authenticate(&ctx.state.write_db, id, &headers).await?;
     Scenario::from_token(&body.token).map_err(|e| ApiError::InvalidPaymentToken(e.to_string()))?;
     let attempt = match sandbox_db::checkout::begin_attempt(
-        &ctx.state.db,
+        &ctx.state.write_db,
         &session,
         key.as_str(),
         &body.token,
@@ -156,8 +157,8 @@ async fn resume(
     headers: HeaderMap,
     SandboxJson(Empty {}): SandboxJson<Empty>,
 ) -> Result<Response, ApiError> {
-    let session = authenticate(&ctx, id, &headers).await?;
-    let Some(attempt) = sandbox_db::checkout::attempts(&ctx.state.db, &session)
+    let session = authenticate(&ctx.state.write_db, id, &headers).await?;
+    let Some(attempt) = sandbox_db::checkout::attempts(&ctx.state.write_db, &session)
         .await?
         .pop()
     else {
@@ -181,16 +182,16 @@ async fn finish(
         }
         tracing::info!(code = ?error.code(), "checkout attempt refused");
     }
-    let session = sandbox_db::checkout::find(&ctx.state.db, session.id)
+    let session = sandbox_db::checkout::find(&ctx.state.write_db, session.id)
         .await?
         .ok_or(ApiError::Unauthorized)?;
-    Ok(Json(crate::checkout::payer_view(&ctx.state, &session).await?).into_response())
+    Ok(Json(crate::checkout::payer_view(&ctx.state.write_db, &session).await?).into_response())
 }
 
 /// The page of session `raw`: framed only by the origins the session names.
 async fn page(State(ctx): State<Checkout>, Path(raw): Path<String>) -> Response {
     let ancestors = match Uuid::try_parse(&raw) {
-        Ok(id) => match sandbox_db::checkout::find(&ctx.state.db, id).await {
+        Ok(id) => match sandbox_db::checkout::find(&ctx.state.read_db, id).await {
             Ok(Some(session)) if !session.embed_origins.is_empty() => {
                 session.embed_origins.join(" ")
             }

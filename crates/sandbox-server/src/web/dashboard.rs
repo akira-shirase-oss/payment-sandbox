@@ -30,6 +30,7 @@ use axum::{
 use sandbox_domain::access::Profile;
 use sandbox_domain::keys::{self, KeyHash, Scope};
 use serde_json::{Value, json};
+use sqlx::PgPool;
 use tower_http::sensitive_headers::SetSensitiveRequestHeadersLayer;
 
 use super::site::Site;
@@ -371,7 +372,9 @@ async fn require_session(
             return ApiError::CrossOrigin.into_response();
         }
     }
-    let identity = match sandbox_db::keys::resolve(&ctx.state.db, &key).await {
+    // The session check pays from the request's own pool (D-100): a GET re-resolves its
+    // key on the read pool, so a write flood cannot make a dashboard read fail auth.
+    let identity = match sandbox_db::keys::resolve(ctx.state.db_for(request.method()), &key).await {
         Ok(Some(identity)) => identity,
         Ok(None) => {
             // Revoked: the session ends with its key.
@@ -397,10 +400,11 @@ fn set_cookie(value: &str, max_age: Option<u64>) -> Result<HeaderValue, ApiError
 
 async fn session_json(
     ctx: &Dashboard,
+    db: &PgPool,
     identity: &sandbox_db::keys::KeyIdentity,
     csrf: &str,
 ) -> Result<Value, ApiError> {
-    let project = sandbox_db::projects::get(&ctx.state.db, identity.scope.project_id).await?;
+    let project = sandbox_db::projects::get(db, identity.scope.project_id).await?;
     Ok(json!({
         "project": {"id": project.id, "slug": project.slug, "name": project.name,
                     "dataset_epoch": project.dataset_epoch},
@@ -426,7 +430,7 @@ async fn sign_in(State(ctx): State<Dashboard>, headers: HeaderMap) -> Result<Res
         .and_then(|v| v.strip_prefix("Bearer "))
         .ok_or(ApiError::Unauthorized)?;
     let hash = keys::hash_presented(presented).map_err(|_| ApiError::Unauthorized)?;
-    let identity = sandbox_db::keys::resolve(&ctx.state.db, &hash)
+    let identity = sandbox_db::keys::resolve(&ctx.state.write_db, &hash)
         .await?
         .ok_or(ApiError::Unauthorized)?;
     if let Some(old) = super::cookie(&headers, COOKIE) {
@@ -436,7 +440,7 @@ async fn sign_in(State(ctx): State<Dashboard>, headers: HeaderMap) -> Result<Res
         .sessions
         .create(hash, Instant::now())?
         .map_err(|Full| ApiError::Overloaded)?;
-    let body = session_json(&ctx, &identity, &csrf).await?;
+    let body = session_json(&ctx, &ctx.state.write_db, &identity, &csrf).await?;
     let mut response = (StatusCode::CREATED, Json(body)).into_response();
     response
         .headers_mut()
@@ -452,7 +456,7 @@ async fn current(State(ctx): State<Dashboard>, request: Request) -> Result<Respo
     ) else {
         return Err(ApiError::Unauthorized);
     };
-    Ok(Json(session_json(&ctx, identity, &signed.csrf).await?).into_response())
+    Ok(Json(session_json(&ctx, &ctx.state.read_db, identity, &signed.csrf).await?).into_response())
 }
 
 /// `POST /api/session/sign-out`: ends the session here and in the browser.

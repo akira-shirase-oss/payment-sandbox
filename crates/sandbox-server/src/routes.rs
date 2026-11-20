@@ -107,7 +107,7 @@ async fn healthz() -> Response {
 /// Readiness: the database answers within the readiness deadline, and every supervised
 /// background task is running and beating (D-051).
 async fn readyz(State(state): State<AppState>) -> Response {
-    let ping = sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(&state.db);
+    let ping = sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(&state.read_db);
     match tokio::time::timeout(state.config.readiness_timeout, ping).await {
         Ok(Ok(_)) => {
             let tasks = state.tasks.statuses();

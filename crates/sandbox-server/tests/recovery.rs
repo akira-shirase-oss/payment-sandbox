@@ -342,7 +342,8 @@ async fn drill_c_restoring_an_older_server_backup_reconciles_without_a_second_ch
     let p1 = id(&p1);
 
     // Backup, taken with no connection open.
-    first.state.db.close().await;
+    first.state.write_db.close().await;
+    first.state.read_db.close().await;
     let TestApp { db: mut live, .. } = first;
     let backup = live.snapshot().await;
 
@@ -364,7 +365,8 @@ async fn drill_c_restoring_an_older_server_backup_reconciles_without_a_second_ch
     assert_eq!(sim.store.count().await.unwrap(), 3);
 
     // Disaster: the server comes back on the older backup; the network is newer.
-    after.state.db.close().await;
+    after.state.write_db.close().await;
+    after.state.read_db.close().await;
     let restored = TestApp::on(backup, &vars);
     let (_, report) = restored.get("/v1/reconciliation?network=true", &key).await;
     assert_eq!(report["clean"], false, "{report}");
@@ -473,7 +475,8 @@ async fn after_a_restore_the_same_key_with_another_amount_is_a_conflict_not_a_re
         .authorize(&key, "order-1", 1_000, "USD", "tok_sim_approve")
         .await;
     let p1 = id(&p1);
-    first.state.db.close().await;
+    first.state.write_db.close().await;
+    first.state.read_db.close().await;
     let TestApp { db: mut live, .. } = first;
     let backup = live.snapshot().await;
 
@@ -492,7 +495,8 @@ async fn after_a_restore_the_same_key_with_another_amount_is_a_conflict_not_a_re
         )
         .await;
     assert_eq!(status, StatusCode::CREATED);
-    after.state.db.close().await;
+    after.state.write_db.close().await;
+    after.state.read_db.close().await;
 
     let restored = TestApp::on(backup, &vars);
     let (status, reply) = restored

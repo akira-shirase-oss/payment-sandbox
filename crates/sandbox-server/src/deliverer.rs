@@ -146,7 +146,7 @@ impl Deliverer {
             .build()
             .ok()?;
         Some(Self {
-            db: state.db.clone(),
+            db: state.write_db.clone(),
             secrets,
             clock,
             http,

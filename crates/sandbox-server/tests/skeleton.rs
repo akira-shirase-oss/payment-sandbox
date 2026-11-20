@@ -42,7 +42,9 @@ fn config(database_url: &str, extra: &[(&str, &str)]) -> Config {
 
 fn state(config: Config) -> AppState {
     let db = sandbox_db::connect_lazy(config.database_url.expose(), &config.pool).unwrap();
-    AppState::new(config, db)
+    // These tests never reach a database (the URL is dead by design), so the read edge
+    // may share the same unbuilt pool.
+    AppState::new(config, db.clone(), db)
 }
 
 async fn call(

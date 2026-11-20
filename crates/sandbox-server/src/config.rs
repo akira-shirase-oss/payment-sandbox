@@ -127,6 +127,12 @@ pub struct ReadEdge {
     pub queue_wait: Duration,
     /// The edge's bounded wait for a serving place (`PS_READ_ACCEPT_WAIT_MS`).
     pub accept_wait: Duration,
+    /// The read pool's slice of the connection budget (`PS_DB_READ_CONNECTIONS`, D-100):
+    /// `PS_DB_MAX_CONNECTIONS` is the whole budget; writes get the rest.
+    pub db_connections: u32,
+    /// The read pool's own acquire deadline (`PS_DB_READ_ACQUIRE_TIMEOUT_MS`, D-100): a
+    /// saturated read pool refuses on its own budget, never on the write pool's.
+    pub db_acquire_timeout: Duration,
 }
 
 /// A browser-facing site on its own listener, hence its own origin (D-029, D-061).
@@ -228,8 +234,12 @@ impl Config {
         let listen = parse.listen();
         let database_url = parse.required("PS_DATABASE_URL");
         let sim_token = parse.required("PS_SIM_TOKEN");
+        let read_edge = parse.read_edge();
+        let db_budget: u32 = parse.value("PS_DB_MAX_CONNECTIONS", Some(32));
         let pool = PoolSettings {
-            max_connections: parse.value("PS_DB_MAX_CONNECTIONS", Some(32)),
+            // The whole budget is `PS_DB_MAX_CONNECTIONS`; the write pool keeps what the
+            // read edge leaves (D-100). Validation rejects a budget the read pool empties.
+            max_connections: db_budget.saturating_sub(read_edge.db_connections),
             acquire_timeout: parse.millis("PS_DB_ACQUIRE_TIMEOUT_MS", 1_000),
             statement_timeout: parse.millis("PS_DB_STATEMENT_TIMEOUT_MS", 1_000),
             lock_timeout: parse.millis("PS_DB_LOCK_TIMEOUT_MS", 500),
@@ -237,7 +247,6 @@ impl Config {
         let request_timeout = parse.millis("PS_REQUEST_TIMEOUT_MS", 5_000);
         let max_body_bytes: usize = parse.value("PS_MAX_BODY_BYTES", Some(16 * 1024));
         let max_in_flight: usize = parse.value("PS_MAX_IN_FLIGHT", Some(512));
-        let read_edge = parse.read_edge();
         let readiness_timeout = parse.millis("PS_READINESS_TIMEOUT_MS", 500);
         let shutdown_grace = parse.millis("PS_SHUTDOWN_GRACE_MS", 10_000);
         let sim_timeout = parse.millis("PS_SIM_TIMEOUT_MS", 2_000);
@@ -324,6 +333,16 @@ impl Config {
         }
     }
 
+    /// The read pool's settings (D-100): its own slice of the budget and its own acquire
+    /// deadline, sharing the write pool's statement and lock timeouts.
+    pub fn read_pool(&self) -> PoolSettings {
+        PoolSettings {
+            max_connections: self.read_edge.db_connections,
+            acquire_timeout: self.read_edge.db_acquire_timeout,
+            ..self.pool
+        }
+    }
+
     /// Cross-field rules: every deadline must leave room for the work it bounds.
     fn problems(&self) -> Vec<String> {
         let mut errors = Vec::new();
@@ -357,7 +376,13 @@ impl Config {
             ports.push(site.listen.port());
         }
         if pool.max_connections == 0 {
-            errors.push("PS_DB_MAX_CONNECTIONS must be at least 1".to_owned());
+            errors.push(
+                "PS_DB_READ_CONNECTIONS must leave at least one write connection under PS_DB_MAX_CONNECTIONS"
+                    .to_owned(),
+            );
+        }
+        if self.read_edge.db_connections == 0 {
+            errors.push("PS_DB_READ_CONNECTIONS must be at least 1".to_owned());
         }
         if !(1_024..=1_048_576).contains(&max_body_bytes) {
             errors.push("PS_MAX_BODY_BYTES must be between 1024 and 1048576".to_owned());
@@ -491,6 +516,8 @@ impl<F: Fn(&str) -> Option<String>> Parser<'_, F> {
             in_flight: self.value("PS_READ_IN_FLIGHT", Some(128)),
             queue_wait: self.millis("PS_READ_QUEUE_WAIT_MS", 100),
             accept_wait: self.millis("PS_READ_ACCEPT_WAIT_MS", 100),
+            db_connections: self.value("PS_DB_READ_CONNECTIONS", Some(8)),
+            db_acquire_timeout: self.millis("PS_DB_READ_ACQUIRE_TIMEOUT_MS", 500),
         }
     }
 

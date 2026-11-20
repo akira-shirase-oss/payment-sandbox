@@ -830,6 +830,9 @@ async fn a_hot_payment_cannot_starve_the_pool_for_other_payments() {
         &sim,
         &[
             ("PS_DB_MAX_CONNECTIONS", "4"),
+            // The bulkhead (D-100): one read connection leaves three for writes — the
+            // test floods the write side the same as before.
+            ("PS_DB_READ_CONNECTIONS", "1"),
             // Long enough for 48 concurrent key lookups on a busy machine; without the
             // per-payment queue the cold requests still starve (the blocker holds the hot
             // row until they finish), so the test keeps its teeth (review 14).

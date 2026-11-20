@@ -188,7 +188,9 @@ impl TestApp {
         }
         let config = Config::from_lookup(|name| vars.get(name).cloned()).unwrap();
         let pool = sandbox_db::connect_lazy(config.database_url.expose(), &config.pool).unwrap();
-        let state = AppState::new(config, pool);
+        let read =
+            sandbox_db::connect_lazy(config.database_url.expose(), &config.read_pool()).unwrap();
+        let state = AppState::new(config, pool, read);
         let router = app(&state);
         Self { db, router, state }
     }

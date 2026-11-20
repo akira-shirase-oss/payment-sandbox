@@ -195,6 +195,12 @@ impl LoadGate {
     }
 }
 
+/// True when `method` is a read — `GET`/`HEAD`. One definition shared by request
+/// admission (D-099) and the database bulkhead (D-100), so the two layers always agree.
+pub fn is_read_method(method: &Method) -> bool {
+    matches!(method, &Method::GET | &Method::HEAD)
+}
+
 /// Rejects at once when `max_in_flight` `/v1` requests are running, instead of queueing
 /// until every request times out.
 pub async fn shed_load(
@@ -202,7 +208,7 @@ pub async fn shed_load(
     request: Request,
     next: Next,
 ) -> Response {
-    let permit = if matches!(request.method(), &Method::GET | &Method::HEAD) {
+    let permit = if is_read_method(request.method()) {
         match tokio::time::timeout(gate.read_wait, gate.read.clone().acquire_owned()).await {
             Ok(Ok(permit)) => permit,
             // The gate is never closed: a miss is the deadline, i.e. overloaded.

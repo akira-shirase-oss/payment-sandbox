@@ -147,7 +147,7 @@ pub async fn get(
     auth.require(Scope::Read)?;
     // One snapshot: the payment and its operations always agree (D-076).
     let Some(snapshot) =
-        sandbox_db::payments::snapshot(&state.db, auth.scope(), payment_id, false).await?
+        sandbox_db::payments::snapshot(&state.read_db, auth.scope(), payment_id, false).await?
     else {
         return Err(lifecycle::missing_payment(&state, auth.scope(), payment_id).await);
     };
@@ -168,7 +168,7 @@ pub async fn journal(
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Read)?;
     let Some(snapshot) =
-        sandbox_db::payments::snapshot(&state.db, auth.scope(), payment_id, true).await?
+        sandbox_db::payments::snapshot(&state.read_db, auth.scope(), payment_id, true).await?
     else {
         return Err(lifecycle::missing_payment(&state, auth.scope(), payment_id).await);
     };
@@ -199,7 +199,8 @@ pub async fn list(
     auth.require(Scope::Read)?;
     let limit = q.limit.unwrap_or(50).clamp(1, 500);
     let payments =
-        sandbox_db::payments::recent_payments(&state.db, auth.scope(), q.before, limit).await?;
+        sandbox_db::payments::recent_payments(&state.read_db, auth.scope(), q.before, limit)
+            .await?;
     let next_before = (i64::try_from(payments.len()).unwrap_or(i64::MAX) == limit)
         .then(|| payments.last().map(|p| p.id))
         .flatten();
@@ -214,7 +215,7 @@ pub async fn list(
 /// Every account balance, summed from the journal (D-028).
 pub async fn balances(State(state): State<AppState>, auth: Auth) -> Result<Response, ApiError> {
     auth.require(Scope::Read)?;
-    let balances = sandbox_db::journal::balances(&state.db, auth.scope()).await?;
+    let balances = sandbox_db::journal::balances(&state.read_db, auth.scope()).await?;
     let rows: Vec<Value> = balances
         .iter()
         .map(|b| {
@@ -251,11 +252,12 @@ pub async fn reconciliation(
         auth.scope().project_id,
         crate::reports::reconciliation_cost(q.network),
     )?;
-    let report = sandbox_db::reconcile::run(&state.db, auth.scope()).await?;
+    let report = sandbox_db::reconcile::run(&state.read_db, auth.scope()).await?;
     let mut clean = report.is_clean();
     let mut body = json!({"report": report, "simulated": true});
     if q.network {
-        let agreement = crate::reconciler::network_agreement(&state, auth.scope()).await?;
+        let agreement =
+            crate::reconciler::network_agreement(&state, &state.read_db, auth.scope()).await?;
         clean = clean && agreement.is_clean();
         body["network"] = json!(agreement);
     }
@@ -366,7 +368,7 @@ pub async fn explain(
         Some(Ok(crate::cursor::Opened::Unverified { generation })) => {
             // Not sealed by this process: a cursor of another restore generation is stale,
             // anything else is not ours.
-            let now = sandbox_db::reconcile::generation(&state.db).await?;
+            let now = sandbox_db::reconcile::generation(&state.read_db).await?;
             return Err(if generation == now {
                 ApiError::InvalidCursor
             } else {
@@ -376,7 +378,7 @@ pub async fn explain(
         Some(Err(crate::cursor::InvalidCursor)) => return Err(ApiError::InvalidCursor),
     };
     let explanation = sandbox_db::reconcile::explain(
-        &state.db,
+        &state.read_db,
         auth.scope(),
         currency.code(),
         account.code(),

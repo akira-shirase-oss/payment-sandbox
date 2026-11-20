@@ -14,8 +14,12 @@ use crate::supervisor::Tasks;
 /// Everything a handler may need.
 #[derive(Debug, Clone)]
 pub struct AppState {
-    /// The only authority.
-    pub db: PgPool,
+    /// The only authority — the write pool: mutations, background tasks, anything that
+    /// can hold a lock. Reads never draw from it (D-100).
+    pub write_db: PgPool,
+    /// The read pool: `GET`/`HEAD` work only. Its connections and acquire deadline are
+    /// separate, so a write flood can never starve a read (D-100).
+    pub read_db: PgPool,
     /// Validated configuration.
     pub config: Arc<Config>,
     /// Load-shedding gate for `/v1` (D-099: writes and reads admit separately).
@@ -41,7 +45,7 @@ impl AppState {
     ///
     /// Only if the HTTP client cannot be built, which needs a broken TLS-less reqwest build
     /// (the network credential was already validated by the configuration).
-    pub fn new(config: Config, db: PgPool) -> Self {
+    pub fn new(config: Config, write_db: PgPool, read_db: PgPool) -> Self {
         let gate = Arc::new(crate::middleware::LoadGate::new(
             config.max_in_flight,
             config.read_edge.in_flight,
@@ -79,11 +83,23 @@ impl AppState {
             tasks: Arc::new(Tasks::default()),
             reports,
             secrets,
-            db,
+            write_db,
+            read_db,
             config: Arc::new(config),
             gate,
             network,
             payment_locks: Arc::new(PaymentLocks::default()),
+        }
+    }
+
+    /// The pool a request's database work must use — the same read/write split the load
+    /// gate applies to admission (D-100). Anything request-scoped goes through here; a
+    /// handler that knows it writes may take `write_db` directly.
+    pub fn db_for(&self, method: &axum::http::Method) -> &PgPool {
+        if crate::middleware::is_read_method(method) {
+            &self.read_db
+        } else {
+            &self.write_db
         }
     }
 }

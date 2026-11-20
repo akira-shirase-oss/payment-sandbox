@@ -1613,6 +1613,34 @@ closes one of its findings, with the test that failed before the fix.
   (bigger surgery, and under a healthy machine the acquire deadline, not the queue,
   bounds it). Everything still refuses honestly: named 503, `Retry-After: 1`.
 
+- **D-100 — The database pool is bulkheaded like the HTTP layers.** D-099's residual:
+  the shared 32-connection `PgPool` let a write flood hold every connection, so reads
+  that had won their conn place and read permit still died on the acquire deadline.
+  Reads now have their own pool. **Budget**: `PS_DB_MAX_CONNECTIONS` remains the whole
+  budget the app may hold (default 32 — far under PostgreSQL's `max_connections`, so
+  migrations, backups and admin sessions always connect). **Split**: `PS_DB_READ_CONNECTIONS`
+  (default 8) is the read pool; writes keep the remainder (24 default — validation
+  requires ≥1 write and ≥1 read). The droplet's Postgres also runs the lazy migrate
+  pool (sequential, ~1 conn) and backup, which never share the app's budget.
+  **Deadlines**: each pool keeps its own acquire timeout — writes
+  `PS_DB_ACQUIRE_TIMEOUT_MS` (1,000 ms), reads `PS_DB_READ_ACQUIRE_TIMEOUT_MS`
+  (500 ms): a saturated *read* pool refuses fast too, on its own budget.
+  **Classification**: one rule at both layers — `is_read_method` (`GET`/`HEAD`) picks
+  the `LoadGate` budget *and* `AppState::db_for` picks the pool, so a GET's auth lookup
+  and a dashboard session check pay from the read pool as well. Handlers take their
+  pool explicitly: `GET`/`HEAD` handlers and the helpers they call take `read_db`;
+  writes, background tasks (reconciler, deliverer, lifecycle) and migrations take
+  `write_db`; shared helpers (`payer_view`, `authenticate`, `network_agreement`) take
+  a `db` parameter so the caller's classification reaches them. `readyz` pings the read
+  pool. **Tests**: `tests/pool_bulkhead.rs` — `reads_answer_while_the_write_pool_is_held`
+  holds every write connection and `/readyz` still answers 200 inside 500 ms;
+  `a_shared_pool_starves_the_same_read` keeps the pre-bulkhead world as the red half:
+  one pool for both duties refuses the identical request after the full acquire
+  deadline. Sizing honesty: 8 read connections is ~25% of the budget for reads whose
+  measured cost is sub-millisecond at 100k entries (D-098's plans); the conn count is
+  never the read path's binding constraint — CPU is — and reads saturated *anyway*
+  still get a named 503 on their own deadline, not a write's.
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

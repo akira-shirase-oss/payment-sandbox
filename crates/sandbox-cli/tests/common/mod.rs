@@ -98,7 +98,9 @@ impl Stack {
         ]);
         let config = sandbox_server::Config::from_lookup(|name| vars.get(name).cloned()).unwrap();
         let pool = sandbox_db::connect_lazy(config.database_url.expose(), &config.pool).unwrap();
-        let state = sandbox_server::AppState::new(config, pool);
+        let read =
+            sandbox_db::connect_lazy(config.database_url.expose(), &config.read_pool()).unwrap();
+        let state = sandbox_server::AppState::new(config, pool, read);
         let router = sandbox_server::app(&state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let api = format!("http://{}", listener.local_addr().unwrap());

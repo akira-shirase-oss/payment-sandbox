@@ -53,6 +53,15 @@ passwords must be your own (16 to 128 letters, digits or `._~-`; `openssl rand -
 A missing or weak value stops the process with a message naming it. `setup` never resets
 an existing role's password: running it again (for a restore) is safe.
 
+Connection budget: `PS_DB_MAX_CONNECTIONS` is the whole pool the server may hold
+(default 32 — deliberately far under PostgreSQL's `max_connections`, so migrations,
+backups and admin sessions always find a free connection). Reads get their own slice,
+`PS_DB_READ_CONNECTIONS` (default 8), with their own acquire deadline
+`PS_DB_READ_ACQUIRE_TIMEOUT_MS` (500 ms); writes keep the rest and keep
+`PS_DB_ACQUIRE_TIMEOUT_MS` (1,000 ms). A write flood can hold every write connection
+without a `GET`/`HEAD` ever waiting on one — a refused read is a fast named `503`
+(D-100).
+
 Create the roles and the database (once, as PostgreSQL's administrator) with passwords of
 your own, the same ones `migrate.env` and `server.env` use, then migrate as the owner. On
 Debian or Ubuntu's PostgreSQL packages the administrator `postgres` has no password and

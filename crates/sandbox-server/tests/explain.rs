@@ -305,7 +305,8 @@ async fn an_explanation_cursor_from_before_a_restore_is_refused() {
         "the cursor works where it was issued"
     );
 
-    first.state.db.close().await;
+    first.state.write_db.close().await;
+    first.state.read_db.close().await;
     let common::TestApp { db: mut live, .. } = first;
     let backup = live.snapshot().await;
     let restored = TestApp::on(backup, &vars);

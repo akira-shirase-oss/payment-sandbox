@@ -61,15 +61,20 @@ pub async fn create(
     let sealed = secret_box
         .seal(&secret, auth.scope().project_id, id)
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("{e}")))?;
-    let endpoint =
-        sandbox_db::webhooks::create_endpoint(&state.db, auth.scope(), id, &body.url, &sealed)
-            .await?
-            .ok_or_else(|| {
-                ApiError::Conflict(format!(
-                    "a project has at most {} active webhook endpoints; disable one first",
-                    sandbox_db::webhooks::MAX_ENDPOINTS_PER_PROJECT
-                ))
-            })?;
+    let endpoint = sandbox_db::webhooks::create_endpoint(
+        &state.write_db,
+        auth.scope(),
+        id,
+        &body.url,
+        &sealed,
+    )
+    .await?
+    .ok_or_else(|| {
+        ApiError::Conflict(format!(
+            "a project has at most {} active webhook endpoints; disable one first",
+            sandbox_db::webhooks::MAX_ENDPOINTS_PER_PROJECT
+        ))
+    })?;
     Ok((
         StatusCode::CREATED,
         Json(json!({"endpoint": endpoint, "secret": secret, "simulated": true})),
@@ -95,7 +100,7 @@ pub async fn list(
     auth.require(Scope::Admin)?;
     let limit = q.limit.unwrap_or(100).clamp(1, 100);
     let endpoints =
-        sandbox_db::webhooks::list_endpoints(&state.db, auth.scope(), q.after, limit).await?;
+        sandbox_db::webhooks::list_endpoints(&state.read_db, auth.scope(), q.after, limit).await?;
     let next_after = (endpoints.len() == usize::try_from(limit).unwrap_or(0))
         .then(|| endpoints.last().map(|e| e.id))
         .flatten();
@@ -117,7 +122,8 @@ pub async fn rotate(
     let sealed = secret_box
         .seal(&secret, auth.scope().project_id, id)
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("{e}")))?;
-    if !sandbox_db::webhooks::rotate(&state.db, auth.scope(), id, &sealed, ROTATION_OVERLAP).await?
+    if !sandbox_db::webhooks::rotate(&state.write_db, auth.scope(), id, &sealed, ROTATION_OVERLAP)
+        .await?
     {
         return Err(ApiError::NotFound("endpoint"));
     }
@@ -131,7 +137,7 @@ pub async fn disable(
     PathId(id): PathId,
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Admin)?;
-    if !sandbox_db::webhooks::disable(&state.db, auth.scope(), id).await? {
+    if !sandbox_db::webhooks::disable(&state.write_db, auth.scope(), id).await? {
         return Err(ApiError::NotFound("endpoint"));
     }
     Ok(Json(json!({"disabled": id, "simulated": true})).into_response())
@@ -152,7 +158,7 @@ pub async fn events(
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Read)?;
     let events = sandbox_db::webhooks::events(
-        &state.db,
+        &state.read_db,
         auth.scope(),
         q.payment_id,
         q.limit.unwrap_or(100),

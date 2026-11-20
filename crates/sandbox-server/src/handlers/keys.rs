@@ -60,7 +60,7 @@ pub async fn create(
         ApiError::Internal(anyhow::anyhow!("generated key failed its own shape check"))
     })?;
     let prefix = keys::display_prefix(&secret);
-    let mut tx = state.db.begin().await.map_err(DbError::from)?;
+    let mut tx = state.write_db.begin().await.map_err(DbError::from)?;
     let record = sandbox_db::keys::insert(
         &mut tx,
         auth.scope().project_id,
@@ -85,7 +85,7 @@ pub async fn create(
 /// Lists the project's keys (never their secrets).
 pub async fn list(State(state): State<AppState>, auth: Auth) -> Result<Response, ApiError> {
     auth.require(Scope::Admin)?;
-    let keys = sandbox_db::keys::list(&state.db, auth.scope().project_id).await?;
+    let keys = sandbox_db::keys::list(&state.read_db, auth.scope().project_id).await?;
     Ok(Json(json!({"api_keys": keys, "simulated": true})).into_response())
 }
 
@@ -97,7 +97,8 @@ pub async fn revoke(
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Admin)?;
     let actor = format!("key:{}", auth.key_id());
-    match sandbox_db::keys::revoke(&state.db, auth.scope().project_id, key_id, &actor).await? {
+    match sandbox_db::keys::revoke(&state.write_db, auth.scope().project_id, key_id, &actor).await?
+    {
         RevokeOutcome::Revoked => {
             Ok(Json(json!({"revoked": key_id, "simulated": true})).into_response())
         }

@@ -61,7 +61,7 @@ pub async fn authorize(
     }
     .fingerprint();
     let begun = payments::begin_authorize(
-        &state.db,
+        &state.write_db,
         scope,
         &payments::NewAuthorize {
             operation_id,
@@ -107,7 +107,7 @@ pub async fn child(
             .await
             .map_err(|_| ApiError::PaymentBusy)?;
         payments::begin_child(
-            &state.db,
+            &state.write_db,
             scope,
             &payments::NewChild {
                 operation_id,
@@ -133,7 +133,7 @@ pub async fn child(
 /// The error for a payment this scope does not hold: `410 dataset_archived` when it belongs
 /// to an earlier epoch of the project (a reset archived it, D-066), else `404`.
 pub async fn missing_payment(state: &AppState, scope: ProjectScope, payment_id: Uuid) -> ApiError {
-    match payments::payment_epoch(&state.db, scope.project_id, payment_id).await {
+    match payments::payment_epoch(&state.write_db, scope.project_id, payment_id).await {
         Ok(Some(epoch)) if epoch != scope.epoch => ApiError::DatasetArchived { epoch },
         Ok(_) => ApiError::NotFound("payment"),
         Err(error) => error.into(),
@@ -212,7 +212,7 @@ pub(crate) async fn apply_with_retry(
                 .lock(payment_id, state.config.payment_queue_wait)
                 .await
                 .map_err(|_| ApiError::PaymentBusy)?;
-            payments::apply(&state.db, scope, payment_id, operation_id, result).await
+            payments::apply(&state.write_db, scope, payment_id, operation_id, result).await
         };
         match applied {
             Ok(applied) => return Ok(applied),

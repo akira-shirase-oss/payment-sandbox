@@ -14,6 +14,7 @@ use sandbox_domain::money::format_minor;
 use sandbox_domain::scenario::Scenario;
 use sandbox_domain::{Amount, OperationKind, OperationState};
 use serde_json::{Value, json};
+use sqlx::PgPool;
 
 use crate::error::ApiError;
 use crate::lifecycle::{self, AuthorizeInput};
@@ -39,16 +40,11 @@ struct Recorded {
     payment: Option<Payment>,
 }
 
-async fn recorded(
-    state: &AppState,
-    session: &Session,
-    attempt: &Attempt,
-) -> Result<Recorded, ApiError> {
+async fn recorded(db: &PgPool, session: &Session, attempt: &Attempt) -> Result<Recorded, ApiError> {
     let scope = session.scope();
     // One snapshot of the payment and its operations (D-076): the page never shows an
     // approved authorization beside a payment that still says "authorizing".
-    let snapshot =
-        sandbox_db::payments::snapshot(&state.db, scope, attempt.payment_id, false).await?;
+    let snapshot = sandbox_db::payments::snapshot(db, scope, attempt.payment_id, false).await?;
     let authorize = snapshot.as_ref().and_then(|s| {
         s.operations
             .iter()
@@ -116,7 +112,7 @@ pub async fn drive(state: &AppState, session: &Session, attempt: &Attempt) -> Re
     {
         return Ok(());
     }
-    let recorded = recorded(state, session, attempt).await?;
+    let recorded = recorded(&state.write_db, session, attempt).await?;
     let tries = i32::try_from(recorded.captures.len()).unwrap_or(i32::MAX);
     let try_number = match recorded.captures.last().map(|o| o.state) {
         None => 1,
@@ -176,12 +172,10 @@ pub fn scenarios() -> Value {
 }
 
 /// What the payer's page shows. No secret, key or internal id beyond the session's own.
-pub async fn payer_view(state: &AppState, session: &Session) -> Result<Value, ApiError> {
-    let latest = sandbox_db::checkout::attempts(&state.db, session)
-        .await?
-        .pop();
+pub async fn payer_view(db: &PgPool, session: &Session) -> Result<Value, ApiError> {
+    let latest = sandbox_db::checkout::attempts(db, session).await?.pop();
     let recorded = match &latest {
-        Some(attempt) => Some(recorded(state, session, attempt).await?),
+        Some(attempt) => Some(recorded(db, session, attempt).await?),
         None => None,
     };
     let derived = checkout::derive(
@@ -214,9 +208,9 @@ pub async fn payer_view(state: &AppState, session: &Session) -> Result<Value, Ap
 }
 
 /// What the merchant's API shows: the payer's view plus every attempt and its payment.
-pub async fn merchant_view(state: &AppState, session: &Session) -> Result<Value, ApiError> {
-    let attempts = sandbox_db::checkout::attempts(&state.db, session).await?;
-    let mut view = payer_view(state, session).await?;
+pub async fn merchant_view(db: &PgPool, session: &Session) -> Result<Value, ApiError> {
+    let attempts = sandbox_db::checkout::attempts(db, session).await?;
+    let mut view = payer_view(db, session).await?;
     view["attempts"] = json!(
         attempts
             .iter()

@@ -879,7 +879,8 @@ async fn after_a_restore_paying_again_recovers_the_payment_without_a_second_char
     let first = TestApp::on(sandbox_db::testing::TestDb::new().await, &vars);
     let (_, key) = first.project("shop").await;
     let (id, secret, _) = session(&first, &key, json!({"amount": 2_500, "currency": "USD"})).await;
-    first.state.db.close().await;
+    first.state.write_db.close().await;
+    first.state.read_db.close().await;
     let TestApp { db: mut live, .. } = first;
     let backup = live.snapshot().await;
     let after = TestApp::on(live, &vars);

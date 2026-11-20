@@ -52,7 +52,7 @@ pub async fn create(State(state): State<AppState>, request: Request) -> Result<R
     let project_id = Uuid::now_v7();
     let key_id = Uuid::now_v7();
 
-    let mut tx = state.db.begin().await.map_err(DbError::from)?;
+    let mut tx = state.write_db.begin().await.map_err(DbError::from)?;
     let project =
         match sandbox_db::projects::create_in(&mut tx, project_id, slug.as_str(), name).await {
             Ok(project) => project,
@@ -94,7 +94,7 @@ pub async fn create(State(state): State<AppState>, request: Request) -> Result<R
 /// `GET /v1/project`: the caller's project.
 pub async fn current(State(state): State<AppState>, auth: Auth) -> Result<Response, ApiError> {
     auth.require(Scope::Read)?;
-    let project = sandbox_db::projects::get(&state.db, auth.scope().project_id).await?;
+    let project = sandbox_db::projects::get(&state.read_db, auth.scope().project_id).await?;
     Ok(Json(json!({"project": project_json(&project), "simulated": true})).into_response())
 }
 
@@ -132,8 +132,15 @@ pub async fn reset_project(
     auth.require(Scope::Admin)?;
     let actor = format!("key:{}", auth.key_id());
     let project_id = auth.scope().project_id;
-    match sandbox_db::projects::reset(&state.db, project_id, epoch, confirm, &actor, auth.key_id())
-        .await?
+    match sandbox_db::projects::reset(
+        &state.write_db,
+        project_id,
+        epoch,
+        confirm,
+        &actor,
+        auth.key_id(),
+    )
+    .await?
     {
         ResetOutcome::Reset {
             from,
@@ -141,7 +148,7 @@ pub async fn reset_project(
             archived_payments,
         } => {
             tracing::warn!(%project_id, from, to, archived_payments, "dataset reset: a new epoch is open");
-            let project = sandbox_db::projects::get(&state.db, project_id).await?;
+            let project = sandbox_db::projects::get(&state.write_db, project_id).await?;
             Ok(json!({
                 "project": project_json(&project),
                 "reset": {"from_epoch": from, "to_epoch": to, "archived_payments": archived_payments,

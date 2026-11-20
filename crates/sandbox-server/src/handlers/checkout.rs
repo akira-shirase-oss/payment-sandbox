@@ -69,7 +69,7 @@ pub async fn create(
     let secret = checkout::secret_from_bytes(random);
     let id = uuid::Uuid::now_v7();
     let session = sandbox_db::checkout::create(
-        &state.db,
+        &state.write_db,
         auth.scope(),
         &sandbox_db::checkout::NewSession {
             id,
@@ -84,7 +84,7 @@ pub async fn create(
         },
     )
     .await?;
-    let mut view = crate::checkout::merchant_view(&state, &session).await?;
+    let mut view = crate::checkout::merchant_view(&state.write_db, &session).await?;
     view["client_secret"] = serde_json::json!(secret);
     view["url"] = serde_json::json!(format!(
         "{}/c/{}#{}",
@@ -100,8 +100,8 @@ pub async fn get(
     PathId(id): PathId,
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Read)?;
-    let session = sandbox_db::checkout::get(&state.db, auth.scope(), id)
+    let session = sandbox_db::checkout::get(&state.read_db, auth.scope(), id)
         .await?
         .ok_or(ApiError::NotFound("checkout session"))?;
-    Ok(Json(crate::checkout::merchant_view(&state, &session).await?).into_response())
+    Ok(Json(crate::checkout::merchant_view(&state.read_db, &session).await?).into_response())
 }

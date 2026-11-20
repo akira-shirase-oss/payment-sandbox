@@ -25,6 +25,7 @@ use sandbox_db::payments::{self, NetworkResult, OpenOperation};
 use sandbox_domain::NetworkOutcome;
 use sandbox_domain::network::{Outcome, ReadbackStatus};
 use serde::Serialize;
+use sqlx::PgPool;
 use tokio::sync::{Semaphore, watch};
 use tokio::task::JoinSet;
 use uuid::Uuid;
@@ -53,7 +54,7 @@ pub async fn sweep(state: &AppState) -> Result<SweepReport, ApiError> {
     crate::faults::reconciler_panic();
     let tuning = state.config.reconcile;
     let open = payments::open_operations(
-        &state.db,
+        &state.write_db,
         state.config.reconcile_grace,
         state.config.reconcile_batch,
         tuning.per_project,
@@ -99,7 +100,7 @@ pub async fn sweep(state: &AppState) -> Result<SweepReport, ApiError> {
             }
         }
     }
-    let oldest = payments::oldest_open_age(&state.db).await?;
+    let oldest = payments::oldest_open_age(&state.write_db).await?;
     report.oldest_open_ms = oldest.map(|age| u64::try_from(age.as_millis()).unwrap_or(u64::MAX));
     if let Some(age) = oldest
         && age > tuning.alert_age
@@ -118,7 +119,7 @@ pub async fn sweep(state: &AppState) -> Result<SweepReport, ApiError> {
 /// A failed check waits before the next: one interval, doubling, at most the maximum.
 async fn postpone(state: &AppState, op: &OpenOperation) {
     if let Err(error) = payments::postpone_check(
-        &state.db,
+        &state.write_db,
         op.scope,
         op.id,
         state.config.reconcile_interval,
@@ -189,8 +190,8 @@ async fn expected_fingerprint(
     payment_id: Uuid,
     operation_id: Uuid,
 ) -> Result<Option<String>, ApiError> {
-    let operation = payments::get_operation(&state.db, scope, operation_id).await?;
-    let payment = payments::get_payment(&state.db, scope, payment_id).await?;
+    let operation = payments::get_operation(&state.write_db, scope, operation_id).await?;
+    let payment = payments::get_payment(&state.write_db, scope, payment_id).await?;
     Ok(operation
         .zip(payment)
         .map(|(o, p)| lifecycle::network_request(scope, &o, &p).fingerprint()))
@@ -282,6 +283,7 @@ fn push_bounded<T>(list: &mut Vec<T>, item: T) {
 /// are reported, never applied.
 pub async fn network_agreement(
     state: &AppState,
+    db: &PgPool,
     scope: ProjectScope,
 ) -> Result<Agreement, ApiError> {
     let mut agreement = Agreement::default();
@@ -302,7 +304,7 @@ pub async fn network_agreement(
             })?;
         agreement.network_operations_scanned += page.operations.len();
         let ids: Vec<Uuid> = page.operations.iter().map(|o| o.id).collect();
-        let recorded = payments::recorded_operations(&state.db, scope.project_id, &ids).await?;
+        let recorded = payments::recorded_operations(db, scope.project_id, &ids).await?;
         let recorded: std::collections::HashMap<Uuid, payments::RecordedOperation> =
             recorded.into_iter().map(|r| (r.id, r)).collect();
         for op in &page.operations {
@@ -351,8 +353,9 @@ pub async fn network_agreement(
     if agreement.complete {
         let mut cursor = None;
         loop {
-            let ids = payments::answered_operation_ids(&state.db, scope.project_id, cursor, 10_000)
-                .await?;
+            let ids =
+                payments::answered_operation_ids(&state.write_db, scope.project_id, cursor, 10_000)
+                    .await?;
             let Some(last) = ids.last().copied() else {
                 break;
             };
