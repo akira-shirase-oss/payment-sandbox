@@ -284,6 +284,50 @@ pub struct Explanation {
     pub next: Option<ExplainCursor>,
 }
 
+/// The explain read, one statement (D-102): `g` carries the generation and the as-of
+/// snapshot (a presented cursor's `as_of` when given, `pg_current_snapshot()` else), `h`
+/// the horizon balance as derived-minus-invisible-tail, and the LEFT JOIN LATERAL page
+/// the visible lines — one row per line, or the lone horizon row when the page is empty.
+const EXPLAIN_SQL: &str = "WITH g AS (
+   SELECT concat_ws('.', s.system_identifier, c.timeline_id, d.oid) AS gen,
+          coalesce($5::text, pg_current_snapshot()::text) AS snap
+     FROM pg_control_system() s, pg_control_checkpoint() c, pg_database d
+    WHERE d.datname = current_database()
+ ),
+ h AS (
+   SELECT coalesce(b.balance_minor, 0)::bigint - coalesce(inv.amount, 0)::bigint AS balance,
+          coalesce(b.line_count, 0)::bigint - coalesce(inv.lines, 0)::bigint AS lines
+     FROM (SELECT 1) one
+     LEFT JOIN LATERAL (
+       SELECT sum(balance_minor)::bigint AS balance_minor, sum(line_count)::bigint AS line_count
+         FROM account_balances
+        WHERE project_id = $1 AND dataset_epoch = $2 AND currency = $3 AND account_kind = $4
+     ) b ON true
+     LEFT JOIN LATERAL (
+       SELECT sum(l.amount_minor)::bigint AS amount, count(*)::bigint AS lines
+         FROM journal_lines l
+         JOIN journal_entries e ON e.project_id = l.project_id AND e.id = l.entry_id
+        WHERE l.project_id = $1 AND l.dataset_epoch = $2 AND l.currency = $3 AND l.account_kind = $4
+          AND e.created_xact >= pg_snapshot_xmin((SELECT snap FROM g)::pg_snapshot)
+          AND NOT (e.xmin <> e.created_xact::xid
+                   OR pg_visible_in_snapshot(e.created_xact, (SELECT snap FROM g)::pg_snapshot))
+     ) inv ON true
+ )
+ SELECT g.gen, g.snap, h.balance, h.lines,
+        p.seq, p.id, p.recipe, p.payment_id, p.operation_id, p.amount_minor
+   FROM g CROSS JOIN h
+   LEFT JOIN LATERAL (
+     SELECT e.seq, e.id, e.recipe, e.payment_id, e.operation_id, l.amount_minor
+       FROM journal_lines l
+       JOIN journal_entries e ON e.project_id = l.project_id AND e.id = l.entry_id
+      WHERE l.project_id = $1 AND l.dataset_epoch = $2 AND l.currency = $3 AND l.account_kind = $4
+        AND (e.xmin <> e.created_xact::xid
+             OR pg_visible_in_snapshot(e.created_xact, (SELECT snap FROM g)::pg_snapshot))
+        AND e.seq > $6
+      ORDER BY e.seq, l.line_no
+      LIMIT $7
+   ) p ON true";
+
 /// Explains `account` in `currency`. Without a cursor it starts at the current horizon.
 pub async fn explain(
     pool: &PgPool,
@@ -294,77 +338,60 @@ pub async fn explain(
     limit: i64,
 ) -> Result<Explanation, DbError> {
     let limit = limit.clamp(1, 1_000);
-    let generation = generation(pool).await?;
-    let (as_of, after_seq, running) = match cursor {
-        Some(c) if c.generation != generation => return Err(DbError::StaleCursor),
-        Some(c) => (c.as_of, c.after_seq, c.running),
-        None => (
-            sqlx::query_scalar("SELECT pg_current_snapshot()::text")
-                .fetch_one(pool)
-                .await?,
-            0,
-            0,
-        ),
+    // One round trip for the whole read (D-102): generation, the as-of snapshot, the
+    // horizon balance and the page all land in one statement — at m5's offered rate the
+    // per-request fixed cost was five statements, and the query plans are sub-millisecond
+    // (`explain_plans.rs`), so the statements themselves are what saturated PostgreSQL.
+    // `$5` pins the snapshot to a presented cursor's `as_of`; `pg_current_snapshot()`
+    // otherwise. The horizon balance is the derived balance minus the lines invisible to
+    // the snapshot — usually a small recent tail (D-096); the page's visibility test uses
+    // the same snapshot, so the two always describe one moment. A stale cursor still
+    // answers `StaleCursor`, checked against the generation this same statement returned.
+    let (cursor_as_of, after_seq, running) = match &cursor {
+        Some(c) => (Some(c.as_of.clone()), c.after_seq, c.running),
+        None => (None, 0, 0),
     };
-    // The horizon balance comes from the derived balance minus the lines invisible to the
-    // snapshot — usually a small recent tail — in one statement, so the two reads share a
-    // moment (D-096). `line_count` is corrected the same way; an account with no lines at
-    // all reports zero, as the plain sum did.
-    let (balance_minor, line_count): (i64, i64) = sqlx::query_as(
-        "SELECT coalesce(b.balance_minor, 0)::bigint - coalesce(inv.amount, 0)::bigint AS balance,
-                coalesce(b.line_count, 0)::bigint - coalesce(inv.lines, 0)::bigint AS lines
-           FROM (SELECT 1) one
-           LEFT JOIN LATERAL (
-             SELECT sum(balance_minor)::bigint AS balance_minor, sum(line_count)::bigint AS line_count
-               FROM account_balances
-              WHERE project_id = $1 AND dataset_epoch = $2 AND currency = $3 AND account_kind = $4
-           ) b ON true
-           LEFT JOIN LATERAL (
-             SELECT sum(l.amount_minor)::bigint AS amount, count(*)::bigint AS lines
-               FROM journal_lines l
-               JOIN journal_entries e ON e.project_id = l.project_id AND e.id = l.entry_id
-              WHERE l.project_id = $1 AND l.dataset_epoch = $2 AND l.currency = $3 AND l.account_kind = $4
-                AND e.created_xact >= pg_snapshot_xmin($5::pg_snapshot)
-                AND NOT (e.xmin <> e.created_xact::xid
-                         OR pg_visible_in_snapshot(e.created_xact, $5::pg_snapshot))
-           ) inv ON true",
-    )
-    .bind(scope.project_id)
-    .bind(scope.epoch)
-    .bind(currency)
-    .bind(account)
-    .bind(&as_of)
-    .fetch_one(pool)
-    .await?;
-    let rows = sqlx::query(
-        "SELECT e.seq, e.id, e.recipe, e.payment_id, e.operation_id, l.amount_minor
-           FROM journal_lines l
-           JOIN journal_entries e ON e.project_id = l.project_id AND e.id = l.entry_id
-          WHERE l.project_id = $1 AND l.dataset_epoch = $2 AND l.currency = $3 AND l.account_kind = $4
-            AND (e.xmin <> e.created_xact::xid OR pg_visible_in_snapshot(e.created_xact, $5::pg_snapshot)) AND e.seq > $6
-          ORDER BY e.seq, l.line_no
-          LIMIT $7",
-    )
-    .bind(scope.project_id)
-    .bind(scope.epoch)
-    .bind(currency)
-    .bind(account)
-    .bind(&as_of)
-    .bind(after_seq)
-    .bind(limit)
-    .fetch_all(pool)
-    .await?;
+    let rows = sqlx::query(EXPLAIN_SQL)
+        .bind(scope.project_id)
+        .bind(scope.epoch)
+        .bind(currency)
+        .bind(account)
+        .bind(cursor_as_of)
+        .bind(after_seq)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+    // The left join always yields at least the one horizon row; an account with no visible
+    // lines reports balance/line_count and an empty page.
+    let Some(head) = rows.first() else {
+        return Err(DbError::Constraint(
+            "explain returned no horizon".to_owned(),
+        ));
+    };
+    let generation: String = head.try_get("gen")?;
+    let as_of: String = head.try_get("snap")?;
+    let balance_minor: i64 = head.try_get("balance")?;
+    let line_count: i64 = head.try_get("lines")?;
+    if let Some(c) = &cursor
+        && c.generation != generation
+    {
+        return Err(DbError::StaleCursor);
+    }
     // Every recipe posts to an account at most once per entry, so paging by entry sequence
     // never splits an entry's lines on one account.
     let mut total = running;
     let mut lines = Vec::with_capacity(rows.len());
     for row in &rows {
+        // The one horizon-only row of the left join carries a NULL page.
+        let Some(seq) = row.try_get::<Option<i64>, _>("seq")? else {
+            continue;
+        };
         let amount: i64 = row.try_get("amount_minor")?;
         total = total
             .checked_add(amount)
             .ok_or_else(|| DbError::Constraint("running total overflow".to_owned()))?;
         lines.push(ExplainedLine {
-            seq: row.try_get("seq")?,
+            seq,
             entry_id: row.try_get("id")?,
             recipe: row.try_get("recipe")?,
             payment_id: row.try_get("payment_id")?,

@@ -95,6 +95,7 @@ pub async fn list(Extension(db): Extension<DbPool>, auth: Auth) -> Result<Respon
 
 /// Revokes a key of the caller's project. Idempotent; refuses the last admin key.
 pub async fn revoke(
+    State(state): State<AppState>,
     Extension(db): Extension<DbPool>,
     auth: Auth,
     PathId(key_id): PathId,
@@ -103,6 +104,9 @@ pub async fn revoke(
     let actor = format!("key:{}", auth.key_id());
     match sandbox_db::keys::revoke(&db.0, auth.scope().project_id, key_id, &actor).await? {
         RevokeOutcome::Revoked => {
+            // D-102: a revoked key fails on its very next request — the cache drops it now,
+            // it never waits for the TTL.
+            state.key_cache.invalidate_key(key_id);
             Ok(Json(json!({"revoked": key_id, "simulated": true})).into_response())
         }
         RevokeOutcome::NotFound => Err(ApiError::NotFound("key")),

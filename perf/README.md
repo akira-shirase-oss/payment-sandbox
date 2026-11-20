@@ -22,6 +22,14 @@ database and (from M2) the simulated network all listen on loopback.
   here as they came out. The development Mac is shared, so a local full run only counts on
   a quiet machine (`uptime` load average below about 6). Every number is a same-machine
   observation (the load generator beside the server), not capacity.
+- **Capacity is measured, not assumed (D-102).** A run offered above the runner's knee
+  measures only shedding — its p99 is the client's deadline. `scripts/load-capacity.sh
+  <scenario> [start_rps]` steps the offered rate through short `MODE=full` runs (the
+  scenario's `RATE`/`SECONDS`/`SEED`/`ROUNDS`/`READ_RATE` envs) until its own thresholds
+  fail, and writes `<stamp>-<scenario>-capacity.json`: every step, the machine class, the
+  knee and `recommended_full_rate` at 60% of it. Evidence full runs go at the recommended
+  rate with the limits unchanged; `m8-overload.js` is the explicitly-labelled run where
+  shedding IS the expectation (named 503s + `Retry-After`, fast, zero 500s).
 
 | Scenario | Milestone | What it loads | Full-run status |
 |---|---|---|---|

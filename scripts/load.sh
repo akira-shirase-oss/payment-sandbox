@@ -111,9 +111,12 @@ if [ -r /proc/stat ]; then
 fi
 run_started=$SECONDS
 set +e
+# RATE/SECONDS/SEED/ROUNDS/READ_RATE pass through to the scenario's own `__ENV` reads —
+# the capacity probe (scripts/load-capacity.sh) drives the full shape through them.
 STORE_URL="http://127.0.0.1:${store_port}" STORE_TOKEN="$store_control" CHECKOUT_URL="$checkout_url" \
-BOOTSTRAP="$bootstrap" BASE_URL="http://127.0.0.1:${port}" READ_URL="http://127.0.0.1:${read_port}" MODE="$mode" k6 run --quiet \
-  --summary-export "$summary" "$script"
+BOOTSTRAP="$bootstrap" BASE_URL="http://127.0.0.1:${port}" READ_URL="http://127.0.0.1:${read_port}" MODE="$mode" \
+RATE="${RATE:-}" SECONDS="${SECONDS:-}" SEED="${SEED:-}" ROUNDS="${ROUNDS:-}" READ_RATE="${READ_RATE:-}" \
+k6 run --quiet --summary-export "$summary" "$script"
 k6_status=$?
 run_seconds=$((SECONDS - run_started))
 cpu_use='{"note": "not measured (no /proc on this machine)"}'

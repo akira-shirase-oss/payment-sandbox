@@ -119,12 +119,13 @@ pub struct ResetBody {
 /// journal, payments, operations and events stay, archived; current reads, idempotency
 /// keys and explanations start afresh in the new epoch.
 pub async fn reset(
+    State(state): State<AppState>,
     Extension(db): Extension<DbPool>,
     auth: Auth,
     SandboxJson(body): SandboxJson<ResetBody>,
 ) -> Result<Response, ApiError> {
     auth.require(Scope::Admin)?;
-    let outcome = reset_project(&db.0, &auth, &body.confirm, body.epoch).await?;
+    let outcome = reset_project(&db.0, &state.key_cache, &auth, &body.confirm, body.epoch).await?;
     Ok(Json(outcome).into_response())
 }
 
@@ -132,6 +133,7 @@ pub async fn reset(
 /// session's identity, its Origin and its CSRF token).
 pub async fn reset_project(
     db: &sqlx::PgPool,
+    key_cache: &crate::auth::KeyCache,
     auth: &Auth,
     confirm: &str,
     epoch: i32,
@@ -147,6 +149,9 @@ pub async fn reset_project(
             archived_payments,
         } => {
             tracing::warn!(%project_id, from, to, archived_payments, "dataset reset: a new epoch is open");
+            // D-102: cached identities carry the pre-reset epoch — the project's entries
+            // go now, not at TTL.
+            key_cache.invalidate_project(project_id);
             let project = sandbox_db::projects::get(db, project_id).await?;
             Ok(json!({
                 "project": project_json(&project),

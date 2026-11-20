@@ -39,6 +39,9 @@ pub struct AppState {
     /// Per-pool saturation metrics (D-101): sampled occupancy plus acquire waits and
     /// timeouts recorded by [`crate::poolstat::timed_acquire`].
     pub pool_stats: Arc<crate::poolstat::PoolStats>,
+    /// Bounded key-identity cache (D-102): in-process revokes and resets invalidate
+    /// exactly; a 30-second TTL is the out-of-band backstop.
+    pub key_cache: Arc<crate::auth::KeyCache>,
 }
 
 impl AppState {
@@ -93,6 +96,7 @@ impl AppState {
             network,
             payment_locks: Arc::new(PaymentLocks::default()),
             pool_stats: Arc::new(crate::poolstat::PoolStats::default()),
+            key_cache: Arc::new(crate::auth::KeyCache::default()),
         }
     }
 

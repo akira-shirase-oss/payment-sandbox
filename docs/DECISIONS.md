@@ -1677,6 +1677,36 @@ closes one of its findings, with the test that failed before the fix.
   `a_post_reaches_the_read_pool_only_through_post_read` (a plain `post` draws the
   write pool; `post_read` draws the read pool — observed by pool size).
 
+- **D-102 — Capacity is measured, not assumed; reads are one round trip (Colophon's
+  D-221/D-223/D-227 rule, same problem).** Run `44658104817` proved a full run offered
+  above the runner's capacity can only measure shedding — its p99 is the client's
+  deadline, not a latency. The rule, in three parts.
+  **Measure the knee**: `scripts/load-capacity.sh <scenario>` steps the offered rate
+  through short `MODE=full` runs (load.sh passes `RATE`/`SECONDS`/`SEED`/`ROUNDS`/
+  `READ_RATE` through to the scenario) until the run's *own thresholds* fail, then
+  records the last passing rate — the knee — with every step, the machine record
+  (CPU model, cores) and a `recommended_full_rate` at 60% of the knee.
+  **Evidence runs at ~60% of the knee**: below the knee the run measures latency and
+  errors, which is what a threshold judges; above it the run measures only the shed.
+  60% was chosen over 50/70: it is far enough below the measured knee to survive
+  machine-class variation between the probe and the CI runner, high enough that a
+  real regression still fails loudly. Overload is not deleted — it moves to its own
+  label: `m8-overload.js` deliberately offers above capacity and asserts the shed's
+  *shape* (every refusal 503 + `Retry-After`, fast, never `status:0`, zero 500s).
+  **Cut round trips, the measured lever** (why m5 shed at ~1,200 rps with PostgreSQL
+  at 753 of 906 CPU-s): every statement's plan is sub-millisecond at 300k lines
+  (`explain_plans.rs`, re-run this change — balances 0.043 ms, horizon 0.058 ms, page
+  0.316 ms), so the saturation was per-statement fixed cost, not row work. Explain
+  paid five round trips per first page (auth resolve, generation, snapshot, horizon,
+  page) and two per subsequent page. Now: the whole explain is ONE statement
+  (`reconcile::explain` — generation + as-of + horizon + page via `g`/`h` CTEs and a
+  LEFT JOIN LATERAL page), and key resolution goes through a bounded
+  `KeyCache` (1,024 entries, oldest-evicted, 30 s TTL backstop) — in-process
+  `revoke`/`reset` invalidate exactly, so `a_revoked_key_fails_on_its_very_next_request`
+  still holds literally. Result per request: explain 5 RT → 2 (auth miss) / 1 (hit);
+  balances 2 → 1. The bulkhead's pools, the read-only rule and the named-refusal
+  contract are unchanged — this changes how many trips a request costs, not what it may do.
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is
