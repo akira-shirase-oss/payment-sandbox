@@ -16,9 +16,22 @@ on:
   workflow_dispatch:
     inputs:
       scenario:
-        description: "all, or scenarios separated by commas (m0-probes, m1-auth, m2-lifecycle, m2-refund-race, m3-uncertain, m4-webhooks, m5-explain, m6-checkout, m7-developer)"
+        description: "all, or scenarios separated by commas (m0-probes, m1-auth, m2-lifecycle, m2-refund-race, m3-uncertain, m4-webhooks, m5-explain, m6-checkout, m7-developer, m8-overload, probe-read-edge); capacity mode needs exactly one"
         type: string
         default: all
+      mode:
+        description: "full: the scenario at its own shape (RATE/SECONDS override); capacity: step the rate until the thresholds fail and record the knee (D-102)"
+        type: choice
+        options: [full, capacity]
+        default: full
+      rate:
+        description: "full mode: RATE env the scenario reads (empty = the scenario default)"
+        type: string
+        default: ""
+      seconds:
+        description: "full mode: SECONDS env (empty = the scenario default); capacity mode: seconds per step"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -41,8 +54,19 @@ jobs:
       - id: pick
         env:
           CHOSEN: ${{ inputs.scenario }}
+          MODE: ${{ inputs.mode }}
         run: |
-          all='["m0-probes","m1-auth","m2-lifecycle","m2-refund-race","m3-uncertain","m4-webhooks","m5-explain","m6-checkout","m7-developer"]'
+          all='["m0-probes","m1-auth","m2-lifecycle","m2-refund-race","m3-uncertain","m4-webhooks","m5-explain","m6-checkout","m7-developer","m8-overload","probe-read-edge"]'
+          if [ "$MODE" = capacity ]; then
+            # The probe measures one scenario's knee per run.
+            picked="$(jq -cn --arg chosen "$CHOSEN" --argjson all "$all" \
+              '[$chosen | split(",")[] | gsub("^ +| +$"; "")] | unique as $c
+               | if $c == ["all"] then error("capacity needs one scenario, not all")
+                   elif ($c - $all) == [] and ($c | length) == 1 then $c
+                   else error("capacity needs exactly one known scenario, got \($chosen)") end')"
+            echo "scenarios=$picked" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "$CHOSEN" = all ]; then
             echo "scenarios=$all" >> "$GITHUB_OUTPUT"
             exit 0
@@ -81,35 +105,59 @@ jobs:
         run: docker compose -f deploy/compose.yaml up -d --wait postgres
       - name: The full run
         id: run
+        env:
+          RUN_MODE: ${{ inputs.mode }}
+          RATE: ${{ inputs.rate }}
+          SECONDS: ${{ inputs.seconds }}
         run: |
           eval "$(scripts/stack.sh env)"
           set +e
-          PATH="$RUNNER_TEMP/bin:$PATH" MODE=full scripts/load.sh "$SCENARIO"
-          echo "k6_status=$?" >> "$GITHUB_OUTPUT"
+          if [ "$RUN_MODE" = capacity ]; then
+            # Capacity mode steps the rate through short MODE=full runs until the run's own
+            # thresholds fail; the record carries the knee and the recommended full rate.
+            PATH="$RUNNER_TEMP/bin:$PATH" scripts/load-capacity.sh "$SCENARIO" "${RATE:-100}" "${SECONDS:-45}"
+            k6_status=$?
+            # The knee record is not a threshold gate; a probe that ran is a success.
+            [ $k6_status -eq 0 ] || k6_status=0
+          else
+            PATH="$RUNNER_TEMP/bin:$PATH" MODE=full scripts/load.sh "$SCENARIO"
+            k6_status=$?
+          fi
+          echo "k6_status=$k6_status" >> "$GITHUB_OUTPUT"
       - name: Label the result as a GitHub-hosted runner observation
         id: label
         if: always()
+        env:
+          RUN_MODE: ${{ inputs.mode }}
         run: |
           # This run's result is the one file git does not know (earlier results are committed).
+          suffix=full; [ "$RUN_MODE" = capacity ] && suffix='*'
           mapfile -t results < <(git status --porcelain --untracked-files=all -- perf/results \
-            | awk '/^\?\? / {print $2}' | grep -- "-$SCENARIO-full.json$" || true)
-          [ "${#results[@]}" -eq 1 ] || { echo "expected one new result, found ${#results[@]}" >&2; exit 1; }
-          echo "result=${results[0]}" >> "$GITHUB_OUTPUT"
-          labelled="$(jq \
-            --arg image "${ImageOS:-unknown}/${ImageVersion:-unknown}" \
-            --arg arch "$RUNNER_ARCH" \
-            --arg workflow_run "$GITHUB_RUN_ID" \
-            '.machine.label = "GitHub-hosted runner" |
-             .machine.runner = {image: $image, arch: $arch, workflow_run: ($workflow_run | tonumber)} |
-             .machine.note = "GitHub-hosted runner: the load generator, the server, the network and PostgreSQL share one runner VM on shared cloud hardware; an observation, not capacity"' \
-            "${results[0]}")"
-          printf '%s\n' "$labelled" > "${results[0]}"
-          jq '{scenario, thresholds_passed, requests, requests_per_second, failed_rate, dropped_iterations, latency_ms, machine: {label: .machine.label, cpu: .machine.cpu, cores: .machine.cores, memory_gb: .machine.memory_gb}}' "${results[0]}"
+            | awk '/^\?\? / {print $2}' | grep -- "-$SCENARIO-$suffix.json$" || true)
+          [ "${#results[@]}" -ge 1 ] || { echo "expected new result(s), found ${#results[@]}" >&2; exit 1; }
+          # Capacity runs yield the step files plus the knee record; every one is labelled.
+          printf '%s\n' "${results[@]}" > /tmp/this-run-files
+          echo "result<<EOF" >> "$GITHUB_OUTPUT"; cat /tmp/this-run-files >> "$GITHUB_OUTPUT"; echo "EOF" >> "$GITHUB_OUTPUT"
+          for f in "${results[@]}"; do
+            labelled="$(jq \
+              --arg image "${ImageOS:-unknown}/${ImageVersion:-unknown}" \
+              --arg arch "$RUNNER_ARCH" \
+              --arg workflow_run "$GITHUB_RUN_ID" \
+              '.machine.label = "GitHub-hosted runner" |
+               .machine.runner = {image: $image, arch: $arch, workflow_run: ($workflow_run | tonumber)} |
+               .machine.note = "GitHub-hosted runner: the load generator, the server, the network and PostgreSQL share one runner VM on shared cloud hardware; an observation, not capacity"' \
+              "$f")"
+            printf '%s\n' "$labelled" > "$f"
+          done
+          for f in "${results[@]}"; do
+            jq '{scenario, mode, thresholds_passed, requests, requests_per_second, failed_rate, dropped_iterations, latency_ms, knee_requests_per_second, recommended_full_rate, machine: {label: .machine.label, cpu: .machine.cpu, cores: .machine.cores, memory_gb: .machine.memory_gb}}' "$f" 2>/dev/null || true
+          done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: load-${{ matrix.scenario }}
-          path: ${{ steps.label.outputs.result }}
+          path: |
+            ${{ steps.label.outputs.result }}
           if-no-files-found: error
           retention-days: 30
       - name: A threshold miss fails the job (the result is kept either way)

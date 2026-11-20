@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use axum::http::{Method, StatusCode};
 use common::{BOOTSTRAP, TestApp};
-use serde_json::json;
+use serde_json::{Value, json};
 
 #[tokio::test]
 async fn creating_a_project_needs_the_operator_bootstrap_token() {
@@ -250,6 +250,108 @@ async fn a_revoked_key_fails_on_its_very_next_request() {
         .await;
     assert_eq!(status, StatusCode::OK);
     app.cleanup().await;
+}
+
+/// D-102's addendum: the key cache is exact inside the process that revoked; a SECOND
+/// instance on the same database is the cross-process case. B caches the key, A revokes
+/// it through the API, and B's `auth_epoch` listener must drop it — B refuses the key on
+/// its next request, not after the 30 s TTL. Without the listener this stays `200` for
+/// the TTL: the red.
+#[tokio::test]
+async fn a_revocation_in_another_process_reaches_this_cache_on_its_next_request() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use sandbox_server::{AppState, Config, app};
+    use std::collections::HashMap;
+    use tokio::sync::watch;
+    use tower::ServiceExt as _;
+
+    // Instance A owns the database; instance B is built on the same URL — two processes'
+    // worth of independent pools, key caches and routers.
+    let a = TestApp::new(&[]).await;
+    let vars: HashMap<String, String> = HashMap::from([
+        ("PS_DATABASE_URL".to_owned(), a.db.url()),
+        (
+            "PS_BOOTSTRAP_TOKEN".to_owned(),
+            common::BOOTSTRAP.to_owned(),
+        ),
+        ("PS_SIM_TOKEN".to_owned(), common::SIM_TOKEN.to_owned()),
+        ("PS_PROFILE".to_owned(), "dev".to_owned()),
+        ("PS_DB_ACQUIRE_TIMEOUT_MS".to_owned(), "15000".to_owned()),
+        ("PS_DB_STATEMENT_TIMEOUT_MS".to_owned(), "10000".to_owned()),
+        ("PS_DB_LOCK_TIMEOUT_MS".to_owned(), "10000".to_owned()),
+        ("PS_REQUEST_TIMEOUT_MS".to_owned(), "60000".to_owned()),
+    ]);
+    let config = Config::from_lookup(|name| vars.get(name).cloned()).unwrap();
+    let b_pool = sandbox_db::connect_lazy(config.database_url.expose(), &config.pool).unwrap();
+    let b_read =
+        sandbox_db::connect_lazy(config.database_url.expose(), &config.read_pool()).unwrap();
+    let b_state = AppState::new(config, b_pool, b_read);
+    let b_router = app(&b_state);
+    // B's listener, what `serve` spawns for a real process.
+    let (stop_tx, stop_rx) = watch::channel(false);
+    let listener = tokio::spawn(sandbox_server::authlisten::run(b_state.clone(), stop_rx));
+    let send_b = |request: Request<Body>| {
+        let router = b_router.clone();
+        async move {
+            let response = router.oneshot(request).await.unwrap();
+            let status = response.status();
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            (
+                status,
+                serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
+            )
+        }
+    };
+    let get_b = |path: &str, key: &str| {
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri(path.to_owned())
+            .header("authorization", format!("Bearer {key}"))
+            .body(Body::empty())
+            .unwrap();
+        send_b(request)
+    };
+
+    let (_, admin) = a.project("crossa").await;
+    let (reader_id, reader) = a.key(&admin, &["read"]).await;
+    // B resolves and caches the key before the revocation — the stale-hit the listener
+    // must kill.
+    assert_eq!(get_b("/v1/project", &reader).await.0, StatusCode::OK);
+    assert_eq!(get_b("/v1/project", &reader).await.0, StatusCode::OK);
+    // The listener must be attached before A's revoke commits, or its notification is
+    // legitimately missed (the TTL's own backstop case, not what this test measures).
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+    let (status, _) = a
+        .post(
+            &format!("/v1/keys/{reader_id}/revoke"),
+            &admin,
+            None,
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The notification lands on commit; allow a bounded settle for the loopback hop.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut last = StatusCode::OK;
+    while std::time::Instant::now() < deadline {
+        last = get_b("/v1/project", &reader).await.0;
+        if last == StatusCode::UNAUTHORIZED {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let _ = stop_tx.send(true);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), listener).await;
+    assert_eq!(
+        last,
+        StatusCode::UNAUTHORIZED,
+        "a key revoked in process A must fail in process B on its next request"
+    );
+    a.cleanup().await;
 }
 
 #[tokio::test]

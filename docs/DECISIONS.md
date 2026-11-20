@@ -1706,6 +1706,25 @@ closes one of its findings, with the test that failed before the fix.
   still holds literally. Result per request: explain 5 RT → 2 (auth miss) / 1 (hit);
   balances 2 → 1. The bulkhead's pools, the read-only rule and the named-refusal
   contract are unchanged — this changes how many trips a request costs, not what it may do.
+  **Addendum (the cross-process hole, S2):** `KeyCache` invalidation was exact only
+  inside the process that changed a key — a second server on one database (restart
+  overlap, a second instance), or a CLI/psql writing `revoked_at` directly, left the
+  key alive elsewhere for up to the TTL. Chosen over a single-writer advisory lock
+  (option (a), which would refuse a second server's startup and complicate rolling
+  restarts): **cross-process invalidation, option (b)**. Migration `0016` adds
+  triggers on `api_keys.revoked_at` and `projects.dataset_epoch` that
+  `pg_notify('auth_epoch', …)` — the database itself broadcasts the change to ANY
+  writer, so a revoke through another server, the CLI (which goes through whichever
+  server it calls) or a psql all land identically. Each server runs the supervised
+  `auth_epoch_listen` task: one `PgListener` connection held for its life outside the
+  pools (a fixed +1 over the pool budget, deliberate), applying `k<pid>:<kid>` →
+  `invalidate_key` and `p<pid>` → `invalidate_project` on commit. A lost connection
+  may have lost notifications — the cache flushes whole on reconnect, and the 30 s
+  TTL shrinks to the missed-notification backstop for the gap before the listener
+  attaches. Red-first proof:
+  `a_revocation_in_another_process_reaches_this_cache_on_its_next_request` builds two
+  independent AppStates/routers/pools on one database, caches the key in B, revokes
+  through A's API, and requires B's next request to answer `401`.
 
 ## Open questions (still open)
 

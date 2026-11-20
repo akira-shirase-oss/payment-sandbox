@@ -13,7 +13,8 @@
 -- temporary tables or objects in `public`, and `ps_owner` must own every table.
 WITH expected_triggers (tbl, name, digest) AS (
     -- md5(pg_get_triggerdef(oid)): the events, timing, level, deferral and function.
-    VALUES ('audit_events', 'audit_events_append_only', '840ce02299857c3b0d6f322dc8ec6dd8'),
+    VALUES ('api_keys', 'api_keys_auth_epoch', '820a54c587c5723a817d65066ba751ae'),
+           ('audit_events', 'audit_events_append_only', '840ce02299857c3b0d6f322dc8ec6dd8'),
            ('audit_events', 'audit_events_no_truncate', '0a7c918edf788926b7af1cf537e8edfb'),
            ('events', 'events_append_only', 'fcc09665686ff23b157bbbc542baf67f'),
            ('events', 'events_no_truncate', '2e7a1229fe028261672001f3e492f451'),
@@ -29,12 +30,14 @@ WITH expected_triggers (tbl, name, digest) AS (
            ('operations', 'operations_resolved_is_final', 'f5ab60868728ffeae03a024304f87cc3'),
            ('payments', 'payments_no_delete', '9d8be5096e435ecdfe4e228c330ab2c1'),
            ('payments', 'payments_no_truncate', 'e78203e1076c56708807bba773ee3dc9'),
+           ('projects', 'projects_auth_epoch', '7915292449dfe8112d08aca714653849'),
            ('projects', 'projects_epoch_moves_forward', '42f3bb0af470fada5913435d2478ec18'),
            ('projects', 'projects_no_delete', 'b53bfe3a62d4ecd4979b8f59c38e1056'),
            ('projects', 'projects_no_truncate', '2ab4b2e96a7e082b0e910c5df0d04bf9')
 ), expected_functions (name, digest) AS (
     -- md5(pg_get_functiondef(oid)): the whole definition, body and settings included.
-    VALUES ('journal_entries_check_lines', '0751af9ed7f638e9d937e6b5556d19a7'),
+    VALUES ('auth_epoch_notify', 'ce3f100ffef9fcd59b75d38e601dac68'),
+           ('journal_entries_check_lines', '0751af9ed7f638e9d937e6b5556d19a7'),
            ('journal_entries_stamp', '8df55a68832985280d17f363674717c8'),
            ('journal_lines_check_balance', '45d580297b8266c2c2d8ad823546e34b'),
            ('journal_refuse_change', '92238c34856bc8af8688e3c80df79b27'),

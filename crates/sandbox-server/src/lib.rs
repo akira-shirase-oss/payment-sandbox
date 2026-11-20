@@ -5,6 +5,7 @@
 //! in-process and the drills can run the real binary.
 
 pub mod auth;
+pub mod authlisten;
 pub mod checkout;
 pub mod config;
 pub mod cursor;

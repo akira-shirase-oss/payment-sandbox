@@ -187,6 +187,15 @@ impl KeyCache {
             .retain(|_, e| e.identity.scope.project_id != project_id);
     }
 
+    /// Drops everything — called when the `auth_epoch` listener reconnects after a gap,
+    /// since notifications it missed cannot be replayed (D-102's addendum).
+    pub fn clear(&self) {
+        self.map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+
     /// `(hits, misses)` — observability for the cache that serves the hot read path.
     pub fn stats(&self) -> (u64, u64) {
         (

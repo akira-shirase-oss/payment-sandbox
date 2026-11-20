@@ -168,6 +168,7 @@ async fn serve() -> anyhow::Result<()> {
         ))
     };
     spawn_pool_metrics(&state, &tasks, &reconciler_stop);
+    spawn_auth_listener(&state, &tasks, &reconciler_stop);
     // The deliverer, when webhooks are on (PS_SECRET_KEY).
     let deliverer = sandbox_server::deliverer::Deliverer::new(
         &state,
@@ -228,6 +229,24 @@ fn spawn_pool_metrics(
         sandbox_server::poolstat::TASK,
         stop.clone(),
         move || sandbox_server::poolstat::run(state.clone(), stop.clone()),
+    ));
+}
+
+/// The `auth_epoch` listener (D-102's addendum): a revocation or dataset reset in ANY
+/// process — this one, another server, a psql — reaches every process's key cache, so
+/// the 30 s TTL is only the missed-notification backstop.
+fn spawn_auth_listener(
+    state: &AppState,
+    tasks: &std::sync::Arc<sandbox_server::supervisor::Tasks>,
+    stop: &tokio::sync::watch::Receiver<bool>,
+) {
+    tasks.register(sandbox_server::authlisten::TASK, Duration::from_secs(30));
+    let (tasks, state, stop) = (tasks.clone(), state.clone(), stop.clone());
+    tokio::spawn(supervise(
+        tasks,
+        sandbox_server::authlisten::TASK,
+        stop.clone(),
+        move || sandbox_server::authlisten::run(state.clone(), stop.clone()),
     ));
 }
 
