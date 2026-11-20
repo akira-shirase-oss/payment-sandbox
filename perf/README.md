@@ -30,6 +30,14 @@ database and (from M2) the simulated network all listen on loopback.
   knee and `recommended_full_rate` at 60% of it. Evidence full runs go at the recommended
   rate with the limits unchanged; `m8-overload.js` is the explicitly-labelled run where
   shedding IS the expectation (named 503s + `Retry-After`, fast, zero 500s).
+- **Seeds settle, they don't assume.** A seed money-call that answers 202 means "not yet
+  known" — `seedSettled` (perf/scenarios/lib.js + pure perf/scenarios/settle.js) polls
+  `GET /v1/payments/{id}` until the operation reaches a terminal state inside
+  `SEED_SETTLE_MS` (30 s), or fails the run with a named reason. CI run 44747097733 shows
+  why: a 202 aborting a seed silently emptied the whole capacity probe. The contract is
+  unit-tested (`node --test perf/scenarios/`, run by check.sh and ci.yml) against a
+  stubbed 202-then-settled server. An aborted capacity step still writes the knee record
+  (`aborted` + `abort_reason`) — a failed probe is evidence, never an empty artifact.
 
 | Scenario | Milestone | What it loads | Full-run status |
 |---|---|---|---|

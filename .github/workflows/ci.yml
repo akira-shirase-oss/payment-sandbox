@@ -79,6 +79,12 @@ jobs:
           # inside the PostgreSQL container, so their version matches the server's.
           PS_PG_CONTAINER: ${{ job.services.postgres.id }}
           PS_PG_RESTORE_CONTAINER: ${{ job.services.postgres_restore.id }}
+      - name: Attack regression suite (auth bypass, cross-tenant, SSRF, replay, oversized/slow bodies)
+        run: cargo test -p sandbox-server --test attacks --locked
+      - name: Parser fuzz smoke (seed corpus + proptest; a panic is a bug)
+        env:
+          PROPTEST_CASES: "512"
+        run: cargo test -p sandbox-domain --test fuzz --locked && cargo test -p sandbox-server --test fuzz --locked
       - name: Recovery drills (the real server binary killed at fault points)
         run: cargo test -p sandbox-server --features fault-injection --test drills --locked
       - name: The network's commit-crash drill (no acknowledged command is lost)
