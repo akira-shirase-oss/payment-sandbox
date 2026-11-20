@@ -143,7 +143,7 @@ jobs:
         env:
           PS_PG_CONTAINER: ${{ job.services.postgres.id }}
         run: scripts/e2e.sh
-      - run: node --test perf/scenarios/
+      - run: node --test "perf/scenarios/"*.test.mjs
       - run: node scripts/web-budget.mjs
       - run: node scripts/check-doc-examples.mjs
       - if: failure()

@@ -42,7 +42,7 @@ npm ci --no-audit --no-fund --prefer-offline
 npm run check --workspaces --if-present
 npm test --workspaces --if-present
 scripts/e2e.sh
-node --test perf/scenarios/
+node --test "perf/scenarios/"*.test.mjs
 node scripts/web-budget.mjs
 # Every example a document shows is the file the journeys run (M7).
 node scripts/check-doc-examples.mjs
