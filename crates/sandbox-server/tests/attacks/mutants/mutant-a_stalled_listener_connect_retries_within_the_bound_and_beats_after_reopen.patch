@@ -1,0 +1,13 @@
+## proof-target: -p sandbox-server --test keys
+## proof-filter: a_stalled_listener_connect_retries_within_the_bound_and_beats_after_reopen
+--- a/crates/sandbox-server/src/authlisten.rs
++++ b/crates/sandbox-server/src/authlisten.rs
+@@ -125,7 +125,7 @@
+         // `/readyz` red, shutdown hung. Dropping the future mid-connect drops
+         // the half-open socket with it.
+         let outcome = tokio::select! {
+-            done = tokio::time::timeout(connect_bound, connected) => done,
++            done = tokio::time::timeout(connect_bound.max(Duration::from_secs(86_400)), connected) => done,
+             _ = stop.changed() => return,
+         };
+         let (mut listener, mut ping) = match outcome {

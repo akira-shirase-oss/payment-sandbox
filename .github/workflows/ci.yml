@@ -79,19 +79,28 @@ jobs:
           # inside the PostgreSQL container, so their version matches the server's.
           PS_PG_CONTAINER: ${{ job.services.postgres.id }}
           PS_PG_RESTORE_CONTAINER: ${{ job.services.postgres_restore.id }}
+      # Every proof suite below is `!cancelled()`: a flaky unit test must never
+      # mask the attack suite's or the mutation proof's signal (re-review-4 N-4)
+      # — only a cancelled workflow skips them, and the job still reports red.
       - name: Attack regression suite (auth bypass, cross-tenant, SSRF, replay, oversized/slow bodies)
+        if: ${{ !cancelled() }}
         run: cargo test -p sandbox-server --test attacks --locked
       - name: Mutation proof (each attack fails without the protection it asserts)
+        if: ${{ !cancelled() }}
         run: scripts/mutation-proof.sh
       - name: Parser fuzz smoke (seed corpus + proptest; a panic is a bug)
+        if: ${{ !cancelled() }}
         env:
           PROPTEST_CASES: "512"
         run: cargo test -p sandbox-domain --test fuzz --locked && cargo test -p sandbox-server --test fuzz --locked
       - name: Recovery drills (the real server binary killed at fault points)
+        if: ${{ !cancelled() }}
         run: cargo test -p sandbox-server --features fault-injection --test drills --locked
       - name: The network's commit-crash drill (no acknowledged command is lost)
+        if: ${{ !cancelled() }}
         run: cargo test -p sandbox-sim --features fault-injection --test drills --locked
       - name: Load smoke (short runs; full runs are local, committed under perf/results/)
+        if: ${{ !cancelled() }}
         env:
           PS_ADMIN_DATABASE_URL: postgres://sandbox:sandbox-dev@127.0.0.1:56432/sandbox
           PS_MIGRATE_DATABASE_URL: postgres://ps_owner:ps-owner-dev@127.0.0.1:56432/payment_sandbox

@@ -365,6 +365,34 @@ async fn wait_beating(
     }
 }
 
+/// "N more beats happened" as a signal wait — replaces fixed sleeps that a
+/// loaded shared cluster makes wrong (N-4): the task's own beat counter is the
+/// clock, so a slow machine just takes longer, never a wrong answer.
+async fn wait_beats(tasks: &sandbox_server::supervisor::Tasks, name: &'static str, more: u64) {
+    let before = tasks
+        .statuses()
+        .into_iter()
+        .find(|s| s.name == name)
+        .map_or(0, |s| s.beats);
+    let want = before + more;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let now = tasks
+            .statuses()
+            .into_iter()
+            .find(|s| s.name == name)
+            .map_or(0, |s| s.beats);
+        if now >= want {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the {name} task beat {now} times, never reaching {want}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
+
 async fn wait_attached(pool: &sqlx::PgPool, name: &str, other_than: Option<i32>) -> i32 {
     // The unique `application_name` is unforgeable, but its visibility lags (see
     // `wait_beating`); this poll only runs where a beat already proved the
@@ -516,7 +544,8 @@ async fn a_revocation_committed_in_a_listener_gap_still_flushes() {
 }
 
 /// B: quiet beats keep the same backend — the self-ping arrives on the listener's
-/// own second connection, so a live wire is never rebuilt.
+/// own second connection, so a live wire is never rebuilt. The beats themselves
+/// are the wait (N-4): four counted beats is four delivered pings on any clock.
 #[tokio::test]
 async fn quiet_beats_keep_the_same_backend() {
     use std::time::Duration;
@@ -524,15 +553,19 @@ async fn quiet_beats_keep_the_same_backend() {
     let a = TestApp::new(&[]).await;
     let (b_state, _router, b_read) = b_state(&a);
     let listen_name = b_state.listen_name.clone();
+    let tasks = b_state.tasks.clone();
+    tasks.register(sandbox_server::authlisten::TASK, Duration::from_secs(30));
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let listener = tokio::spawn(sandbox_server::authlisten::run_with(
         b_state,
         stop_rx,
-        Duration::from_millis(150),
+        Duration::from_millis(500),
+        Duration::from_secs(5),
     ));
     let pid = wait_attached(&b_read, &listen_name, None).await;
-    // Three full beats: pings sent and delivered — the wire must not be rebuilt.
-    tokio::time::sleep(Duration::from_millis(700)).await;
+    // Four counted beats: pings sent and delivered — the wire must not be
+    // rebuilt. A beat is a delivery proof, so the count is the assertion.
+    wait_beats(&tasks, sandbox_server::authlisten::TASK, 4).await;
     let still = wait_attached(&b_read, &listen_name, None).await;
     assert_eq!(still, pid, "a live listener was rebuilt without any load");
     let _ = stop_tx.send(true);
@@ -543,6 +576,8 @@ async fn quiet_beats_keep_the_same_backend() {
 /// B: the liveness ping has its own connection — a write pool saturated past its
 /// acquire timeout cannot unsend it and tear down a healthy listener (which would
 /// then flush the whole key cache onto that same saturated pool every two beats).
+/// Saturation is proven by an `acquire` that outlives a bound, not by a fixed
+/// count or a machine-speed loop; the beats are the wait (N-4).
 #[tokio::test]
 async fn a_saturated_write_pool_never_tears_down_the_listener() {
     use std::time::Duration;
@@ -551,26 +586,34 @@ async fn a_saturated_write_pool_never_tears_down_the_listener() {
     let (b_state, _router, b_read) = b_state(&a);
     let listen_name = b_state.listen_name.clone();
     let write_db = b_state.write_db.clone();
+    let tasks = b_state.tasks.clone();
+    tasks.register(sandbox_server::authlisten::TASK, Duration::from_secs(30));
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let listener = tokio::spawn(sandbox_server::authlisten::run_with(
         b_state,
         stop_rx,
-        Duration::from_millis(150),
+        Duration::from_millis(500),
+        Duration::from_secs(5),
     ));
     let pid = wait_attached(&b_read, &listen_name, None).await;
 
     // Every pooled connection checked out for longer than several beats: a
-    // pool-riding ping could not even be sent. `try_acquire` cannot create
-    // connections, so `acquire` runs until it would block — saturation, whatever
-    // the pool's configured size.
+    // pool-riding ping could not even be sent. Saturation ends when a fresh
+    // `acquire` cannot land inside a generous per-attempt bound — on a loaded
+    // cluster connection creation is slower, so the bound is wide and the loop
+    // stops on a refused acquire, not on one slow connection.
     let mut held = Vec::new();
-    while let Ok(Ok(conn)) =
-        tokio::time::timeout(Duration::from_millis(300), write_db.acquire()).await
-    {
-        held.push(conn);
+    let saturate_by = std::time::Instant::now() + Duration::from_secs(30);
+    while std::time::Instant::now() < saturate_by {
+        match tokio::time::timeout(Duration::from_secs(2), write_db.acquire()).await {
+            Ok(Ok(conn)) => held.push(conn),
+            _ => break,
+        }
     }
     assert!(!held.is_empty(), "the pool was never saturated");
-    tokio::time::sleep(Duration::from_millis(700)).await;
+    // Three counted beats under saturation: if the ping rode this pool it could
+    // never be sent — a rebuild would follow (the pre-B behavior this kills).
+    wait_beats(&tasks, sandbox_server::authlisten::TASK, 3).await;
     let still = wait_attached(&b_read, &listen_name, None).await;
     assert_eq!(
         still, pid,
@@ -661,6 +704,41 @@ async fn next_port(which: &str, ports: &mut tokio::sync::mpsc::UnboundedReceiver
         .expect("the proxy stopped reporting connections")
 }
 
+/// A TCP hop that forwards honestly and kills each accepted connection the
+/// moment the NEXT one lands — the peer that accepts, hands over a working
+/// socket, then kills it (N-6). The listener pair dials listener-then-ping, so
+/// every kill is guaranteed post-attach by the pair's own dial order: the
+/// trigger is protocol shape, never a timer a slow cluster can miss.
+async fn revolving_kill_proxy(upstream: String) -> String {
+    use tokio::io::copy_bidirectional;
+    use tokio::net::TcpListener;
+    use tokio::sync::oneshot;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        let mut previous: Option<oneshot::Sender<()>> = None;
+        while let Ok((mut inbound, _)) = listener.accept().await {
+            if let Some(kill) = previous.take() {
+                let _ = kill.send(());
+            }
+            let (kill_tx, kill_rx) = oneshot::channel::<()>();
+            previous = Some(kill_tx);
+            let upstream = upstream.clone();
+            tokio::spawn(async move {
+                let Ok(mut outbound) = tokio::net::TcpStream::connect(&upstream).await else {
+                    return;
+                };
+                tokio::select! {
+                    _ = kill_rx => {}
+                    _ = copy_bidirectional(&mut inbound, &mut outbound) => {}
+                }
+            });
+        }
+    });
+    addr
+}
+
 /// B + N3: a half-open LISTEN socket (no error, no FIN, no bytes) is detected —
 /// the self-ping's notification stops arriving, a whole silent beat declares the
 /// wire dead, and the reconnect attaches a NEW backend.
@@ -728,6 +806,7 @@ async fn a_black_holed_listener_socket_is_detected() {
         b_state,
         stop_rx,
         Duration::from_millis(150),
+        Duration::from_secs(5),
     ));
     // Attached the moment the task beats — `application_name` in
     // `pg_stat_activity` lags the attach by seconds on this cluster, so
@@ -736,19 +815,179 @@ async fn a_black_holed_listener_socket_is_detected() {
     let first_port = next_port("listen-1", &mut ports).await;
     next_port("ping-1", &mut ports).await;
 
-    // Go silent for well over two beats: pings stop landing, the loop declares the
-    // wire dead and drops both sockets…
+    // Silence: pings stop landing, the loop declares the wire dead and re-dials.
+    // Detection itself is the signal (N-4) — the proxy reports the NEW socket at
+    // accept, even while its handshake stalls behind the still-closed gate — so
+    // no fixed sleep guesses how long detection took on a loaded cluster.
     let _ = gate.send(false);
-    tokio::time::sleep(Duration::from_millis(700)).await;
-    // …then heal: the reconnect that silence detection caused makes a NEW
-    // connection through the proxy — the only way another port appears.
-    let _ = gate.send(true);
     let second_port = next_port("listen-2", &mut ports).await;
     assert_ne!(
         second_port, first_port,
         "the half-open socket was never declared dead — no reconnect happened"
     );
+    // The stalled handshake finishes once the gate reopens, LISTEN lands and
+    // the ping socket dials — a beat newer than the reopen proves the attach.
+    let reopened = std::time::Instant::now();
+    let _ = gate.send(true);
     next_port("ping-2", &mut ports).await;
+    wait_beating(&tasks, sandbox_server::authlisten::TASK, reopened).await;
+
+    let _ = stop_tx.send(true);
+    let _ = tokio::time::timeout(Duration::from_secs(2), listener).await;
+    a.cleanup().await;
+}
+
+/// N-1: a peer that accepts the socket then stalls the startup handshake must
+/// not park the task forever — before the connect had a bound and watched
+/// `stop`, this was an unbounded await: no beat, `/readyz` red, shutdown hung.
+/// The gate is closed BEFORE the first attach so the handshake stalls; a retry
+/// must arrive inside the connect bound plus the reconnect gap, and the loop
+/// must beat once the path reopens.
+#[tokio::test]
+async fn a_stalled_listener_connect_retries_within_the_bound_and_beats_after_reopen() {
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    use sandbox_server::{AppState, Config};
+
+    let a = TestApp::new(&[]).await;
+    let direct = a.db.url();
+    let (creds, rest) = direct
+        .rsplit_once('@')
+        .expect("the test database url carries credentials");
+    let (upstream, path) = rest
+        .split_once('/')
+        .expect("the test database url carries a database name");
+    let (proxy_addr, gate, mut ports) = silent_proxy(upstream.to_owned()).await;
+    let proxied = format!("{creds}@{proxy_addr}/{path}");
+
+    let vars: HashMap<String, String> = HashMap::from([
+        ("PS_DATABASE_URL".to_owned(), proxied),
+        (
+            "PS_BOOTSTRAP_TOKEN".to_owned(),
+            common::BOOTSTRAP.to_owned(),
+        ),
+        ("PS_SIM_TOKEN".to_owned(), common::SIM_TOKEN.to_owned()),
+        ("PS_PROFILE".to_owned(), "dev".to_owned()),
+        ("PS_DB_ACQUIRE_TIMEOUT_MS".to_owned(), "15000".to_owned()),
+        ("PS_DB_STATEMENT_TIMEOUT_MS".to_owned(), "10000".to_owned()),
+        ("PS_DB_LOCK_TIMEOUT_MS".to_owned(), "10000".to_owned()),
+        ("PS_REQUEST_TIMEOUT_MS".to_owned(), "60000".to_owned()),
+    ]);
+    let config = Config::from_lookup(|name| vars.get(name).cloned()).unwrap();
+    let write = sandbox_db::connect_lazy(&direct, &config.pool).unwrap();
+    let read = sandbox_db::connect_lazy(&direct, &config.read_pool()).unwrap();
+    let b_state = AppState::new(config, write, read.clone());
+    let tasks = b_state.tasks.clone();
+    tasks.register(sandbox_server::authlisten::TASK, Duration::from_secs(30));
+
+    // The gate closes BEFORE the first attach: the proxy still accepts the
+    // socket and dials upstream — the port is reported at accept — but no byte
+    // moves, so the startup handshake stalls mid-connect. An unbounded connect
+    // would park here forever; the bound must turn it into a retry.
+    let _ = gate.send(false);
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let spawned = std::time::Instant::now();
+    let listener = tokio::spawn(sandbox_server::authlisten::run_with(
+        b_state,
+        stop_rx,
+        Duration::from_millis(150),
+        Duration::from_secs(1),
+    ));
+
+    // The first attempt's socket lands at once and stalls. Within the bound
+    // plus the reconnect gap (~1.5 s) a SECOND socket must appear — proof the
+    // connect outlived its bound and the loop retried, not parked.
+    next_port("connect-1", &mut ports).await;
+    next_port("connect-2", &mut ports).await;
+
+    // Reopen: whichever attempt is in flight finishes its handshake, LISTENs
+    // and beats — the same signal every other listener test waits on.
+    let _ = gate.send(true);
+    wait_beating(&tasks, sandbox_server::authlisten::TASK, spawned).await;
+
+    let _ = stop_tx.send(true);
+    let _ = tokio::time::timeout(Duration::from_secs(2), listener).await;
+    a.cleanup().await;
+}
+
+/// N-6: a peer that accepts each socket, hands over a working connection, then
+/// kills it inside a beat turned the inner-loop break into a spin — every dead
+/// attach re-dialed at once. The backoff gives the attach count a wall-clock
+/// ceiling, so the bound cannot flake on a loaded cluster the way a rate
+/// comparison would: under the fix the count is dominated by backoff delays
+/// (timers never fire early); without it the loop re-dials as fast as each
+/// kill lands.
+#[tokio::test]
+async fn a_peer_that_kills_every_attach_cannot_spin_the_reattach() {
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    use sandbox_server::{AppState, Config};
+
+    let a = TestApp::new(&[]).await;
+    let direct = a.db.url();
+    let (creds, rest) = direct
+        .rsplit_once('@')
+        .expect("the test database url carries credentials");
+    let (upstream, path) = rest
+        .split_once('/')
+        .expect("the test database url carries a database name");
+    // Every accepted socket is killed when the next is dialed — the listener
+    // dies the moment the ping conn arrives, so each attach completes and dies
+    // inside its first beat on any machine speed.
+    let proxy_addr = revolving_kill_proxy(upstream.to_owned()).await;
+    let proxied = format!("{creds}@{proxy_addr}/{path}");
+
+    let vars: HashMap<String, String> = HashMap::from([
+        ("PS_DATABASE_URL".to_owned(), proxied),
+        (
+            "PS_BOOTSTRAP_TOKEN".to_owned(),
+            common::BOOTSTRAP.to_owned(),
+        ),
+        ("PS_SIM_TOKEN".to_owned(), common::SIM_TOKEN.to_owned()),
+        ("PS_PROFILE".to_owned(), "dev".to_owned()),
+        ("PS_DB_ACQUIRE_TIMEOUT_MS".to_owned(), "15000".to_owned()),
+        ("PS_DB_STATEMENT_TIMEOUT_MS".to_owned(), "10000".to_owned()),
+        ("PS_DB_LOCK_TIMEOUT_MS".to_owned(), "10000".to_owned()),
+        ("PS_REQUEST_TIMEOUT_MS".to_owned(), "60000".to_owned()),
+    ]);
+    let config = Config::from_lookup(|name| vars.get(name).cloned()).unwrap();
+    let write = sandbox_db::connect_lazy(&direct, &config.pool).unwrap();
+    let read = sandbox_db::connect_lazy(&direct, &config.read_pool()).unwrap();
+    let b_state = AppState::new(config, write, read.clone());
+    let tasks = b_state.tasks.clone();
+    tasks.register(sandbox_server::authlisten::TASK, Duration::from_secs(30));
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let spawned = std::time::Instant::now();
+    let listener = tokio::spawn(sandbox_server::authlisten::run_with(
+        b_state,
+        stop_rx,
+        Duration::from_millis(400),
+        Duration::from_secs(5),
+    ));
+    wait_beating(&tasks, sandbox_server::authlisten::TASK, spawned).await;
+
+    // Attaches are counted through the task's own beats — each attach beats on
+    // entry and again as its inner loop breaks. Without the backoff a cycle is
+    // ~2 beats per ~75 ms (connect, die, re-dial): ~60+ beats across the
+    // window. With it, the doubling delays dominate: ~5 attaches ≈ ~10 beats.
+    // 25 sits between the two with ≥2× margin on both sides.
+    let beats_of = |tasks: &sandbox_server::supervisor::Tasks| -> u64 {
+        tasks
+            .statuses()
+            .into_iter()
+            .find(|s| s.name == sandbox_server::authlisten::TASK)
+            .map_or(0, |s| s.beats)
+    };
+    let before = beats_of(&tasks);
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let spun = beats_of(&tasks) - before;
+    assert!(
+        spun <= 25,
+        "the re-attach spun: {spun} beats across the window — a peer that \
+         accepts then kills each socket drove the loop with no backoff (N-6)"
+    );
 
     let _ = stop_tx.send(true);
     let _ = tokio::time::timeout(Duration::from_secs(2), listener).await;
@@ -776,11 +1015,15 @@ async fn a_flood_of_notifications_never_starves_the_heartbeat() {
         b_state,
         stop_rx,
         Duration::from_millis(200),
+        Duration::from_secs(5),
     ));
     let pid = wait_attached(&b_read, &listen_name, None).await;
 
     // ~0.9 s of a well-formed notification every 10 ms — several beats' worth, each
-    // keeping `try_recv` ready so the timer branch never wins the select.
+    // keeping `try_recv` ready so the timer branch never wins the select. The
+    // heartbeat under flood is proven by counted beats, not a recency snapshot
+    // taken at one machine-speed instant (N-4): each notification branch beats,
+    // so the count keeps moving while the flood runs.
     let spam = {
         tokio::spawn(async move {
             for _ in 0..90 {
@@ -792,16 +1035,7 @@ async fn a_flood_of_notifications_never_starves_the_heartbeat() {
             }
         })
     };
-    tokio::time::sleep(Duration::from_millis(700)).await;
-    let since = tasks
-        .statuses()
-        .into_iter()
-        .find(|s| s.name == sandbox_server::authlisten::TASK)
-        .map_or(u64::MAX, |s| s.since_beat_ms);
-    assert!(
-        since < 400,
-        "the heartbeat starved under notification load ({since} ms since the last beat)"
-    );
+    wait_beats(&tasks, sandbox_server::authlisten::TASK, 10).await;
     spam.await.unwrap();
 
     // The same backend is still attached: the self-ping arrived, so the silence

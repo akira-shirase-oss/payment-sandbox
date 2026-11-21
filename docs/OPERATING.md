@@ -63,7 +63,11 @@ transactions are read-only (`default_transaction_read_only=on`), so a read path
 that tries to write fails loudly (D-101). Writes keep the rest and keep
 `PS_DB_ACQUIRE_TIMEOUT_MS` (1,000 ms). A write flood can hold every write connection
 without a `GET`/`HEAD` ever waiting on one — a refused read is a fast named `503`
-(D-100).
+(D-100). Over the `PS_DB_MAX_CONNECTIONS` budget the `auth_epoch` listener holds
+**two** more connections for its life — the `LISTEN` socket and the liveness
+self-ping's own socket (D-102's addendum): a database sized with only one spare
+fails every ping connect, the listener keeps clearing the key cache, and readiness
+goes red.
 
 Create the roles and the database (once, as PostgreSQL's administrator) with passwords of
 your own, the same ones `migrate.env` and `server.env` use, then migrate as the owner. On

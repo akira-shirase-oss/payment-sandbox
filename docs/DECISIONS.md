@@ -1717,11 +1717,16 @@ closes one of its findings, with the test that failed before the fix.
   writer, so a revoke through another server, the CLI (which goes through whichever
   server it calls) or a psql all land identically. Each server runs the supervised
   `auth_epoch_listen` task: one `PgListener` connection held for its life outside the
-  pools (a fixed +1 over the pool budget, deliberate), applying `k<pid>:<kid>` →
+  pools plus a second for the liveness self-ping (a fixed **+2** over the pool
+  budget, deliberate — a deployment sized at +1 fails every ping connect, so the
+  ping never lands and the loop keeps clearing the cache), applying `k<pid>:<kid>` →
   `invalidate_key` and `p<pid>` → `invalidate_project` on commit. A lost connection
   may have lost notifications — the cache flushes whole on reconnect, and the 30 s
   TTL shrinks to the missed-notification backstop for the gap before the listener
-  attaches. Red-first proof:
+  attaches. Re-attach is bounded backoff — doubling with jitter — not a fixed
+  pause, so a peer that accepts then kills every socket cannot spin the loop,
+  and the whole connect pair runs inside a deadline that also watches `stop`
+  (a peer that accepts then stalls cannot park the task forever). Red-first proof:
   `a_revocation_in_another_process_reaches_this_cache_on_its_next_request` builds two
   independent AppStates/routers/pools on one database, caches the key in B, revokes
   through A's API, and requires B's next request to answer `401`.

@@ -1,0 +1,46 @@
+# Mutant: a dead attach re-dials at once — the re-attach backoff wait is gone, so a
+# peer that accepts then kills every socket spins the loop.
+# Expected red: keys::a_peer_that_kills_every_attach_cannot_spin_the_reattach fails without the protection.
+## proof-target: -p sandbox-server --test keys
+## proof-filter: a_peer_that_kills_every_attach_cannot_spin_the_reattach
+--- a/crates/sandbox-server/src/authlisten.rs
++++ b/crates/sandbox-server/src/authlisten.rs
+@@ -106,15 +106,8 @@
+     // connect above; without the backoff below the loop re-dials as fast as
+     // the kill lands. The counter resets once an attach survives a beat, so a
+     // healthy re-attach never pays it.
+-    let mut dead_attaches = 0_u32;
++    let dead_attaches = 0_u32;
+     loop {
+-        if dead_attaches > 0
+-            && tokio::time::timeout(reattach_delay(dead_attaches), stop.changed())
+-                .await
+-                .is_ok()
+-        {
+-            return;
+-        }
+         let url = listen_url(state.config.database_url.expose(), &state.listen_name);
+         let ping_url = listen_url(
+             state.config.database_url.expose(),
+@@ -214,11 +207,8 @@
+                 },
+             }
+         }
+-        dead_attaches = if lived {
+-            0
+-        } else {
+-            dead_attaches.saturating_add(1)
+-        };
++        let _ = dead_attaches;
++        let _ = lived;
+     }
+ }
+ 
+@@ -227,6 +217,7 @@
+ /// fate do not re-attach in lockstep. `dead` is the run of attaches killed
+ /// inside their first beat; the bound caps at `CAP`, plus up to half again of
+ /// jitter.
++#[allow(dead_code, reason = "the mutant drops the wait, not the math")]
+ fn reattach_delay(dead: u32) -> Duration {
+     const BASE_MS: u64 = 50;
+     const CAP_MS: u64 = 5_000;

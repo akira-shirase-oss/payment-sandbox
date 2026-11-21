@@ -36,6 +36,10 @@ struct Health {
     restarts: u64,
     last_failure: Option<&'static str>,
     last_beat: Instant,
+    /// Completed passes since registration — unlike `last_beat`, the seed at
+    /// register/spawn never counts, so a test can wait on "N beats happened"
+    /// instead of measuring machine time (N-4).
+    beats: u64,
     stale_after: Duration,
 }
 
@@ -52,6 +56,8 @@ pub struct TaskStatus {
     pub last_failure: Option<&'static str>,
     /// Milliseconds since the last heartbeat.
     pub since_beat_ms: u64,
+    /// Completed passes since registration — the seed beat never counts.
+    pub beats: u64,
     /// True when the heartbeat is older than the task's bound.
     pub stale: bool,
 }
@@ -73,6 +79,7 @@ impl Tasks {
                     restarts: 0,
                     last_failure: None,
                     last_beat: Instant::now(),
+                    beats: 0,
                     stale_after,
                 },
             );
@@ -87,6 +94,7 @@ impl Tasks {
             .get_mut(name)
         {
             health.last_beat = Instant::now();
+            health.beats = health.beats.saturating_add(1);
         }
     }
 
@@ -116,6 +124,7 @@ impl Tasks {
                     restarts: h.restarts,
                     last_failure: h.last_failure,
                     since_beat_ms: u64::try_from(since.as_millis()).unwrap_or(u64::MAX),
+                    beats: h.beats,
                     stale: since > h.stale_after,
                 }
             })

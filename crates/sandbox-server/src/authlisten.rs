@@ -27,6 +27,13 @@ const CHANNEL: &str = "auth_epoch";
 const RECONNECT: Duration = Duration::from_millis(500);
 /// The task's heartbeat when nothing notifies.
 const BEAT: Duration = Duration::from_secs(15);
+/// The whole connect pair — `LISTEN` socket and ping socket — must land inside
+/// this bound. A peer that accepts then stalls holds an unbounded connect
+/// forever otherwise (N-1): no beat, `/readyz` red for the process's life,
+/// cross-process revocations left to the TTL, shutdown hung on the task. The
+/// pool's acquire deadline does not cover the direct ping connect, and the
+/// startup handshake itself has none.
+const CONNECT_BOUND: Duration = Duration::from_secs(30);
 
 /// The listener's connect URL with its own `application_name`: on a shared cluster a
 /// query-text match cannot tell this backend from another process's listener (or from
@@ -79,14 +86,35 @@ fn apply(cache: &KeyCache, payload: &str) {
 /// rebuilt. The heartbeat lands in every select branch (N5): a notification flood
 /// can starve the timer but never the readiness beat.
 pub async fn run(state: AppState, stop: watch::Receiver<bool>) {
-    run_with(state, stop, BEAT).await;
+    run_with(state, stop, BEAT, CONNECT_BOUND).await;
 }
 
-/// `beat` is the liveness interval — `BEAT` in production, short in tests.
+/// `beat` is the liveness interval — `BEAT` in production, short in tests —
+/// and `connect_bound` the deadline the whole connect pair must land inside
+/// (`CONNECT_BOUND` in production; short in tests so a stalled attach is
+/// observable).
 #[doc(hidden)]
-pub async fn run_with(state: AppState, mut stop: watch::Receiver<bool>, beat: Duration) {
+pub async fn run_with(
+    state: AppState,
+    mut stop: watch::Receiver<bool>,
+    beat: Duration,
+    connect_bound: Duration,
+) {
     state.key_cache.clear();
+    // N-6: consecutive attaches that died inside their first beat — a peer that
+    // accepts then kills each socket. Every inner-loop break re-enters the
+    // connect above; without the backoff below the loop re-dials as fast as
+    // the kill lands. The counter resets once an attach survives a beat, so a
+    // healthy re-attach never pays it.
+    let mut dead_attaches = 0_u32;
     loop {
+        if dead_attaches > 0
+            && tokio::time::timeout(reattach_delay(dead_attaches), stop.changed())
+                .await
+                .is_ok()
+        {
+            return;
+        }
         let url = listen_url(state.config.database_url.expose(), &state.listen_name);
         let ping_url = listen_url(
             state.config.database_url.expose(),
@@ -105,10 +133,33 @@ pub async fn run_with(state: AppState, mut stop: watch::Receiver<bool>, beat: Du
             let ping = <sqlx::PgConnection as sqlx::Connection>::connect(&ping_url).await?;
             Ok::<_, sqlx::Error>((listener, ping))
         };
-        let (mut listener, mut ping) = match connected.await {
-            Ok(pair) => pair,
-            Err(error) => {
-                tracing::debug!(%error, "auth listener pair could not connect");
+        // The connect phase is bounded and watches `stop` (N-1): a peer that
+        // accepts then stalls holds an unbounded `connect` forever — no beat,
+        // `/readyz` red, shutdown hung. Dropping the future mid-connect drops
+        // the half-open socket with it.
+        let outcome = tokio::select! {
+            done = tokio::time::timeout(connect_bound, connected) => done,
+            _ = stop.changed() => return,
+        };
+        let (mut listener, mut ping) = match outcome {
+            Ok(Ok(pair)) => pair,
+            Ok(Err(error)) => {
+                let failures = state.key_cache.note_connect_failure();
+                tracing::warn!(%error, connect_failures = failures,
+                    "auth listener pair could not connect");
+                state.key_cache.clear();
+                if tokio::time::timeout(RECONNECT, stop.changed())
+                    .await
+                    .is_ok()
+                {
+                    return;
+                }
+                continue;
+            }
+            Err(_elapsed) => {
+                let failures = state.key_cache.note_connect_failure();
+                tracing::warn!(bound = ?connect_bound, connect_failures = failures,
+                    "auth listener pair connect outlived its bound");
                 state.key_cache.clear();
                 if tokio::time::timeout(RECONNECT, stop.changed())
                     .await
@@ -126,6 +177,9 @@ pub async fn run_with(state: AppState, mut stop: watch::Receiver<bool>, beat: Du
         // Whether a whole beat passed with nothing received — including this loop's
         // own ping, which a live socket delivers well inside one.
         let mut silent = false;
+        // Whether the attach survived at least one full beat-window event — a
+        // delivered notification or the timer arm — before dying (N-6).
+        let mut lived = false;
         loop {
             tokio::select! {
                 _ = stop.changed() => return,
@@ -135,6 +189,7 @@ pub async fn run_with(state: AppState, mut stop: watch::Receiver<bool>, beat: Du
                     state.tasks.beat(TASK);
                     if let Ok(Some(note)) = received {
                         silent = false;
+                        lived = true;
                         apply(&state.key_cache, note.payload());
                     } else {
                         // Ok(None) or a driver error: the gap's notifications are
@@ -145,6 +200,9 @@ pub async fn run_with(state: AppState, mut stop: watch::Receiver<bool>, beat: Du
                 },
                 () = tokio::time::sleep(beat) => {
                     state.tasks.beat(TASK);
+                    // A whole beat elapsed with the socket still attached: it
+                    // lived, however the loop exits from here.
+                    lived = true;
                     if silent {
                         // A beat with the ping unanswered: the socket is half-dead
                         // (N3) — the TTL, not readiness green, must not hide this.
@@ -156,7 +214,30 @@ pub async fn run_with(state: AppState, mut stop: watch::Receiver<bool>, beat: Du
                 },
             }
         }
+        dead_attaches = if lived {
+            0
+        } else {
+            dead_attaches.saturating_add(1)
+        };
     }
+}
+
+/// Re-attach backoff (N-6): doubling with jitter, so a peer that accepts then
+/// kills every socket cannot spin the loop — and listeners sharing that peer's
+/// fate do not re-attach in lockstep. `dead` is the run of attaches killed
+/// inside their first beat; the bound caps at `CAP`, plus up to half again of
+/// jitter.
+fn reattach_delay(dead: u32) -> Duration {
+    const BASE_MS: u64 = 50;
+    const CAP_MS: u64 = 5_000;
+    let step = BASE_MS.saturating_mul(1_u64 << dead.min(7)).min(CAP_MS);
+    let mut salt = [0_u8; 8];
+    let jitter = if getrandom::fill(&mut salt).is_ok() {
+        u64::from_le_bytes(salt) % (step / 2 + 1)
+    } else {
+        0
+    };
+    Duration::from_millis(step + jitter)
 }
 
 /// One `pg_notify` on the listener's own second connection — bounded, so a wedged
@@ -223,6 +304,37 @@ mod tests {
         assert!(
             cache.get(&KeyHash([4; 32])).is_some(),
             "a liveness self-ping must not clear the cache it is checking"
+        );
+    }
+
+    /// N-6's backoff: each step lands inside its doubling band plus up to half
+    /// again of jitter, and the run saturates at the cap — the wall-clock
+    /// ceiling a kill-fast peer cannot shorten and a fast box cannot widen.
+    #[test]
+    fn reattach_delay_doubles_jitters_and_caps() {
+        for dead in 1..=6_u32 {
+            let step = Duration::from_millis(50 * (1_u64 << dead));
+            for _ in 0..32 {
+                let delay = reattach_delay(dead);
+                assert!(delay >= step, "{delay:?} under its {step:?} step");
+                assert!(
+                    delay <= step + step / 2,
+                    "{delay:?} over {step:?} plus half jitter"
+                );
+            }
+        }
+        for dead in 7..=64_u32 {
+            let delay = reattach_delay(dead);
+            assert!(
+                (Duration::from_secs(5)..=Duration::from_millis(7_500)).contains(&delay),
+                "dead={dead} escaped the cap: {delay:?}"
+            );
+        }
+        // Jitter is real, not a constant: a small run must not collapse to the
+        // bare step every time.
+        assert!(
+            (0..32).any(|_| reattach_delay(3) > Duration::from_millis(400)),
+            "32 samples never once exceeded the bare step — the jitter is dead"
         );
     }
 }
