@@ -124,6 +124,11 @@ pub struct KeyCache {
     misses: AtomicU64,
     /// Malformed-notification clears the ~1/s bound suppressed (N6).
     suppressed_clears: AtomicU64,
+    /// How long a per-project marker lives: the longest a `began`-to-`put` window
+    /// can run — the request deadline — floored at the cache TTL, so a marker
+    /// cannot be pruned while a resolve it guards is still legitimately in flight
+    /// (round-3 A: pruning at the TTL is unsafe past a 30 s request timeout).
+    marker_window: Duration,
 }
 
 #[derive(Debug, Default)]
@@ -230,15 +235,18 @@ impl KeyCache {
 
     /// Marks `project`'s window and drops its entries — shared by every invalidation.
     /// The marker lets an in-flight resolve of this project (and only it) discard its
-    /// answer instead of resurrecting a revoked identity; markers prune at the TTL,
-    /// since nothing still resolving is older than the statement timeout it was
-    /// bounded by — far under a TTL — and the map itself is hard-capped.
-    fn invalidate_locked(inner: &mut Inner, project_id: Uuid) {
+    /// answer instead of resurrecting a revoked identity; markers live for the
+    /// longest possible resolve (the request deadline, floored at the TTL), and an
+    /// overflowing map degrades to the global clear window — forgetting markers
+    /// outright would let a flood of forged `p<uuid>`s or real resets erase a
+    /// victim's window and resurrect its revoked key (round-3 A).
+    fn invalidate_locked(inner: &mut Inner, marker_window: Duration, project_id: Uuid) {
         let now = Instant::now();
         inner
             .invalidated
-            .retain(|_, at| now.duration_since(*at) < KeyCache::TTL);
+            .retain(|_, at| now.duration_since(*at) < marker_window);
         if inner.invalidated.len() >= KeyCache::CAP {
+            inner.cleared_all = Some(now);
             inner.invalidated.clear();
         }
         inner.invalidated.insert(project_id, now);
@@ -250,7 +258,7 @@ impl KeyCache {
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Self::invalidate_locked(&mut inner, project_id);
+        Self::invalidate_locked(&mut inner, self.marker_window, project_id);
         inner.map.retain(|_, e| e.identity.key_id != key_id);
     }
 
@@ -260,7 +268,7 @@ impl KeyCache {
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Self::invalidate_locked(&mut inner, project_id);
+        Self::invalidate_locked(&mut inner, self.marker_window, project_id);
         inner
             .map
             .retain(|_, e| e.identity.scope.project_id != project_id);
@@ -313,14 +321,24 @@ impl KeyCache {
     }
 }
 
-impl Default for KeyCache {
-    fn default() -> Self {
+impl KeyCache {
+    /// `resolve_bound` is the longest a `began` → [`Self::put_if_fresh`] window can
+    /// run — the request deadline the resolve lives inside; markers live at least
+    /// that long (round-3 A).
+    pub fn new(resolve_bound: Duration) -> Self {
         Self {
             inner: Mutex::new(Inner::default()),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
             suppressed_clears: AtomicU64::new(0),
+            marker_window: Self::TTL.max(resolve_bound),
         }
+    }
+}
+
+impl Default for KeyCache {
+    fn default() -> Self {
+        Self::new(Duration::ZERO)
     }
 }
 
@@ -443,6 +461,64 @@ mod tests {
         cache.malformed_clear();
         assert!(cache.get(&KeyHash([2; 32])).is_some());
         assert_eq!(cache.stats().2, 2);
+    }
+
+    /// Round-3 A: the marker map is hard-capped — but overflowing it without the
+    /// global window forgets every invalidation. A role `NOTIFY`ing `p<random
+    /// uuid>`s (or enough real resets inside the window) could then resurrect a
+    /// revoked key in a racing resolve: the overflow must behave like a gap.
+    #[test]
+    fn an_invalidation_flood_cannot_erase_the_victims_window() {
+        let cache = KeyCache::default();
+        let hash = KeyHash([9; 32]);
+        let (victim, key) = (Uuid::now_v7(), Uuid::now_v7());
+        // The victim's resolve opens its window, the revoke lands and marks it…
+        let began = cache.began();
+        cache.invalidate_project(victim);
+        // …then a flood of other projects' invalidations overflows the map.
+        for _ in 0..KeyCache::CAP {
+            cache.invalidate_project(Uuid::now_v7());
+        }
+        // The victim's stale answer must still be refused.
+        cache.put_if_fresh(hash, identity(victim, key), began);
+        assert!(
+            cache.get(&hash).is_none(),
+            "an overflowing invalidation map must behave like a gap, not forget"
+        );
+    }
+
+    /// Round-3 A: markers prune at the longest possible resolve, not the cache TTL —
+    /// a request may legitimately take the whole request deadline (60 s here), so a
+    /// revocation 31 s old still guards a resolve that began 40 s ago.
+    #[test]
+    fn a_marker_lives_for_the_longest_resolve_not_the_ttl() {
+        let cache = KeyCache::new(Duration::from_secs(60));
+        let hash = KeyHash([11; 32]);
+        let (victim, key) = (Uuid::now_v7(), Uuid::now_v7());
+        // The resolve began 40 s ago; the revoke landed 9 s into it — past the
+        // 30 s TTL, inside the resolve window.
+        let began = Instant::now()
+            .checked_sub(Duration::from_secs(40))
+            .expect("forty seconds ago is a representable instant");
+        {
+            let mut inner = cache
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            inner.invalidated.insert(
+                victim,
+                Instant::now()
+                    .checked_sub(Duration::from_secs(31))
+                    .expect("thirty-one seconds ago is a representable instant"),
+            );
+        }
+        // A later invalidation prunes by the window — the marker must survive.
+        cache.invalidate_project(Uuid::now_v7());
+        cache.put_if_fresh(hash, identity(victim, key), began);
+        assert!(
+            cache.get(&hash).is_none(),
+            "a marker older than the TTL but inside the resolve window was pruned"
+        );
     }
 
     /// The map never exceeds its bound: at capacity the oldest entry goes, never a grow.

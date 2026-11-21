@@ -89,6 +89,9 @@ impl AppState {
                 .map(crate::config::Secret::expose),
             config.cursor_ttl,
         ));
+        // The request deadline is the longest a resolve can legitimately stay open —
+        // the key cache's invalidation markers live at least that long (round-3 A).
+        let key_cache = Arc::new(crate::auth::KeyCache::new(config.request_timeout));
         Self {
             cursors,
             tasks: Arc::new(Tasks::default()),
@@ -101,7 +104,7 @@ impl AppState {
             network,
             payment_locks: Arc::new(PaymentLocks::default()),
             pool_stats: Arc::new(crate::poolstat::PoolStats::default()),
-            key_cache: Arc::new(crate::auth::KeyCache::default()),
+            key_cache,
             listen_name: format!("ps-listen-{}", uuid::Uuid::now_v7().simple()),
         }
     }
