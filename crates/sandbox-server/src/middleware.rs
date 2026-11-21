@@ -96,10 +96,21 @@ async fn error_envelope(request: Request, next: Next) -> Response {
         .get(REQUEST_ID_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
-    let response = next.run(request).await;
+    let mut response = next.run(request).await;
     let status = response.status();
     if !(status.is_client_error() || status.is_server_error()) {
         return response;
+    }
+    // Every 503 is "not now, later" — a refusal that names no retry is not a lawful
+    // one. Named errors carry the header already; the producers that leave it out
+    // are the bare ones — the request deadline's `with_status_code` answer being
+    // the known case (run 44878702640's 364 refusals without `Retry-After`). This
+    // sits ahead of every return path, JSON or rendered, so none leaks.
+    if status == StatusCode::SERVICE_UNAVAILABLE {
+        response
+            .headers_mut()
+            .entry(header::RETRY_AFTER)
+            .or_insert(HeaderValue::from_static("1"));
     }
     let public = match response.extensions().get::<PublicError>() {
         Some(public) => public.clone(),

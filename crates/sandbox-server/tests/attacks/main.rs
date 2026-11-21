@@ -524,6 +524,60 @@ async fn over_admission_load_is_shed_lawfully() {
     t.app.cleanup().await;
 }
 
+// 4b. DEADLINE REFUSAL: when the request's own deadline fires inside the stack, the
+// answer is ours to name — a bare 503 with no Retry-After is not a lawful refusal
+// (run 44878702640, m8-overload: 364 such answers).
+#[tokio::test]
+async fn a_deadline_fired_refusal_names_its_retry() {
+    // The request deadline must still be the loosest timer in the stack
+    // (request > sim + 2×statement, > each pool budget): the stalled body never
+    // reaches the pool, so the shrunken budgets only have to carry setup.
+    let t = Target::new(&[
+        ("PS_DB_STATEMENT_TIMEOUT_MS", "3000"),
+        ("PS_DB_ACQUIRE_TIMEOUT_MS", "4000"),
+        ("PS_SIM_TIMEOUT_MS", "100"),
+        ("PS_REQUEST_TIMEOUT_MS", "9000"),
+    ])
+    .await;
+    let (_p, admin) = t.app.project("atk-deadline").await;
+    // A complete head and a valid key; the declared body never arrives. The handler's
+    // body read outlives the 9 s request deadline — the body's own read deadline
+    // (seconds more) does not, so the refusal is the request deadline firing inside
+    // the stack: our slowness, not the client's.
+    let head = format!(
+        "POST /v1/payments HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {admin}\r\nidempotency-key: atk-deadline\r\ncontent-type: application/json\r\ncontent-length: 40\r\nconnection: close\r\n\r\n"
+    );
+    let mut stream = tokio::net::TcpStream::connect(t.addr).await.unwrap();
+    stream.write_all(head.as_bytes()).await.unwrap();
+    let mut buf = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    loop {
+        match tokio::time::timeout(Duration::from_secs(12), stream.read(&mut chunk)).await {
+            Ok(Ok(0) | Err(_)) | Err(_) => break,
+            Ok(Ok(n)) => {
+                buf.extend_from_slice(&chunk[..n]);
+                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+        }
+    }
+    let res = parse(&buf);
+    assert_eq!(
+        res.status,
+        503,
+        "the deadline answer was {}: {}",
+        res.status,
+        String::from_utf8_lossy(&res.body)
+    );
+    assert!(
+        res.header("retry-after").is_some(),
+        "the deadline refusal named no retry: {:?}",
+        res.headers
+    );
+    t.app.cleanup().await;
+}
+
 // 5. SSRF AT THE ONLY OUTBOUND SURFACE: webhook targets must stay loopback (D-023,
 // D-059); every evasion form is refused at creation, before any delivery exists.
 #[tokio::test]

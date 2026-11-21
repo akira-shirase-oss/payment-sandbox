@@ -1,0 +1,22 @@
+diff --git a/crates/sandbox-server/src/middleware.rs b/crates/sandbox-server/src/middleware.rs
+index 1bfbfae..3f18664 100644
+--- a/crates/sandbox-server/src/middleware.rs
++++ b/crates/sandbox-server/src/middleware.rs
+@@ -101,17 +101,6 @@ async fn error_envelope(request: Request, next: Next) -> Response {
+     if !(status.is_client_error() || status.is_server_error()) {
+         return response;
+     }
+-    // Every 503 is "not now, later" — a refusal that names no retry is not a lawful
+-    // one. Named errors carry the header already; the producers that leave it out
+-    // are the bare ones — the request deadline's `with_status_code` answer being
+-    // the known case (run 44878702640's 364 refusals without `Retry-After`). This
+-    // sits ahead of every return path, JSON or rendered, so none leaks.
+-    if status == StatusCode::SERVICE_UNAVAILABLE {
+-        response
+-            .headers_mut()
+-            .entry(header::RETRY_AFTER)
+-            .or_insert(HeaderValue::from_static("1"));
+-    }
+     let public = match response.extensions().get::<PublicError>() {
+         Some(public) => public.clone(),
+         None if error::is_json(response.headers()) => return response,
