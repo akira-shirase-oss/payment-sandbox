@@ -270,12 +270,7 @@ impl Config {
         let sim_url = lookup("PS_SIM_URL").unwrap_or_else(|| "http://127.0.0.1:56081".to_owned());
         let sites = parse.sites(listen, read_edge.listen, &sim_url, &database_url);
         let reconcile = parse.reconcile_tuning(reconcile_batch);
-        let secret_key = lookup("PS_SECRET_KEY");
-        if let Some(key) = &secret_key
-            && crate::secrets::SecretBox::from_hex(key).is_err()
-        {
-            errors.push("PS_SECRET_KEY must be 64 hex characters (32 bytes)".to_owned());
-        }
+        let secret_key = read_secret_key(&lookup, &mut errors);
         let log_format = log_format(lookup("PS_LOG_FORMAT").as_deref(), &mut errors);
         let log_filter = lookup("PS_LOG").unwrap_or_else(|| "info".to_owned());
         if !is_loopback_http(&sim_url) {
@@ -424,12 +419,7 @@ impl Config {
                 errors.push("PS_READ_LISTEN must use its own port".to_owned());
             }
         }
-        if request_timeout <= pool.statement_timeout {
-            errors.push(
-                "PS_REQUEST_TIMEOUT_MS must exceed PS_DB_STATEMENT_TIMEOUT_MS, so a slow statement fails before the request does"
-                    .to_owned(),
-            );
-        }
+        self.deadline_problems(&mut errors);
         if sim_timeout.saturating_add(pool.statement_timeout.saturating_mul(2)) >= request_timeout {
             errors.push(
                 "PS_REQUEST_TIMEOUT_MS must exceed PS_SIM_TIMEOUT_MS plus two statement timeouts, so a request can record what the network said"
@@ -438,6 +428,53 @@ impl Config {
         }
         errors
     }
+
+    /// Every pool deadline must refuse before the request's own deadline does — write
+    /// pool and read pool alike — or a connection can answer after the caller stopped
+    /// listening.
+    fn deadline_problems(&self, errors: &mut Vec<String>) {
+        for (env, budget, what) in [
+            (
+                "PS_DB_STATEMENT_TIMEOUT_MS",
+                self.pool.statement_timeout,
+                "a slow statement",
+            ),
+            (
+                "PS_DB_ACQUIRE_TIMEOUT_MS",
+                self.pool.acquire_timeout,
+                "a queued statement",
+            ),
+            (
+                "PS_DB_READ_STATEMENT_TIMEOUT_MS",
+                self.read_edge.db_statement_timeout,
+                "a slow read",
+            ),
+            (
+                "PS_DB_READ_ACQUIRE_TIMEOUT_MS",
+                self.read_edge.db_acquire_timeout,
+                "a queued read",
+            ),
+        ] {
+            if self.request_timeout <= budget {
+                errors.push(format!(
+                    "PS_REQUEST_TIMEOUT_MS must exceed {env}, so {what} fails before the request does"
+                ));
+            }
+        }
+    }
+}
+
+fn read_secret_key(
+    lookup: &impl Fn(&str) -> Option<String>,
+    errors: &mut Vec<String>,
+) -> Option<String> {
+    let key = lookup("PS_SECRET_KEY");
+    if let Some(key) = &key
+        && crate::secrets::SecretBox::from_hex(key).is_err()
+    {
+        errors.push("PS_SECRET_KEY must be 64 hex characters (32 bytes)".to_owned());
+    }
+    key
 }
 
 fn log_format(raw: Option<&str>, errors: &mut Vec<String>) -> LogFormat {
@@ -784,6 +821,41 @@ mod tests {
         ] {
             assert!(text.contains(needle), "missing {needle:?} in {text}");
         }
+    }
+
+    #[test]
+    fn every_pool_deadline_must_beat_the_request_deadline() {
+        // A pool deadline that outlives the request's own deadline can never refuse
+        // first: the caller's request dies while the pool still believes it has time.
+        // The write pool's statement deadline is checked; so are its acquire deadline
+        // and both read-pool deadlines (D-100, D-101).
+        let err = config(&[
+            ("PS_DATABASE_URL", "postgres://x@127.0.0.1:56432/db"),
+            ("PS_SIM_TOKEN", SIM_TOKEN),
+            ("PS_REQUEST_TIMEOUT_MS", "5000"),
+            ("PS_DB_ACQUIRE_TIMEOUT_MS", "5000"),
+            ("PS_DB_READ_STATEMENT_TIMEOUT_MS", "6000"),
+            ("PS_DB_READ_ACQUIRE_TIMEOUT_MS", "6000"),
+        ])
+        .unwrap_err();
+        let text = err.to_string();
+        for needle in [
+            "PS_REQUEST_TIMEOUT_MS must exceed PS_DB_ACQUIRE_TIMEOUT_MS",
+            "PS_REQUEST_TIMEOUT_MS must exceed PS_DB_READ_STATEMENT_TIMEOUT_MS",
+            "PS_REQUEST_TIMEOUT_MS must exceed PS_DB_READ_ACQUIRE_TIMEOUT_MS",
+        ] {
+            assert!(text.contains(needle), "missing {needle:?} in {text}");
+        }
+        // Just under the request deadline is accepted.
+        let ok = config(&[
+            ("PS_DATABASE_URL", "postgres://x@127.0.0.1:56432/db"),
+            ("PS_SIM_TOKEN", SIM_TOKEN),
+            ("PS_REQUEST_TIMEOUT_MS", "5000"),
+            ("PS_DB_ACQUIRE_TIMEOUT_MS", "4999"),
+            ("PS_DB_READ_STATEMENT_TIMEOUT_MS", "4999"),
+            ("PS_DB_READ_ACQUIRE_TIMEOUT_MS", "4999"),
+        ]);
+        assert!(ok.is_ok(), "{:?}", ok.unwrap_err());
     }
 
     #[test]
