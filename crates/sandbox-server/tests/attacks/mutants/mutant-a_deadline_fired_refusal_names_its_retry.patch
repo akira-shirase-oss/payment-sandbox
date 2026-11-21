@@ -1,8 +1,14 @@
 diff --git a/crates/sandbox-server/src/middleware.rs b/crates/sandbox-server/src/middleware.rs
-index 1bfbfae..3f18664 100644
+index 1bfbfae..04a76e6 100644
 --- a/crates/sandbox-server/src/middleware.rs
 +++ b/crates/sandbox-server/src/middleware.rs
-@@ -101,17 +101,6 @@ async fn error_envelope(request: Request, next: Next) -> Response {
+@@ -96,22 +96,11 @@ async fn error_envelope(request: Request, next: Next) -> Response {
+         .get(REQUEST_ID_HEADER)
+         .and_then(|value| value.to_str().ok())
+         .map(str::to_owned);
+-    let mut response = next.run(request).await;
++    let response = next.run(request).await;
+     let status = response.status();
      if !(status.is_client_error() || status.is_server_error()) {
          return response;
      }

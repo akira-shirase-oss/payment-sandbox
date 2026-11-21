@@ -1,14 +1,18 @@
-# Mutant: the explain context is not bound — the AEAD's associated data is dropped, so a
+# Mutant: the explain context is not bound — the AEAD associated data is dropped, so a
 # cursor issued for one context decrypts for every other (cross-account, cross-project).
 # Expected red: attacks::forged_explain_cursors_are_refused_cleanly fails without the protection.
-diff --git a/crates/sandbox-server/src/cursor.rs b/crates/sandbox-server/src/cursor.rs
-index 0000000..0000000 100644
 --- a/crates/sandbox-server/src/cursor.rs
 +++ b/crates/sandbox-server/src/cursor.rs
-@@ -155,10 +155,10 @@ impl CursorKey {
-         let ciphertext = self
-             .cipher
-             .encrypt(
+@@ -142,7 +142,7 @@
+     fn seal_at(
+         &self,
+         cursor: &ExplainCursor,
+-        context: &str,
++        _context: &str,
+         issued_at: u64,
+     ) -> Result<String, SealError> {
+         let payload = format!(
+@@ -157,7 +157,7 @@
                  &Nonce::from(nonce),
                  Payload {
                      msg: payload.as_bytes(),
@@ -17,10 +21,16 @@ index 0000000..0000000 100644
                  },
              )
              .map_err(|_| SealError)?;
-@@ -181,10 +181,10 @@ impl CursorKey {
-         let plain = self
-             .cipher
-             .decrypt(
+@@ -168,7 +168,7 @@
+ 
+     /// Opens a sealed cursor issued for `context`: shape, decode, AEAD-open, fields, then
+     /// the lease — all before anything reaches the database.
+-    pub fn open(&self, sealed: &str, context: &str) -> Result<ExplainCursor, CursorError> {
++    pub fn open(&self, sealed: &str, _context: &str) -> Result<ExplainCursor, CursorError> {
+         if sealed.len() > MAX_CURSOR_CHARS
+             || sealed.len() < 2 * (NONCE_BYTES + TAG_BYTES + 1)
+             || !sealed.len().is_multiple_of(2)
+@@ -184,7 +184,7 @@
                  &Nonce::from(nonce),
                  Payload {
                      msg: ciphertext,

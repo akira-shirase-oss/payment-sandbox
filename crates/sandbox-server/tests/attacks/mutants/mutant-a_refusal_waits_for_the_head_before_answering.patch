@@ -2,7 +2,7 @@
 ## proof-filter: tests::a_refusal_waits_for_the_head_before_answering
 --- a/crates/sandbox-http/src/lib.rs
 +++ b/crates/sandbox-http/src/lib.rs
-@@ -436,7 +436,6 @@ async fn refuse(
+@@ -440,7 +440,6 @@
      let Some(_permit) = permit else {
          return;
      };
@@ -10,3 +10,37 @@
      let _ = tokio::time::timeout(limits.write_timeout, stream.write_all(OVER_CAP_RESPONSE)).await;
      let _ = stream.shutdown().await;
      // The drain ends on a quiet peer — a FIN, an error, or REFUSAL_QUIET without a
+@@ -459,23 +458,7 @@
+     .await;
+ }
+ 
+-/// Reads until the request head ends (`\r\n\r\n`) or a byte bound — whatever the client
+-/// had already sent when it was refused, so the answer does not race unread data (S2-2).
+-async fn read_head(stream: &mut TcpStream) {
+-    let mut window = [0_u8; 8_192];
+-    let mut filled = 0_usize;
+-    while filled < window.len()
+-        && let Ok(n @ 1..) = stream.read(&mut window[filled..]).await
+-    {
+-        filled += n;
+-        if window[..filled].windows(4).any(|w| w == b"\r\n\r\n") {
+-            return;
+-        }
+-    }
+-}
+-
+-/// Longest the refusal spends reading the head it answers, and draining the rest.
+-const REFUSAL_HEAD: Duration = Duration::from_secs(1);
++/// Longest the refusal drains what the client was still sending.
+ const REFUSAL_DRAIN: Duration = Duration::from_secs(1);
+ /// The drain's per-read bound: a peer this quiet is done for our purposes — the
+ /// response is sent and its socket frees the refusal slot instead of waiting out a
+@@ -483,7 +466,7 @@
+ const REFUSAL_QUIET: Duration = Duration::from_millis(100);
+ 
+ /// Refused connections mid-drain at once (N4): each holds a socket up to
+-/// `REFUSAL_HEAD` + `REFUSAL_DRAIN`; the semaphore bounds that to a countable share of
++/// `REFUSAL_DRAIN`; the semaphore bounds that to a countable share of
+ /// the descriptor budget — past it the excess socket closes at once.
+ pub const REFUSAL_PERMITS: usize = 64;
+ 

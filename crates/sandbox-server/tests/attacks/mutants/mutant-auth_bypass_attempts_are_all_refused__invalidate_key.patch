@@ -1,7 +1,14 @@
-diff --git a/crates/sandbox-server/src/handlers/keys.rs b/crates/sandbox-server/src/handlers/keys.rs
-index 0000000..0000000 100644
 --- a/crates/sandbox-server/src/handlers/keys.rs
 +++ b/crates/sandbox-server/src/handlers/keys.rs
+@@ -95,7 +95,7 @@
+ 
+ /// Revokes a key of the caller's project. Idempotent; refuses the last admin key.
+ pub async fn revoke(
+-    State(state): State<AppState>,
++    State(_state): State<AppState>,
+     Extension(db): Extension<DbPool>,
+     auth: Auth,
+     PathId(key_id): PathId,
 @@ -106,9 +106,6 @@
          RevokeOutcome::Revoked => {
              // D-102: a revoked key fails on its very next request — the cache drops it now,

@@ -2,7 +2,7 @@
 ## proof-filter: tests::a_lingering_refused_socket_frees_its_refusal_slot
 --- a/crates/sandbox-http/src/lib.rs
 +++ b/crates/sandbox-http/src/lib.rs
-@@ -447,7 +447,7 @@ async fn refuse(
+@@ -451,7 +451,7 @@
      // still caps the whole drain so a dribbling peer holds a slot no longer.
      let _ = tokio::time::timeout(REFUSAL_DRAIN, async {
          let mut sink = [0_u8; 8_192];
@@ -11,3 +11,14 @@
              .await
              .is_ok_and(|read| read.is_ok_and(|n| n > 0))
          {}
+@@ -477,10 +477,6 @@
+ /// Longest the refusal spends reading the head it answers, and draining the rest.
+ const REFUSAL_HEAD: Duration = Duration::from_secs(1);
+ const REFUSAL_DRAIN: Duration = Duration::from_secs(1);
+-/// The drain's per-read bound: a peer this quiet is done for our purposes — the
+-/// response is sent and its socket frees the refusal slot instead of waiting out a
+-/// FIN that a pooled client may leave for seconds.
+-const REFUSAL_QUIET: Duration = Duration::from_millis(100);
+ 
+ /// Refused connections mid-drain at once (N4): each holds a socket up to
+ /// `REFUSAL_HEAD` + `REFUSAL_DRAIN`; the semaphore bounds that to a countable share of
