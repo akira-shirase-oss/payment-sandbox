@@ -1,0 +1,15 @@
+## proof-target: -p sandbox-http --lib
+## proof-filter: tests::a_refusal_frees_its_pending_place_before_the_drain
+--- a/crates/sandbox-http/src/lib.rs
++++ b/crates/sandbox-http/src/lib.rs
+@@ -399,10 +399,6 @@
+         connection(stream, service, limits, stopping, permit, stats).await;
+     } else {
+         stats.waited(started.elapsed());
+-        // The wait for a place is over: the pending place is freed before the
+-        // refusal's bounded drain, not after it — pending counts connections
+-        // still waiting, and holding it doubles what a refused socket occupies.
+-        drop(waiting);
+         refuse(
+             stream,
+             limits,

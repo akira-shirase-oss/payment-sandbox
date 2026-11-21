@@ -399,6 +399,10 @@ async fn wait_for_place(
         connection(stream, service, limits, stopping, permit, stats).await;
     } else {
         stats.waited(started.elapsed());
+        // The wait for a place is over: the pending place is freed before the
+        // refusal's bounded drain, not after it — pending counts connections
+        // still waiting, and holding it doubles what a refused socket occupies.
+        drop(waiting);
         refuse(
             stream,
             limits,
@@ -1424,6 +1428,52 @@ mod tests {
             String::from_utf8_lossy(&answer).starts_with("HTTP/1.1 503"),
             "second answer: {}",
             String::from_utf8_lossy(&answer)
+        );
+    }
+
+    /// A refused connection has finished waiting for a place — its pending place
+    /// must not be held through the refusal's bounded drain: pending counts
+    /// connections still waiting, and holding it doubles the slots a refused
+    /// socket occupies exactly when the listener is most saturated (deferred
+    /// finding E). The client leaves its head unfinished, so the refusal sits
+    /// inside `REFUSAL_HEAD` while the pending place is checked.
+    #[tokio::test]
+    async fn a_refusal_frees_its_pending_place_before_the_drain() {
+        let stats = Arc::new(ServeStats::default());
+        let limits = Limits {
+            accept_wait: Duration::from_millis(100),
+            ..Limits::with_connections(1)
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let service = small();
+        let (_stop, stopping) = watch::channel(false);
+        // The one serving place is held for the whole test: the connection's
+        // `accept_wait` always runs out into the refusal.
+        let permits = Arc::new(Semaphore::new(1));
+        let _serving = permits.clone().try_acquire_owned().unwrap();
+        let gates = Gates {
+            permits,
+            pending: Arc::new(Semaphore::new(1)),
+            refusal: Arc::new(Semaphore::new(1)),
+        };
+        let pending = gates.pending.clone();
+
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let (accepted, _) = listener.accept().await.unwrap();
+        tokio::spawn(wait_for_place(
+            accepted, service, limits, stopping, gates, stats,
+        ));
+
+        // An unfinished head parks the refusal in its bounded head read — a
+        // window well inside `REFUSAL_HEAD`, well past `accept_wait`. The
+        // pending place must already be free.
+        client.write_all(b"GET / HTTP/1.1\r\n").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(
+            pending.available_permits(),
+            1,
+            "the refused connection still held its pending place inside the drain"
         );
     }
 
