@@ -1,0 +1,15 @@
+## proof-target: -p sandbox-server --lib
+## proof-filter: auth::tests::a_resolve_that_outlived_its_marker_window_cannot_put
+--- a/crates/sandbox-server/src/auth.rs
++++ b/crates/sandbox-server/src/auth.rs
+@@ -228,10 +228,6 @@
+             .inner
+             .lock()
+             .unwrap_or_else(std::sync::PoisonError::into_inner);
+-        if began.elapsed() >= self.marker_window {
+-            self.misses.fetch_add(1, Ordering::Relaxed);
+-            return;
+-        }
+         let stale = inner.cleared_all.is_some_and(|at| at >= began)
+             || inner
+                 .invalidated

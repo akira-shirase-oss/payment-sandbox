@@ -124,6 +124,9 @@ pub struct KeyCache {
     misses: AtomicU64,
     /// Malformed-notification clears the ~1/s bound suppressed (N6).
     suppressed_clears: AtomicU64,
+    /// `auth_epoch` listener pair connects that failed or outlived their bound —
+    /// the N-2 signal a deployment sized at +1 connection would otherwise hide.
+    connect_failures: AtomicU64,
     /// How long a per-project marker lives: the longest a `began`-to-`put` window
     /// can run — the request deadline — floored at the cache TTL, so a marker
     /// cannot be pruned while a resolve it guards is still legitimately in flight
@@ -216,11 +219,19 @@ impl KeyCache {
     /// since `began` — the compare happens under the same lock every invalidator marks
     /// under, so a resolve that raced a revoke or a reset can never resurrect the old
     /// entry (S1-1), while another project's invalidation costs this resolve nothing.
+    /// A resolve that has already outlived `marker_window` is refused outright: any
+    /// marker its `began` needed may already be pruned, so the stale check below
+    /// could silently pass on a guard that is gone (N-3 — report and checkout
+    /// resolves can run past the request deadline the window is sized from).
     pub fn put_if_fresh(&self, hash: KeyHash, identity: KeyIdentity, began: Instant) {
         let mut inner = self
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if began.elapsed() >= self.marker_window {
+            self.misses.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
         let stale = inner.cleared_all.is_some_and(|at| at >= began)
             || inner
                 .invalidated
@@ -310,13 +321,21 @@ impl KeyCache {
         inner.map.clear();
     }
 
-    /// `(hits, misses, suppressed malformed clears)` — observability for the cache
-    /// that serves the hot read path.
-    pub fn stats(&self) -> (u64, u64, u64) {
+    /// The listener's connect pair failed or outlived its bound — counted so a
+    /// deployment missing the +2 connection budget shows up as a number, not
+    /// just a cache that keeps clearing (N-2). Returns the running total.
+    pub fn note_connect_failure(&self) -> u64 {
+        self.connect_failures.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// `(hits, misses, suppressed malformed clears, listener connect failures)` —
+    /// observability for the cache that serves the hot read path.
+    pub fn stats(&self) -> (u64, u64, u64, u64) {
         (
             self.hits.load(Ordering::Relaxed),
             self.misses.load(Ordering::Relaxed),
             self.suppressed_clears.load(Ordering::Relaxed),
+            self.connect_failures.load(Ordering::Relaxed),
         )
     }
 }
@@ -331,6 +350,7 @@ impl KeyCache {
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
             suppressed_clears: AtomicU64::new(0),
+            connect_failures: AtomicU64::new(0),
             marker_window: Self::TTL.max(resolve_bound),
         }
     }
@@ -374,7 +394,7 @@ mod tests {
         assert!(cache.get(&hash).is_none());
         cache.put(hash, identity(Uuid::now_v7(), Uuid::now_v7()));
         assert!(cache.get(&hash).is_some());
-        assert_eq!(cache.stats(), (1, 1, 0));
+        assert_eq!(cache.stats(), (1, 1, 0, 0));
     }
 
     /// A revoked key's entries drop at once — the next request resolves afresh and a
@@ -461,6 +481,32 @@ mod tests {
         cache.malformed_clear();
         assert!(cache.get(&KeyHash([2; 32])).is_some());
         assert_eq!(cache.stats().2, 2);
+    }
+
+    /// N-3: a resolve that has already outlived the marker window must be
+    /// refused, not compared — any invalidation marker its `began` needed may
+    /// already be pruned, so the stale check would silently pass on a guard
+    /// that is gone. Report and checkout resolves can legitimately run past
+    /// the request deadline the window is sized from.
+    #[test]
+    fn a_resolve_that_outlived_its_marker_window_cannot_put() {
+        let cache = KeyCache::default();
+        let hash = KeyHash([9; 32]);
+        let (project, key) = (Uuid::now_v7(), Uuid::now_v7());
+        // The window floor is the 30 s TTL — a `began` older than it must be
+        // refused even though no invalidation ever landed inside it.
+        let began = Instant::now()
+            .checked_sub(KeyCache::TTL + Duration::from_secs(1))
+            .expect("the test clock cannot reach past the marker window");
+        cache.put_if_fresh(hash, identity(project, key), began);
+        assert!(
+            cache.get(&hash).is_none(),
+            "a put past its marker window must be refused"
+        );
+        // A resolve inside the window still caches — the bound is the window's
+        // edge, not a blanket refusal of aged instants.
+        cache.put_if_fresh(hash, identity(project, key), cache.began());
+        assert!(cache.get(&hash).is_some());
     }
 
     /// Round-3 A: the marker map is hard-capped — but overflowing it without the
