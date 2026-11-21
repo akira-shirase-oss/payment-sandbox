@@ -1,0 +1,13 @@
+## proof-target: -p sandbox-http --lib
+## proof-filter: tests::a_lingering_refused_socket_frees_its_refusal_slot
+--- a/crates/sandbox-http/src/lib.rs
++++ b/crates/sandbox-http/src/lib.rs
+@@ -447,7 +447,7 @@ async fn refuse(
+     // still caps the whole drain so a dribbling peer holds a slot no longer.
+     let _ = tokio::time::timeout(REFUSAL_DRAIN, async {
+         let mut sink = [0_u8; 8_192];
+-        while tokio::time::timeout(REFUSAL_QUIET, stream.read(&mut sink))
++        while tokio::time::timeout(REFUSAL_DRAIN, stream.read(&mut sink))
+             .await
+             .is_ok_and(|read| read.is_ok_and(|n| n > 0))
+         {}

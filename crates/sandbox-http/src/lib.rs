@@ -78,6 +78,9 @@ pub struct Limits {
     pub max_requests: u32,
     /// Age after which a connection is closed after its next response.
     pub max_age: Duration,
+    /// Refusals mid-answer at once — each holds a socket while it drains; the bound
+    /// keeps drains a countable share of the descriptor budget (N4).
+    pub refusal_permits: usize,
 }
 
 impl Limits {
@@ -96,13 +99,15 @@ impl Limits {
             write_timeout: Duration::from_secs(10),
             max_requests: 10_000,
             max_age: Duration::from_secs(600),
+            refusal_permits: REFUSAL_PERMITS,
         }
     }
 
     /// Reads `<prefix>MAX_CONNECTIONS`, `<prefix>ACCEPT_WAIT_MS`, `<prefix>MAX_PENDING`,
     /// `<prefix>READ_TIMEOUT_MS`, `<prefix>IDLE_TIMEOUT_MS`, `<prefix>WRITE_TIMEOUT_MS`,
-    /// `<prefix>MAX_REQUESTS_PER_CONNECTION` and `<prefix>MAX_CONNECTION_AGE_MS` through
-    /// `lookup`, over `defaults`. Every problem is reported.
+    /// `<prefix>MAX_REQUESTS_PER_CONNECTION`, `<prefix>MAX_CONNECTION_AGE_MS` and
+    /// `<prefix>REFUSAL_PERMITS` through `lookup`, over `defaults`. Every problem is
+    /// reported.
     pub fn from_lookup(
         prefix: &str,
         lookup: impl Fn(&str) -> Option<String>,
@@ -159,6 +164,11 @@ impl Limits {
                 "MAX_CONNECTION_AGE_MS",
                 millis(defaults.max_age),
             )),
+            refusal_permits: usize::try_from(number(
+                "REFUSAL_PERMITS",
+                u64::try_from(defaults.refusal_permits).unwrap_or(u64::MAX),
+            ))
+            .unwrap_or(usize::MAX),
         };
         if errors.is_empty() {
             Ok(limits)
@@ -300,7 +310,7 @@ pub async fn serve(
         pending: Arc::new(Semaphore::new(limits.max_pending.max(1))),
         // A refused connection's lingering close still holds a socket for up to a few
         // seconds — bounded too, or a refused flood is its own EMFILE vector (N4).
-        refusal: Arc::new(Semaphore::new(REFUSAL_PERMITS)),
+        refusal: Arc::new(Semaphore::new(limits.refusal_permits.max(1))),
     };
     let (stop, stopping) = watch::channel(false);
     let mut connections = JoinSet::new();
@@ -429,9 +439,18 @@ async fn refuse(
     let _ = tokio::time::timeout(REFUSAL_HEAD, read_head(&mut stream)).await;
     let _ = tokio::time::timeout(limits.write_timeout, stream.write_all(OVER_CAP_RESPONSE)).await;
     let _ = stream.shutdown().await;
+    // The drain ends on a quiet peer — a FIN, an error, or REFUSAL_QUIET without a
+    // byte — not on waiting a full bound for the FIN: our own shutdown already sent
+    // the close, and a refused client that lingers (k6's pool keeps the socket until
+    // reuse) would hold the slot for the whole bound while every later refused
+    // connection closes unanswered (run 44878702640's status:0s). REFUSAL_DRAIN
+    // still caps the whole drain so a dribbling peer holds a slot no longer.
     let _ = tokio::time::timeout(REFUSAL_DRAIN, async {
         let mut sink = [0_u8; 8_192];
-        while stream.read(&mut sink).await.is_ok_and(|n| n > 0) {}
+        while tokio::time::timeout(REFUSAL_QUIET, stream.read(&mut sink))
+            .await
+            .is_ok_and(|read| read.is_ok_and(|n| n > 0))
+        {}
     })
     .await;
 }
@@ -454,6 +473,10 @@ async fn read_head(stream: &mut TcpStream) {
 /// Longest the refusal spends reading the head it answers, and draining the rest.
 const REFUSAL_HEAD: Duration = Duration::from_secs(1);
 const REFUSAL_DRAIN: Duration = Duration::from_secs(1);
+/// The drain's per-read bound: a peer this quiet is done for our purposes — the
+/// response is sent and its socket frees the refusal slot instead of waiting out a
+/// FIN that a pooled client may leave for seconds.
+const REFUSAL_QUIET: Duration = Duration::from_millis(100);
 
 /// Refused connections mid-drain at once (N4): each holds a socket up to
 /// `REFUSAL_HEAD` + `REFUSAL_DRAIN`; the semaphore bounds that to a countable share of
@@ -1338,6 +1361,68 @@ mod tests {
         assert!(
             String::from_utf8_lossy(&answer).starts_with("HTTP/1.1 503"),
             "answer: {}",
+            String::from_utf8_lossy(&answer)
+        );
+    }
+
+    /// Run 44878702640 (m8-overload) status:0s: a refused connection that lingered —
+    /// a pooled client keeps the socket until reuse — held its refusal slot for the
+    /// whole `REFUSAL_DRAIN`, so every later refused connection closed unanswered.
+    /// The drain ends on a quiet peer now: the first client stays open, and the
+    /// second refused connection still gets its answer well inside the old bound.
+    #[tokio::test]
+    async fn a_lingering_refused_socket_frees_its_refusal_slot() {
+        let stats = Arc::new(ServeStats::default());
+        let limits = Limits::with_connections(1);
+        let refusal = Arc::new(Semaphore::new(1));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let mut first = TcpStream::connect(addr).await.unwrap();
+        let (first_accepted, _) = listener.accept().await.unwrap();
+        let permit = refusal.clone().try_acquire_owned().unwrap();
+        tokio::spawn({
+            let stats = stats.clone();
+            async move { refuse(first_accepted, limits, &stats, Some(permit)).await }
+        });
+        first
+            .write_all(b"GET / HTTP/1.1\r\nhost: t\r\ncontent-length: 4\r\n\r\nbody")
+            .await
+            .unwrap();
+        let mut head = [0_u8; 128];
+        let n = first.read(&mut head).await.unwrap();
+        assert!(
+            String::from_utf8_lossy(&head[..n]).starts_with("HTTP/1.1 503"),
+            "first answer: {}",
+            String::from_utf8_lossy(&head[..n])
+        );
+
+        // The first client lingers — no FIN, no more bytes. A drain that waited on
+        // the FIN would hold the only slot for the whole `REFUSAL_DRAIN` second;
+        // the quiet bound frees it in about a tenth of that.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+
+        let mut second = TcpStream::connect(addr).await.unwrap();
+        let (second_accepted, _) = listener.accept().await.unwrap();
+        let Ok(permit) = refusal.try_acquire_owned() else {
+            panic!(
+                "the lingering first refusal still held the only slot — \
+                 a second refused connection would close unanswered"
+            );
+        };
+        tokio::spawn(async move { refuse(second_accepted, limits, &stats, Some(permit)).await });
+        second
+            .write_all(b"GET / HTTP/1.1\r\nhost: t\r\n\r\n")
+            .await
+            .unwrap();
+        let mut answer = Vec::new();
+        second
+            .read_to_end(&mut answer)
+            .await
+            .expect("the second refusal reset instead of answering");
+        assert!(
+            String::from_utf8_lossy(&answer).starts_with("HTTP/1.1 503"),
+            "second answer: {}",
             String::from_utf8_lossy(&answer)
         );
     }
