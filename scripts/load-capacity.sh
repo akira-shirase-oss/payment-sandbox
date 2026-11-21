@@ -26,7 +26,9 @@ aborted=""
 before="$(ls -t perf/results/*-${scenario}-full.json 2>/dev/null | head -1 || true)"
 for i in $(seq 1 "$max_steps"); do
   echo "capacity: step $i at ${rate} req/s (${step_secs}s)" >&2
-  log="$(mktemp -t capacity-step)"
+  # An explicit path with X's: `mktemp -t name` works on macOS but GNU mktemp reads the
+  # argument as a template and dies on "too few X's" (CI run 44835397928).
+  log="$(mktemp "${TMPDIR:-/tmp}/capacity-step.XXXXXX")"
   RATE="$rate" bash scripts/load.sh "$scenario" >"$log" 2>&1 || true
   tail -15 "$log" >&2
   latest="$(ls -t perf/results/*-${scenario}-full.json 2>/dev/null | head -1 || true)"

@@ -134,9 +134,11 @@ jobs:
           # The pattern is a regex, not a glob: capacity yields the step -full.json files
           # plus the -capacity.json knee record (run 44747097733: a glob-shaped '*' matched
           # nothing and the labelling failed on "expected new result(s), found 0").
-          pat="-${SCENARIO}-full\\.json$"; [ "$RUN_MODE" = capacity ] && pat="-${SCENARIO}-.*\\.json$"
+          # The pattern must not start with '-' or grep reads it as flags (run 44835397928:
+          # "-m5-explain-full\.json$" became -m + garbage → "invalid max count", zero results).
+          pat="${SCENARIO}-full\\.json$"; [ "$RUN_MODE" = capacity ] && pat="${SCENARIO}-.*\\.json$"
           mapfile -t results < <(git status --porcelain --untracked-files=all -- perf/results \
-            | awk '/^\?\? / {print $2}' | grep -E "$pat" || true)
+            | awk '/^\?\? / {print $2}' | grep -E -e "$pat" || true)
           [ "${#results[@]}" -ge 1 ] || { echo "expected new result(s), found ${#results[@]}" >&2; exit 1; }
           # Capacity runs yield the step files plus the knee record; every one is labelled.
           printf '%s\n' "${results[@]}" > /tmp/this-run-files
