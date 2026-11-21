@@ -332,10 +332,47 @@ async fn get_b(router: &axum::Router, path: &str, key: &str) -> StatusCode {
 /// `other_than` (None the first time, the killed pid after a gap) so a reattach is
 /// proven, not merely observed once. `pg_terminate_backend` on the returned pid can
 /// only hit THIS test's listener.
-async fn wait_attached(pool: &sqlx::PgPool, name: &str, other_than: Option<i32>) -> i32 {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+/// The attach signal `wait_attached`'s pid poll cannot give on its own: on this
+/// shared dev cluster `application_name` in `pg_stat_activity` has surfaced
+/// ~15 s behind the backend itself (the stats path, not the view), while the
+/// listener's `Tasks` beat fires the moment `LISTEN` lands — in-process, no
+/// stats visibility involved. Tests that only need "is it attached" wait on the
+/// beat; tests that need the pid then poll the name, which is guaranteed to
+/// appear but not on any deadline.
+/// `Tasks::register` seeds `last_beat` at registration, so `since_beat_ms` alone
+/// cannot prove the loop reached `beat(TASK)` — require a beat newer than
+/// `after` (captured after registration, before the spawn).
+async fn wait_beating(
+    tasks: &sandbox_server::supervisor::Tasks,
+    name: &'static str,
+    after: std::time::Instant,
+) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     loop {
-        let pid: Option<i32> = sqlx::query_scalar(
+        let since_ms = u64::try_from(after.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let beating = tasks
+            .statuses()
+            .into_iter()
+            .any(|s| s.name == name && s.since_beat_ms < since_ms);
+        if beating {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the auth listener task never beat after attach"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
+
+async fn wait_attached(pool: &sqlx::PgPool, name: &str, other_than: Option<i32>) -> i32 {
+    // The unique `application_name` is unforgeable, but its visibility lags (see
+    // `wait_beating`); this poll only runs where a beat already proved the
+    // backend exists, so a generous deadline just waits out the stats path.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut last_error = None;
+    loop {
+        match sqlx::query_scalar::<_, i32>(
             "SELECT pid FROM pg_stat_activity \
              WHERE datname = current_database() \
                AND backend_type = 'client backend' \
@@ -348,14 +385,25 @@ async fn wait_attached(pool: &sqlx::PgPool, name: &str, other_than: Option<i32>)
         .bind(other_than)
         .fetch_optional(pool)
         .await
-        .unwrap_or(None);
-        if let Some(pid) = pid {
-            return pid;
+        {
+            Ok(Some(pid)) => return pid,
+            Ok(None) => (),
+            Err(error) => last_error = Some(error.to_string()),
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the auth listener never attached"
-        );
+        if std::time::Instant::now() >= deadline {
+            type Row = (i32, Option<String>, Option<String>, Option<String>);
+            let rows: Vec<Row> = sqlx::query_as(
+                "SELECT pid, datname, application_name, backend_type \
+                     FROM pg_stat_activity WHERE datname = current_database()",
+            )
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+            panic!(
+                "the auth listener {name:?} never attached; \
+                 activity={rows:?}; last_error={last_error:?}"
+            );
+        }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
 }
@@ -464,6 +512,246 @@ async fn a_revocation_committed_in_a_listener_gap_still_flushes() {
         StatusCode::UNAUTHORIZED,
         "a key revoked while the listener was down must not outlive the reconnect"
     );
+    a.cleanup().await;
+}
+
+/// B: quiet beats keep the same backend — the self-ping arrives on the listener's
+/// own second connection, so a live wire is never rebuilt.
+#[tokio::test]
+async fn quiet_beats_keep_the_same_backend() {
+    use std::time::Duration;
+
+    let a = TestApp::new(&[]).await;
+    let (b_state, _router, b_read) = b_state(&a);
+    let listen_name = b_state.listen_name.clone();
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let listener = tokio::spawn(sandbox_server::authlisten::run_with(
+        b_state,
+        stop_rx,
+        Duration::from_millis(150),
+    ));
+    let pid = wait_attached(&b_read, &listen_name, None).await;
+    // Three full beats: pings sent and delivered — the wire must not be rebuilt.
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    let still = wait_attached(&b_read, &listen_name, None).await;
+    assert_eq!(still, pid, "a live listener was rebuilt without any load");
+    let _ = stop_tx.send(true);
+    let _ = tokio::time::timeout(Duration::from_secs(2), listener).await;
+    a.cleanup().await;
+}
+
+/// B: the liveness ping has its own connection — a write pool saturated past its
+/// acquire timeout cannot unsend it and tear down a healthy listener (which would
+/// then flush the whole key cache onto that same saturated pool every two beats).
+#[tokio::test]
+async fn a_saturated_write_pool_never_tears_down_the_listener() {
+    use std::time::Duration;
+
+    let a = TestApp::new(&[]).await;
+    let (b_state, _router, b_read) = b_state(&a);
+    let listen_name = b_state.listen_name.clone();
+    let write_db = b_state.write_db.clone();
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let listener = tokio::spawn(sandbox_server::authlisten::run_with(
+        b_state,
+        stop_rx,
+        Duration::from_millis(150),
+    ));
+    let pid = wait_attached(&b_read, &listen_name, None).await;
+
+    // Every pooled connection checked out for longer than several beats: a
+    // pool-riding ping could not even be sent. `try_acquire` cannot create
+    // connections, so `acquire` runs until it would block — saturation, whatever
+    // the pool's configured size.
+    let mut held = Vec::new();
+    while let Ok(Ok(conn)) =
+        tokio::time::timeout(Duration::from_millis(300), write_db.acquire()).await
+    {
+        held.push(conn);
+    }
+    assert!(!held.is_empty(), "the pool was never saturated");
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    let still = wait_attached(&b_read, &listen_name, None).await;
+    assert_eq!(
+        still, pid,
+        "a saturated write pool rebuilt a healthy listener — the ping rode it"
+    );
+
+    drop(held);
+    let _ = stop_tx.send(true);
+    let _ = tokio::time::timeout(Duration::from_secs(2), listener).await;
+    a.cleanup().await;
+}
+
+/// A TCP hop that can go silent without closing either side — the half-open
+/// failure only a self-ping detects. With the gate closed the proxy stops READING
+/// in both directions: the sockets stay ESTABLISHED, no FIN ever leaves, and
+/// buffered bytes simply wait. Returns the proxy's `host:port`, its gate, and a
+/// receiver pushed each forwarded connection's upstream `client_port` — the
+/// identity `pg_stat_activity` would show, without the stats visibility lag.
+async fn silent_proxy(
+    upstream: String,
+) -> (
+    String,
+    tokio::sync::watch::Sender<bool>,
+    tokio::sync::mpsc::UnboundedReceiver<u16>,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio::sync::watch;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let (gate_tx, gate_rx) = watch::channel(true);
+    let (ports_tx, ports_rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Ok((inbound, _)) = listener.accept().await {
+            let gate = gate_rx.clone();
+            let upstream = upstream.clone();
+            let ports_tx = ports_tx.clone();
+            tokio::spawn(async move {
+                let Ok(outbound) = tokio::net::TcpStream::connect(&upstream).await else {
+                    return;
+                };
+                let _ = ports_tx.send(outbound.local_addr().map_or(0, |a| a.port()));
+                let (in_read, in_write) = inbound.into_split();
+                let (out_read, out_write) = outbound.into_split();
+                // Each direction moves bytes only while the gate is open — never
+                // reading is what makes the hop silent, not just unresponsive.
+                let pipe = |mut read: tokio::net::tcp::OwnedReadHalf,
+                            mut write: tokio::net::tcp::OwnedWriteHalf,
+                            mut gate: watch::Receiver<bool>| async move {
+                    let mut buf = [0_u8; 8_192];
+                    loop {
+                        tokio::select! {
+                            changed = gate.changed() => {
+                                if changed.is_err() {
+                                    return;
+                                }
+                            }
+                            n = read.read(&mut buf), if *gate.borrow() => {
+                                match n {
+                                    Ok(0) | Err(_) => return,
+                                    Ok(n) => {
+                                        if write.write_all(&buf[..n]).await.is_err() {
+                                            return;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+                tokio::join!(
+                    pipe(in_read, out_write, gate.clone()),
+                    pipe(out_read, in_write, gate)
+                );
+            });
+        }
+    });
+    (addr, gate_tx, ports_rx)
+}
+
+/// The next upstream port the proxy accepted, or a labeled panic at 15 s — labels
+/// keep the failure message honest about which expected connection never came.
+async fn next_port(which: &str, ports: &mut tokio::sync::mpsc::UnboundedReceiver<u16>) -> u16 {
+    tokio::time::timeout(std::time::Duration::from_secs(15), ports.recv())
+        .await
+        .unwrap_or_else(|_| panic!("the proxy saw no new connection for {which}"))
+        .expect("the proxy stopped reporting connections")
+}
+
+/// B + N3: a half-open LISTEN socket (no error, no FIN, no bytes) is detected —
+/// the self-ping's notification stops arriving, a whole silent beat declares the
+/// wire dead, and the reconnect attaches a NEW backend.
+#[tokio::test]
+async fn a_black_holed_listener_socket_is_detected() {
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    use sandbox_server::{AppState, Config};
+
+    let a = TestApp::new(&[]).await;
+    // The pools reach the database directly; only the listener pair rides the proxy.
+    let direct = a.db.url();
+    let (creds, rest) = direct
+        .rsplit_once('@')
+        .expect("the test database url carries credentials");
+    let (upstream, path) = rest
+        .split_once('/')
+        .expect("the test database url carries a database name");
+    let (proxy_addr, gate, mut ports) = silent_proxy(upstream.to_owned()).await;
+    let proxied = format!("{creds}@{proxy_addr}/{path}");
+    // Canary: the proxy must really forward before its silence can prove anything.
+    let mut canary = <sqlx::PgConnection as sqlx::Connection>::connect(&proxied)
+        .await
+        .expect("the proxy does not forward");
+    let one: i32 = sqlx::query_scalar("SELECT 1")
+        .fetch_one(&mut canary)
+        .await
+        .expect("the proxy dropped a query");
+    assert_eq!(one, 1);
+    drop(canary);
+    // The LISTEN path too — a plain query proves the pipe, LISTEN the session.
+    let mut probe = sqlx::postgres::PgListener::connect(&proxied)
+        .await
+        .expect("PgListener could not connect through the proxy");
+    probe
+        .listen("auth_epoch")
+        .await
+        .expect("LISTEN through the proxy");
+    next_port("canary", &mut ports).await;
+    next_port("probe", &mut ports).await;
+
+    let vars: HashMap<String, String> = HashMap::from([
+        ("PS_DATABASE_URL".to_owned(), proxied),
+        (
+            "PS_BOOTSTRAP_TOKEN".to_owned(),
+            common::BOOTSTRAP.to_owned(),
+        ),
+        ("PS_SIM_TOKEN".to_owned(), common::SIM_TOKEN.to_owned()),
+        ("PS_PROFILE".to_owned(), "dev".to_owned()),
+        ("PS_DB_ACQUIRE_TIMEOUT_MS".to_owned(), "15000".to_owned()),
+        ("PS_DB_STATEMENT_TIMEOUT_MS".to_owned(), "10000".to_owned()),
+        ("PS_DB_LOCK_TIMEOUT_MS".to_owned(), "10000".to_owned()),
+        ("PS_REQUEST_TIMEOUT_MS".to_owned(), "60000".to_owned()),
+    ]);
+    let config = Config::from_lookup(|name| vars.get(name).cloned()).unwrap();
+    let write = sandbox_db::connect_lazy(&direct, &config.pool).unwrap();
+    let read = sandbox_db::connect_lazy(&direct, &config.read_pool()).unwrap();
+    let b_state = AppState::new(config, write, read.clone());
+    let tasks = b_state.tasks.clone();
+    tasks.register(sandbox_server::authlisten::TASK, Duration::from_secs(30));
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let spawned = std::time::Instant::now();
+    let listener = tokio::spawn(sandbox_server::authlisten::run_with(
+        b_state,
+        stop_rx,
+        Duration::from_millis(150),
+    ));
+    // Attached the moment the task beats — `application_name` in
+    // `pg_stat_activity` lags the attach by seconds on this cluster, so
+    // connection identity comes from the proxy's own forwarding ports instead.
+    wait_beating(&tasks, sandbox_server::authlisten::TASK, spawned).await;
+    let first_port = next_port("listen-1", &mut ports).await;
+    next_port("ping-1", &mut ports).await;
+
+    // Go silent for well over two beats: pings stop landing, the loop declares the
+    // wire dead and drops both sockets…
+    let _ = gate.send(false);
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    // …then heal: the reconnect that silence detection caused makes a NEW
+    // connection through the proxy — the only way another port appears.
+    let _ = gate.send(true);
+    let second_port = next_port("listen-2", &mut ports).await;
+    assert_ne!(
+        second_port, first_port,
+        "the half-open socket was never declared dead — no reconnect happened"
+    );
+    next_port("ping-2", &mut ports).await;
+
+    let _ = stop_tx.send(true);
+    let _ = tokio::time::timeout(Duration::from_secs(2), listener).await;
     a.cleanup().await;
 }
 

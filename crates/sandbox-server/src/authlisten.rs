@@ -6,8 +6,9 @@
 //! cache is flushed before listening again. The 30 s TTL is now only the backstop for a
 //! notification lost while no listener was attached.
 //!
-//! The connection is the listener's own, held for its life outside the pools — one more
-//! connection over the `PS_DB_MAX_CONNECTIONS` budget, deliberate and fixed.
+//! The connections are the listener's own, held for its life outside the pools — the
+//! `LISTEN` socket and a second one for the liveness self-ping (round-3 B): two more
+//! connections over the `PS_DB_MAX_CONNECTIONS` budget, deliberate and fixed.
 
 use std::time::Duration;
 
@@ -72,7 +73,8 @@ fn apply(cache: &KeyCache, payload: &str) {
 /// way: whatever notified while the task was down cannot be replayed.
 ///
 /// A half-open socket reports nothing at all — no error, no FIN — so each beat the
-/// loop `pg_notify`s itself through the pool (N3): a delivered notification is proof
+/// loop `pg_notify`s itself on its own second connection (N3): a delivered
+/// notification is proof
 /// the wire is live; one whole silent beat is proof it is not, and the connection is
 /// rebuilt. The heartbeat lands in every select branch (N5): a notification flood
 /// can starve the timer but never the readiness beat.
@@ -86,23 +88,36 @@ pub async fn run_with(state: AppState, mut stop: watch::Receiver<bool>, beat: Du
     state.key_cache.clear();
     loop {
         let url = listen_url(state.config.database_url.expose(), &state.listen_name);
+        let ping_url = listen_url(
+            state.config.database_url.expose(),
+            &format!("{}-ping", state.listen_name),
+        );
         let connected = async {
             let mut listener = PgListener::connect(&url).await?;
             // Surface a lost connection to this loop instead of re-attaching inside
             // sqlx with the gap's notifications silently dropped (N3).
             listener.eager_reconnect(false);
             listener.listen(CHANNEL).await?;
-            Ok::<_, sqlx::Error>(listener)
+            // The liveness ping rides its own connection, never a pool: a pool
+            // saturated past its acquire timeout would unsend every ping and tear
+            // down a healthy listener — flushing the whole cache onto that same
+            // saturated pool every two beats (round-3 B).
+            let ping = <sqlx::PgConnection as sqlx::Connection>::connect(&ping_url).await?;
+            Ok::<_, sqlx::Error>((listener, ping))
         };
-        let Ok(mut listener) = connected.await else {
-            state.key_cache.clear();
-            if tokio::time::timeout(RECONNECT, stop.changed())
-                .await
-                .is_ok()
-            {
-                return;
+        let (mut listener, mut ping) = match connected.await {
+            Ok(pair) => pair,
+            Err(error) => {
+                tracing::debug!(%error, "auth listener pair could not connect");
+                state.key_cache.clear();
+                if tokio::time::timeout(RECONNECT, stop.changed())
+                    .await
+                    .is_ok()
+                {
+                    return;
+                }
+                continue;
             }
-            continue;
         };
         // Attached: flush after LISTEN lands, not before it — entries resolved in the
         // un-listened window could carry a revocation that landed there.
@@ -137,22 +152,24 @@ pub async fn run_with(state: AppState, mut stop: watch::Receiver<bool>, beat: Du
                         break;
                     }
                     silent = true;
-                    self_ping(&state, beat).await;
+                    self_ping(&mut ping, beat).await;
                 },
             }
         }
     }
 }
 
-/// One `pg_notify` through the write pool — bounded, so a wedged pool cannot hold the
-/// listener's liveness loop. Failure only means the ping never lands; the silence
-/// check on the next beat decides what the connection is.
-async fn self_ping(state: &AppState, beat: Duration) {
+/// One `pg_notify` on the listener's own second connection — bounded, so a wedged
+/// wire cannot hold the liveness loop, and outside every pool, so a saturated pool
+/// cannot unsend the ping and tear down a healthy listener (round-3 B). Failure
+/// only means the ping never lands; the silence check on the next beat decides
+/// what the connection is.
+async fn self_ping(conn: &mut sqlx::PgConnection, beat: Duration) {
     let sent = sqlx::query("SELECT pg_notify($1, $2)")
         .bind(CHANNEL)
         .bind(format!("s{}", Uuid::now_v7()));
     let bound = beat.min(Duration::from_secs(5));
-    if let Err(error) = tokio::time::timeout(bound, sent.execute(&state.write_db)).await {
+    if let Err(error) = tokio::time::timeout(bound, sent.execute(&mut *conn)).await {
         tracing::debug!(%error, "the listener self-ping could not be sent");
     }
 }

@@ -106,8 +106,9 @@ fn pools(config: &Config) -> anyhow::Result<(sqlx::PgPool, sqlx::PgPool)> {
 /// descriptor budget is deliberately smaller than an API edge's.
 const SITE_MAX_CONNECTIONS: usize = 128;
 
-/// Sockets the process needs beyond its listeners: the pools, the auth listener, the
-/// simulator and webhook clients, files, logging — plus slack for runtimes' internals.
+/// Sockets the process needs beyond its listeners: the pools, the auth listener's
+/// pair (LISTEN + self-ping, round-3 B), the simulator and webhook clients, files,
+/// logging — plus slack for runtimes' internals.
 const RESERVED_FDS: usize = 320;
 
 /// The whole descriptor budget, pure so the arithmetic is testable: `edges` API-shaped
