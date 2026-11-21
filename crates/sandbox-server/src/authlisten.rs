@@ -46,21 +46,36 @@ fn apply(cache: &KeyCache, payload: &str) {
         cache.invalidate_project(project_id);
         return;
     }
-    cache.clear();
+    cache.malformed_clear();
 }
 
 /// The supervised loop: connect, `LISTEN`, apply notifications until shutdown.
-/// `recv()` reconnects inside sqlx and silently drops the gap's notifications, so the
-/// loop drives `try_recv()` — `Ok(None)` means the connection was lost and what it
-/// missed is gone; the cache flushes on the gap AND again after the next `LISTEN`
-/// lands, so the whole un-listened window is covered. A (re)start after a panic
-/// flushes the same way: whatever notified while the task was down cannot be replayed.
-pub async fn run(state: AppState, mut stop: watch::Receiver<bool>) {
+/// `try_recv()` surfaces a lost connection (`eager_reconnect(false)` — sqlx's default
+/// would re-attach inside the driver and silently drop the gap's notifications, N3);
+/// `Ok(None)`/error means what it missed is gone, so the cache flushes on the gap AND
+/// again after the next `LISTEN` lands. A (re)start after a panic flushes the same
+/// way: whatever notified while the task was down cannot be replayed.
+///
+/// A half-open socket reports nothing at all — no error, no FIN — so each beat the
+/// loop `pg_notify`s itself through the pool (N3): a delivered notification is proof
+/// the wire is live; one whole silent beat is proof it is not, and the connection is
+/// rebuilt. The heartbeat lands in every select branch (N5): a notification flood
+/// can starve the timer but never the readiness beat.
+pub async fn run(state: AppState, stop: watch::Receiver<bool>) {
+    run_with(state, stop, BEAT).await;
+}
+
+/// `beat` is the liveness interval — `BEAT` in production, short in tests.
+#[doc(hidden)]
+pub async fn run_with(state: AppState, mut stop: watch::Receiver<bool>, beat: Duration) {
     state.key_cache.clear();
     loop {
-        let url = state.config.database_url.expose().to_owned();
+        let url = listen_url(state.config.database_url.expose(), &state.listen_name);
         let connected = async {
             let mut listener = PgListener::connect(&url).await?;
+            // Surface a lost connection to this loop instead of re-attaching inside
+            // sqlx with the gap's notifications silently dropped (N3).
+            listener.eager_reconnect(false);
             listener.listen(CHANNEL).await?;
             Ok::<_, sqlx::Error>(listener)
         };
@@ -106,12 +121,12 @@ mod tests {
 
     /// Any role may NOTIFY on the channel, so malformed payloads — empty, multibyte,
     /// wrong shape — must flush the cache safely: `split_at(1)` panicked on all three
-    /// (S2-1), and the supervisor's restart never flushed what the panic left.
+    /// (S2-1), and the supervisor's restart never flushed what the panic left. Each
+    /// case gets a fresh cache because the malformed clear is rate-limited (N6).
     #[test]
     fn a_malformed_notification_flushes_the_cache_without_panicking() {
-        let cache = KeyCache::default();
         let (project, key) = (Uuid::now_v7(), Uuid::now_v7());
-        let put = |hash: u8| {
+        let put = |cache: &KeyCache, hash: u8| {
             cache.put(
                 KeyHash([hash; 32]),
                 KeyIdentity {
@@ -125,19 +140,27 @@ mod tests {
             );
         };
         for payload in ["", "k", "p", "x:not-a-uuid", "ké:v", "\u{1f600}"] {
-            put(1);
+            let cache = KeyCache::default();
+            put(&cache, 1);
             apply(&cache, payload);
             assert!(
                 cache.get(&KeyHash([1; 32])).is_none(),
                 "{payload:?} left a cached entry"
             );
         }
-        // The well-formed forms still apply precisely.
-        put(2);
+        // The well-formed forms still apply precisely; the self-ping is a no-op.
+        let cache = KeyCache::default();
+        put(&cache, 2);
         apply(&cache, &format!("k{project}:{key}"));
         assert!(cache.get(&KeyHash([2; 32])).is_none());
-        put(3);
+        put(&cache, 3);
         apply(&cache, &format!("p{project}"));
         assert!(cache.get(&KeyHash([3; 32])).is_none());
+        put(&cache, 4);
+        apply(&cache, &format!("s{}", Uuid::now_v7()));
+        assert!(
+            cache.get(&KeyHash([4; 32])).is_some(),
+            "a liveness self-ping must not clear the cache it is checking"
+        );
     }
 }

@@ -106,7 +106,9 @@ pub async fn revoke(
         RevokeOutcome::Revoked => {
             // D-102: a revoked key fails on its very next request — the cache drops it now,
             // it never waits for the TTL.
-            state.key_cache.invalidate_key(key_id);
+            state
+                .key_cache
+                .invalidate_key(auth.scope().project_id, key_id);
             Ok(Json(json!({"revoked": key_id, "simulated": true})).into_response())
         }
         RevokeOutcome::NotFound => Err(ApiError::NotFound("key")),
