@@ -162,7 +162,7 @@ pub struct NewAuthorize<'a> {
 /// notification latency (S1-1); without the check, `scope.epoch` bound writes into the
 /// archived epoch for up to the key cache's TTL. Concurrent writers hold only the
 /// shared lock — they do not serialize on each other, only on the rare reset.
-async fn ensure_epoch(
+pub(crate) async fn ensure_epoch(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     scope: ProjectScope,
 ) -> Result<(), DbError> {

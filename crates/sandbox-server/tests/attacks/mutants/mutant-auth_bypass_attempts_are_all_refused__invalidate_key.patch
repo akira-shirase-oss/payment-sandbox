@@ -1,0 +1,14 @@
+diff --git a/crates/sandbox-server/src/handlers/keys.rs b/crates/sandbox-server/src/handlers/keys.rs
+index 0000000..0000000 100644
+--- a/crates/sandbox-server/src/handlers/keys.rs
++++ b/crates/sandbox-server/src/handlers/keys.rs
+@@ -106,9 +106,6 @@
+         RevokeOutcome::Revoked => {
+             // D-102: a revoked key fails on its very next request — the cache drops it now,
+             // it never waits for the TTL.
+-            state
+-                .key_cache
+-                .invalidate_key(auth.scope().project_id, key_id);
+             Ok(Json(json!({"revoked": key_id, "simulated": true})).into_response())
+         }
+         RevokeOutcome::NotFound => Err(ApiError::NotFound("key")),

@@ -1841,6 +1841,42 @@ closes one of its findings, with the test that failed before the fix.
   deadline answers `408 body_timeout`, anything else stays `413`.
   Proof: `oversized_and_slow_bodies_are_cut_off` asserts the named code on the wire.
 
+## D-106: Transport and listener remediation — the re-review's N-register
+
+  The re-review found `9dfe7ef`'s transport work still wrong and the listener/cache
+  layer carrying follow-on defects; every fix has a named proof.
+  **No implicit header timeout (N1):** hyper 1.12 applies its default 30 s header
+  timeout whenever a timer is set — and re-arms it on every keep-alive idle wait,
+  so every pooled connection died mid-idle instead of at `idle_timeout`. We pass
+  `.header_read_timeout(None)`: the reaper already bounds a slow head on total time
+  (the stronger bound — a byte cannot reset it) and reaps genuine idle at
+  `idle_timeout`; hyper's default is only duplicated, weaker logic.
+  **Refusals read before they answer (S2-2 redo):** the refusal now drains the
+  request head (≤1 s, ≤8 KiB) before writing its 503 — answering without reading
+  left the client's bytes unaccounted for at close, which is what turns a FIN into
+  a RST. **Drains are a bounded resource (N4):** `REFUSAL_PERMITS` (64) bounds
+  sockets mid-drain; over it the refusal closes at once — bounded descriptors
+  outrank an answer to a refused connection — and the count sits in
+  `descriptor_need`.
+  **The listener proves its own liveness (N3):** `eager_reconnect(false)` so a lost
+  connection surfaces instead of being re-attached inside sqlx with the gap's
+  notifications dropped; each beat the loop `pg_notify`s itself through the write
+  pool — a delivered notification is a live wire, one whole silent beat is a dead
+  one (half-open sockets report nothing else) and the connection is rebuilt with
+  the cache flushed. The beat lands in every select branch (N5): notification load
+  can starve the timer, never the heartbeat.
+  **Cache invalidation is project-scoped (N6):** the global generation is replaced
+  by per-project invalidation windows — a resolve compares its start time against
+  its own project's marker (and the global one for clears) — so one tenant's
+  revokes stop cancelling every tenant's in-flight resolves; malformed-notification
+  clears are bounded to ~1/s with a suppressed counter, since any role can NOTIFY
+  garbage. Test hooks carry unique `application_name`s so `pg_terminate_backend`
+  can only ever hit the listener it names (N2).
+  **Mutation proof means red, not nonzero (N7):** a kill now requires
+  `test result: FAILED` — a mutant that cannot compile is `INVALID` evidence, not
+  a dead mutant; mutants targeting one test carry `__tag` suffixes; and
+  `checkout::create` runs under `ensure_epoch` like every other scoped write.
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

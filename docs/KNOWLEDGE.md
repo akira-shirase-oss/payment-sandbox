@@ -20,10 +20,21 @@ open*.
 | S3-3 | `problems()` validated only the write pool's statement timeout against the request deadline | Read-pool acquire + statement and write-pool acquire checked the same way | `config.rs::every_pool_deadline_must_beat_the_request_deadline` |
 | S3-4 | A timed-out body answered 413 "too large" | Error chain walked for `TimeoutError`/`Elapsed` → `408 body_timeout`; 413 stays for size | `attacks::oversized_and_slow_bodies_are_cut_off` (named code on the wire) |
 
-## Tracked — S3 (recorded, not yet decided)
+## Resolved — the re-review's N-register (fixes in this branch)
 
-All five S3 items are decided and remediated above (D-105). Nothing remains
-tracked at S3 in this round.
+| ID | Finding | Fix | Proof |
+|----|---------|-----|-------|
+| N1 | `9dfe7ef` kept `.timer()` but dropped `.header_read_timeout()`, so hyper's DEFAULT 30 s header timeout re-armed on every keep-alive idle wait and closed pooled connections mid-idle — run `44867951047`'s ~16-19 `status:0`/s | `.header_read_timeout(None)`; the reaper already bounds slow heads on total time and idle keep-alives at `idle_timeout` | `sandbox-http::an_idle_keep_alive_survives_past_the_default_header_timeout` (paused time: reuse at 35 s and 45 s) |
+| N2 | `wait_attached` matched `query LIKE '%auth_epoch%'` cluster-wide — could kill the poller itself, a parallel test's listener, or another worktree's server | Listener connects under a per-state unique `application_name`; the query requires it plus `datname`, `backend_type`, `pid <> pg_backend_pid()` | `keys.rs::wait_attached` now returns only this instance's backend; `pg_terminate_backend` can hit nothing else |
+| N3 | Nothing detected a half-dead listener socket: `try_recv` waited forever while readiness stayed green; sqlx's `eager_reconnect` hid losses inside the driver | `eager_reconnect(false)` + a per-beat `pg_notify` self-ping through the write pool; one whole silent beat → flush + re-attach | `keys.rs::a_flood_of_notifications_never_starves_the_heartbeat` (same backend stays attached through the flood — pings land); the S2-1 gap test still forces reconnect |
+| N4 | The lingering close held a refused socket ~1 s each with no bound — a refused flood was its own EMFILE vector | `REFUSAL_PERMITS` (64) semaphore; over it the socket closes at once; counted in `descriptor_need` | `sandbox-http::a_refused_connection_that_sent_bytes_reads_the_whole_answer` (permitted 503 + EOF, over-bound close at once); `main.rs::the_default_descriptor_budget_fits_the_unit_limit` |
+| N5 | `sleep(BEAT)` recreated per pass: a notification stream faster than the beat starved the heartbeat → readiness 503 on a healthy listener | `tasks.beat` in every select branch | `keys.rs::a_flood_of_notifications_never_starves_the_heartbeat` (`since_beat` stays under 400 ms through ~0.9 s of 10 ms notifications) |
+| N6 | One global generation: every invalidation cancelled every in-flight resolve's `put` — one tenant multiplied misses for all; any DB role could `NOTIFY` garbage and each payload cleared the whole cache | Per-project invalidation windows (the resolve's `began` timestamp vs its project's marker); global window kept for clears only; malformed clears bounded to ~1/s and suppressed count in `KeyCache::stats` | `auth::tests::an_invalidation_in_one_project_cancels_no_others`; `malformed_clears_are_rate_limited_and_counted`; the S1-1 race test still dies |
+| N7 | `mutation-proof.sh` counted any nonzero exit as a kill — a non-compiling mutant read as red; `checkout::create` bound `scope.epoch` with no epoch guard | Red requires `test result: FAILED`; non-compiles report `INVALID`; `checkout::create` runs `ensure_epoch` in a transaction | New mutant `auth_bypass_attempts_are_all_refused__invalidate_key` dies; `scripts/mutation-proof.sh` exits nonzero on an unbuildable mutant |
+
+## Tracked — remaining
+
+Nothing remains tracked in this round.
 
 ## Also verified this round (the "sound" list, re-confirmed)
 

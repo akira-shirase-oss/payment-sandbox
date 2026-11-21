@@ -186,12 +186,16 @@ pub fn attempt_identity(session: &Session, number: i32) -> Result<(String, Uuid,
     Ok((key, operation, identity::payment_id(operation)))
 }
 
-/// Creates a session.
+/// Creates a session. The epoch guard is the same one `begin_authorize` holds: a
+/// caller's cached identity can lag a cross-process reset, and without the check the
+/// INSERT binds `scope.epoch` into the archived epoch (N7).
 pub async fn create(
     pool: &PgPool,
     scope: ProjectScope,
     new: &NewSession<'_>,
 ) -> Result<Session, DbError> {
+    let mut tx = pool.begin().await?;
+    crate::payments::ensure_epoch(&mut tx, scope).await?;
     sqlx::query(
         "INSERT INTO checkout_sessions (project_id, id, dataset_epoch, secret_hash, amount_minor,
                                         currency, description, capture_method, embed_origins,
@@ -210,8 +214,9 @@ pub async fn create(
     .bind(new.embed_origins)
     .bind(new.return_url)
     .bind(i32::try_from(new.lifetime_seconds).unwrap_or(i32::MAX))
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     get(pool, scope, new.id).await?.ok_or(DbError::NotFound)
 }
 

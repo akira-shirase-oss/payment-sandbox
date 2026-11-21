@@ -13,7 +13,9 @@ out="target/mutation-proof-last.log"
 failures=0
 for patch in "$mutants_dir"/mutant-*.patch; do
     name="$(basename "$patch" .patch)"
+    # Several mutants may share one test: mutant-<test>__<tag>.patch strips the tag.
     test="${name#mutant-}"
+    test="${test%%__*}"
     echo "== $name"
     if ! git apply --check "$patch"; then
         echo "STALE: $name no longer applies cleanly"
@@ -30,9 +32,13 @@ for patch in "$mutants_dir"/mutant-*.patch; do
     if [ $? -eq 0 ]; then
         echo "SURVIVED: $test passed with the protection removed (see $out)"
         failures=$((failures + 1))
+    elif grep -q "test result: FAILED" "$out"; then
+        echo "red as required: $(grep -o 'panicked.*' "$out" | head -1 | cut -c1-110)"
     else
-        grep -q "FAILED" "$out" \
-            && echo "red as required: $(grep -o 'panicked.*' "$out" | head -1 | cut -c1-110)"
+        # A nonzero exit without a failed-test marker is not a kill: a mutant that
+        # cannot compile (or never ran the test) is invalid evidence, not a dead one.
+        echo "INVALID: $name did not run the test to a failed result (see $out)"
+        failures=$((failures + 1))
     fi
     git apply -R "$patch"
     # shellcheck disable=SC2086 # paths come from the patch's own +++ headers
