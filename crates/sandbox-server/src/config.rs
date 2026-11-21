@@ -52,6 +52,9 @@ pub struct Config {
     pub pool: PoolSettings,
     /// Deadline for producing response headers.
     pub request_timeout: Duration,
+    /// How long a sealed explain cursor stays good (`PS_CURSOR_TTL_MS`, D-105): a cursor
+    /// is a lease on a snapshot, not a bearer token that works forever.
+    pub cursor_ttl: Duration,
     /// Largest accepted request body.
     pub max_body_bytes: usize,
     /// Most requests in flight on `/v1` before shedding with `503`.
@@ -251,6 +254,7 @@ impl Config {
             read_only: false,
         };
         let request_timeout = parse.millis("PS_REQUEST_TIMEOUT_MS", 5_000);
+        let cursor_ttl = parse.millis("PS_CURSOR_TTL_MS", 3_600_000);
         let max_body_bytes: usize = parse.value("PS_MAX_BODY_BYTES", Some(16 * 1024));
         let max_in_flight: usize = parse.value("PS_MAX_IN_FLIGHT", Some(512));
         let readiness_timeout = parse.millis("PS_READINESS_TIMEOUT_MS", 500);
@@ -298,6 +302,7 @@ impl Config {
             database_url: Secret::new(database_url),
             pool,
             request_timeout,
+            cursor_ttl,
             max_body_bytes,
             max_in_flight,
             read_edge,
@@ -407,6 +412,9 @@ impl Config {
         }
         if max_in_flight == 0 {
             errors.push("PS_MAX_IN_FLIGHT must be at least 1".to_owned());
+        }
+        if self.cursor_ttl.is_zero() {
+            errors.push("PS_CURSOR_TTL_MS must be at least 1".to_owned());
         }
         if self.read_edge.in_flight == 0 {
             errors.push("PS_READ_IN_FLIGHT must be at least 1".to_owned());

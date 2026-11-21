@@ -62,6 +62,8 @@ pub enum ErrorCode {
     StaleCursor,
     /// A cursor this server did not issue, or a malformed one (D-056); start again.
     InvalidCursor,
+    /// A cursor older than its lease (D-105); start again.
+    CursorExpired,
     /// A unique name is already taken.
     Conflict,
     /// Too many requests in flight.
@@ -215,6 +217,9 @@ pub enum ApiError {
     /// A cursor this server did not issue (D-056).
     #[error("this cursor was not issued by this server; start the explanation again")]
     InvalidCursor,
+    /// A cursor older than its lease (D-105).
+    #[error("this cursor has expired; start the explanation again")]
+    CursorExpired,
     /// Shed.
     #[error("too many requests in flight; retry shortly")]
     Overloaded,
@@ -326,7 +331,7 @@ impl ApiError {
             | Self::CheckoutExpired
             | Self::CheckoutClosed
             | Self::EpochChanged { .. } => StatusCode::CONFLICT,
-            Self::DatasetArchived { .. } => StatusCode::GONE,
+            Self::DatasetArchived { .. } | Self::CursorExpired => StatusCode::GONE,
             Self::Unauthorized
             | Self::BootstrapTokenRequired { .. }
             | Self::OperatorCredentialRequired => StatusCode::UNAUTHORIZED,
@@ -366,6 +371,7 @@ impl ApiError {
             Self::Conflict(_) => ErrorCode::Conflict,
             Self::StaleCursor => ErrorCode::StaleCursor,
             Self::InvalidCursor => ErrorCode::InvalidCursor,
+            Self::CursorExpired => ErrorCode::CursorExpired,
             Self::Overloaded => ErrorCode::Overloaded,
             Self::RateLimited { .. } => ErrorCode::RateLimited,
             Self::PaymentBusy => ErrorCode::PaymentBusy,

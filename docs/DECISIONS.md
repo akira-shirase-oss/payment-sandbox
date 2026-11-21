@@ -1799,6 +1799,48 @@ closes one of its findings, with the test that failed before the fix.
   dropped to 128 connections (`SITE_MAX_CONNECTIONS`) — static files get a share of
   the budget, not the API's 512+512. Worst case now fits `LimitNOFILE=4096` with room.
 
+## D-105: Sealed, leased cursors; named body and pool deadlines (S3 remediation)
+
+  The second review's S3 list, remediated; every fix has a red-first proof.
+  **Cursors are ciphertext, not signed plaintext (S3-1):** the old format encoded
+  `context|generation|as_of|after_seq|running` in the clear under an HMAC tag — the
+  generation names the cluster's system identifier and the snapshot its global
+  transaction ids, a write-rate side channel every tenant's cursor handed to every
+  other tenant. Now the wire form is `letters(nonce ‖ ChaCha20-Poly1305(payload))`,
+  the same AEAD `secrets.rs` uses: the explain context (project, epoch, currency,
+  account — D-056's binding) is the AEAD's associated data, so a cursor of another
+  context does not decrypt at all, and nothing inside is readable. The explain
+  response's own `generation`/`as_of` fields get the same treatment as opaque keyed
+  labels (`CursorKey::label`, HMAC/128, letters-only): a tenant can still tell a
+  restore happened — the label changes — but cannot read the identifier out of it.
+  A cursor is also a lease, not a bearer token: the payload carries `issued_at` and
+  `open` refuses one older than its `PS_CURSOR_TTL_MS` lease (default one hour)
+  with `410 cursor_expired`; a clock that cannot be read or sits behind the issue
+  time fails closed. A cursor under a different key is now `400 invalid_cursor`
+  rather than the old unverified-plaintext path: the `stale_cursor` answer survives
+  exactly where it matters — same configured key, old generation, caught by the
+  statement's own check (D-050). Proof: `the_sealed_form_reveals_nothing`,
+  `expired_cursors_are_refused_by_name` (unit), `forged_explain_cursors_are_refused_cleanly`
+  and `expired_explain_cursors_are_refused_by_name` (wire), and two mutants —
+  dropped context binding and a skipped lease check — both die.
+  **No constant cursor key (S3-2):** `getrandom` failure used to fall back to a
+  fixed key, which made every cursor forgeable to anyone who read the source. There
+  is no fallback: no `PS_SECRET_KEY` and no OS randomness means the process refuses
+  to start (`CursorKey::with_randomness` makes the refusal testable; `new` panics
+  on it as a documented invariant). Proof: `without_os_randomness_there_is_no_key`.
+  **Read-pool deadlines validated (S3-3):** `problems()` checked only the write
+  pool's statement timeout against the request deadline, so a read-pool acquire or
+  statement deadline could outlive the request's own deadline and never refuse
+  first. Now both read-pool deadlines and the write pool's acquire deadline are
+  checked the same way (`PS_DB_READ_ACQUIRE_TIMEOUT_MS`,
+  `PS_DB_READ_STATEMENT_TIMEOUT_MS`, `PS_DB_ACQUIRE_TIMEOUT_MS`).
+  Proof: `every_pool_deadline_must_beat_the_request_deadline` (red first).
+  **A timed-out body is not "too large" (S3-4):** every `Bytes` rejection mapped to
+  `413`, so a dribbled body and an oversized one answered alike. The rejection's
+  error chain is now walked for the body deadline's `TimeoutError`/`Elapsed`: a
+  deadline answers `408 body_timeout`, anything else stays `413`.
+  Proof: `oversized_and_slow_bodies_are_cut_off` asserts the named code on the wire.
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

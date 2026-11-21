@@ -12,6 +12,10 @@ use axum::http::StatusCode;
 use common::{TestApp, TestSim};
 use serde_json::json;
 
+/// One configured server key: a restore keeps it, so a pre-restore cursor still opens
+/// and the generation check, not the cipher, names it stale (D-050, D-105).
+const SECRET_KEY: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+
 async fn purchases(app: &TestApp, key: &str) -> Vec<String> {
     let mut pids = Vec::new();
     for (n, (amount, capture, refund)) in [
@@ -280,7 +284,7 @@ async fn later_commit(pool: &sqlx::PgPool, scope: sandbox_db::ProjectScope) {
 #[tokio::test]
 async fn an_explanation_cursor_from_before_a_restore_is_refused() {
     let sim = TestSim::start().await;
-    let vars = common::sim_vars(&sim, &[]);
+    let vars = common::sim_vars(&sim, &[("PS_SECRET_KEY", SECRET_KEY)]);
     let first = TestApp::on(sandbox_db::testing::TestDb::new().await, &vars);
     let (_, key) = first.project("store").await;
     for n in 0..3 {

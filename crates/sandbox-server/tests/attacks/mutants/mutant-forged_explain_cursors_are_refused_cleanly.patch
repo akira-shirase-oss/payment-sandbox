@@ -1,15 +1,31 @@
-# Mutant: the cursor tag check deleted — every well-formed cursor is "authentic"
+# Mutant: the explain context is not bound — the AEAD's associated data is dropped, so a
+# cursor issued for one context decrypts for every other (cross-account, cross-project).
 # Expected red: attacks::forged_explain_cursors_are_refused_cleanly fails without the protection.
 diff --git a/crates/sandbox-server/src/cursor.rs b/crates/sandbox-server/src/cursor.rs
-index 0d8bd14..5556d41 100644
+index 0000000..0000000 100644
 --- a/crates/sandbox-server/src/cursor.rs
 +++ b/crates/sandbox-server/src/cursor.rs
-@@ -119,7 +119,7 @@ impl CursorKey {
-             .zip(tag)
-             .fold(0_u8, |acc, (a, b)| acc | (a ^ b))
-             == 0;
--        if same {
-+        if true {
-             Ok(Opened::Authentic(cursor))
-         } else {
-             Ok(Opened::Unverified {
+@@ -155,10 +155,10 @@ impl CursorKey {
+         let ciphertext = self
+             .cipher
+             .encrypt(
+                 &Nonce::from(nonce),
+                 Payload {
+                     msg: payload.as_bytes(),
+-                    aad: context.as_bytes(),
++                    aad: b"",
+                 },
+             )
+             .map_err(|_| SealError)?;
+@@ -181,10 +181,10 @@ impl CursorKey {
+         let plain = self
+             .cipher
+             .decrypt(
+                 &Nonce::from(nonce),
+                 Payload {
+                     msg: ciphertext,
+-                    aad: context.as_bytes(),
++                    aad: b"",
+                 },
+             )
+             .map_err(|_| CursorError::Invalid)?;

@@ -367,18 +367,9 @@ pub async fn explain(
     );
     let cursor = match q.cursor.as_deref().map(|c| state.cursors.open(c, &context)) {
         None => None,
-        Some(Ok(crate::cursor::Opened::Authentic(cursor))) => Some(cursor),
-        Some(Ok(crate::cursor::Opened::Unverified { generation })) => {
-            // Not sealed by this process: a cursor of another restore generation is stale,
-            // anything else is not ours.
-            let now = sandbox_db::reconcile::generation(&db.0).await?;
-            return Err(if generation == now {
-                ApiError::InvalidCursor
-            } else {
-                ApiError::StaleCursor
-            });
-        }
-        Some(Err(crate::cursor::InvalidCursor)) => return Err(ApiError::InvalidCursor),
+        Some(Ok(cursor)) => Some(cursor),
+        Some(Err(crate::cursor::CursorError::Expired)) => return Err(ApiError::CursorExpired),
+        Some(Err(crate::cursor::CursorError::Invalid)) => return Err(ApiError::InvalidCursor),
     };
     let explanation = sandbox_db::reconcile::explain(
         &db.0,
@@ -393,8 +384,22 @@ pub async fn explain(
     let next = explanation
         .next
         .as_ref()
-        .map(|c| json!({"cursor": state.cursors.seal(c, &context)}));
+        .map(|c| {
+            state
+                .cursors
+                .seal(c, &context)
+                .map(|sealed| json!({"cursor": sealed}))
+        })
+        .transpose()
+        .map_err(|e| ApiError::Internal(e.into()))?;
+    // The generation and snapshot stay out of tenant hands even in the response: opaque
+    // labels keep "same/different" checkable (a restore still shows) without naming the
+    // cluster or its transaction ids (D-105).
+    let generation = state.cursors.label(&explanation.generation);
+    let as_of = state.cursors.label(&explanation.as_of);
     let mut body = json!(explanation);
+    body["generation"] = Value::String(generation);
+    body["as_of"] = Value::String(as_of);
     body["next"] = next.unwrap_or(Value::Null);
     Ok(Json(json!({
         "currency": currency,

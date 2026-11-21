@@ -1,7 +1,7 @@
 //! Never-panics fuzzing for the server's own outside-input decoder: `CursorKey::open`
-//! turns a client-supplied `?cursor=` value back into fields (D-056). It must answer
-//! `Err(InvalidCursor)` — never panic — on anything a client sends. The seed corpus is
-//! generated in-process (a real sealed cursor, then every mutation class), then a
+//! turns a client-supplied `?cursor=` value back into fields (D-056, D-105). It must
+//! answer `Err(CursorError)` — never panic — on anything a client sends. The seed corpus
+//! is generated in-process (a real sealed cursor, then every mutation class), then a
 //! proptest smoke run; a panic is a red-first bug.
 #![allow(
     clippy::unwrap_used,
@@ -16,14 +16,14 @@ use sandbox_server::cursor::CursorKey;
 const CONTEXT: &str = "explain:test";
 
 fn sealed() -> (CursorKey, String) {
-    let key = CursorKey::new(None);
+    let key = CursorKey::new(None, std::time::Duration::from_secs(3_600));
     let cursor = ExplainCursor {
         generation: "1".to_owned(),
         as_of: "1:2:1".to_owned(),
         after_seq: 0,
         running: 0,
     };
-    let sealed = key.seal(&cursor, CONTEXT);
+    let sealed = key.seal(&cursor, CONTEXT).unwrap();
     (key, sealed)
 }
 
@@ -50,10 +50,7 @@ fn cursor_open_survives_its_seed_corpus() {
         let _ = key.open(&case, CONTEXT);
     }
     // The unmutated corpus entry is the control: it must still open.
-    assert!(matches!(
-        key.open(&good, CONTEXT),
-        Ok(sandbox_server::cursor::Opened::Authentic(_))
-    ));
+    assert!(key.open(&good, CONTEXT).is_ok());
 }
 
 proptest! {

@@ -848,20 +848,25 @@ async fn forged_explain_cursors_are_refused_cleanly() {
         .await;
         assert_eq!(res.status, 400, "{forged}: {}", res.status);
     }
-    // The case the tag itself must catch — both still decode and parse; only the tag is
-    // wrong. (a) Flip one letter inside the issued cursor's tag tail.
-    let mut flipped: Vec<char> = issued.chars().collect();
-    let last = flipped.len() - 1;
-    flipped[last] = if flipped[last] == 'a' { 'b' } else { 'a' };
-    // (b) The attacker's edit the seal exists to stop: the payload's running total
-    // rewritten, re-encoded under the original tag.
-    let bytes = sandbox_domain::letters::decode(&issued).unwrap();
-    let (payload, tag) = bytes.split_at(bytes.len() - 16);
-    let text = std::str::from_utf8(payload).unwrap().to_owned();
-    let edited = format!("{}|999999999", text.rsplit_once('|').unwrap().0);
-    let mut resealed = sandbox_domain::letters::encode(edited.as_bytes());
-    resealed.push_str(&sandbox_domain::letters::encode(tag));
-    for forged in [flipped.into_iter().collect::<String>(), resealed] {
+    // The issued cursor is ciphertext: what decodes must not name the account, a system
+    // identifier or a snapshot's xids — the cross-tenant write-rate side channel the
+    // signed-plaintext form had (D-105).
+    let raw_sealed = sandbox_domain::letters::decode(&issued).unwrap();
+    assert!(
+        !raw_sealed
+            .windows(b"merchant_pending".len())
+            .any(|w| w == b"merchant_pending"),
+        "the sealed cursor carries its context in the clear"
+    );
+    // The case the authentication tag itself must catch — every tamper still decodes and
+    // is letters-only; only the AEAD check can refuse them. (a) Flip one letter inside
+    // the tag tail. (b) Flip one mid-ciphertext — the attacker's edit the seal exists to
+    // stop, since the payload can no longer be read or spliced.
+    let flips = [issued.len() - 1, issued.len() / 2];
+    for i in flips {
+        let mut forged = issued.clone();
+        let c = forged.as_bytes()[i];
+        forged.replace_range(i..=i, if c == b'a' { "b" } else { "a" });
         let res = raw(
             &t,
             &get(&format!("{explain}?cursor={forged}"), Some(&admin)),
@@ -874,7 +879,7 @@ async fn forged_explain_cursors_are_refused_cleanly() {
         );
     }
     // A cursor issued for this account explains nothing else: replay it against
-    // payer_held and the context binding refuses it before the tag is even compared.
+    // payer_held and it does not decrypt — the context is the AEAD's associated data.
     let res = raw(
         &t,
         &get(
@@ -894,6 +899,70 @@ async fn forged_explain_cursors_are_refused_cleanly() {
     .await;
     assert_eq!(res.status, 400, "A's cursor served under B's key");
     // Stored state: the endpoint still works for an honestly-issued (cursor-free) read.
+    let clean = raw(&t, &get(explain, Some(&admin))).await;
+    assert_eq!(clean.status, 200);
+    sim.remove().await;
+    t.app.cleanup().await;
+}
+
+// 10. EXPIRED CURSORS: a cursor is a lease on a snapshot, not a bearer token that works
+// forever — past its lease it is refused by name (`410 cursor_expired`, D-105), never
+// served from a stale horizon.
+#[tokio::test]
+async fn expired_explain_cursors_are_refused_by_name() {
+    // A 1 ms lease expires the instant the issue second ticks over.
+    let (t, sim) = Target::with_sim(&[("PS_CURSOR_TTL_MS", "1")]).await;
+    let (_p, admin) = t.app.project("atk-expire").await;
+    // One captured payment fills a limit=1 page, so `next` seals a cursor issued now.
+    let created = raw(
+        &t,
+        &post(
+            "/v1/payments",
+            Some(&admin),
+            Some("atk-exp-1"),
+            &json!({"amount": 100, "currency": "USD", "token": "tok_sim_approve"}),
+        ),
+    )
+    .await;
+    let created = settled(&t, &admin, created, "expiry seed authorize").await;
+    let pid = created.json()["payment"]["id"].as_str().unwrap().to_owned();
+    let captured = raw(
+        &t,
+        &post(
+            &format!("/v1/payments/{pid}/captures"),
+            Some(&admin),
+            Some("atk-exp-1-cap"),
+            &json!({"amount": 100}),
+        ),
+    )
+    .await;
+    settled(&t, &admin, captured, "expiry seed capture").await;
+    let explain = "/v1/balances/USD/merchant_pending/explain";
+    let page = raw(&t, &get(&format!("{explain}?limit=1"), Some(&admin))).await;
+    assert_eq!(page.status, 200, "{}", String::from_utf8_lossy(&page.body));
+    let issued = page.json()["explanation"]["next"]["cursor"]
+        .as_str()
+        .expect("a full first page must seal a next cursor")
+        .to_owned();
+    // Wait out the lease, then replay: the named refusal, not the stale horizon.
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    let res = raw(
+        &t,
+        &get(&format!("{explain}?cursor={issued}"), Some(&admin)),
+    )
+    .await;
+    assert_eq!(
+        res.status, 410,
+        "an out-of-lease cursor was served: {}",
+        res.status
+    );
+    assert_eq!(
+        res.json()["error"]["code"].as_str(),
+        Some("cursor_expired"),
+        "{:?}",
+        String::from_utf8_lossy(&res.body)
+    );
+    // The refusal names the lease, not the endpoint: the same read without it works.
     let clean = raw(&t, &get(explain, Some(&admin))).await;
     assert_eq!(clean.status, 200);
     sim.remove().await;

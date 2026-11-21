@@ -1,0 +1,19 @@
+# Mutant: the lease is not checked — a cursor older than its lease still opens.
+# Expected red: attacks::expired_explain_cursors_are_refused_by_name fails without the protection.
+diff --git a/crates/sandbox-server/src/cursor.rs b/crates/sandbox-server/src/cursor.rs
+index 0000000..0000000 100644
+--- a/crates/sandbox-server/src/cursor.rs
++++ b/crates/sandbox-server/src/cursor.rs
+@@ -191,11 +191,6 @@ impl CursorKey {
+         let text = std::str::from_utf8(&plain).map_err(|_| CursorError::Invalid)?;
+         let (cursor, issued_at) = parse(text).ok_or(CursorError::Invalid)?;
+-        // The lease, failing closed: a clock that cannot be read, or one behind the
+-        // issue time, means the cursor cannot be trusted as current.
+-        let age = unix_secs().and_then(|now| now.checked_sub(issued_at));
+-        if age.is_none_or(|age| age > self.ttl.as_secs()) {
+-            return Err(CursorError::Expired);
+-        }
++        let _ = issued_at;
+         Ok(cursor)
+     }
+ }

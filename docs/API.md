@@ -119,7 +119,8 @@ next page when this one is full.
 `GET /v1/balances/{currency}/{account}/explain?limit=100&cursor=...` — the journal lines that
 sum to the balance with running totals (`explanation`); `next.cursor`, when present,
 continues. A cursor from before a
-restore is `409 stale_cursor`, one this server did not issue `400 invalid_cursor`: start
+restore is `409 stale_cursor`, one this server did not issue `400 invalid_cursor`, one
+older than its lease `410 cursor_expired`: start
 again. Reports have their own budget per project (`429 rate_limited`, `Retry-After`).
 
 `GET /v1/reconciliation[?network=true]` — `{"clean": true, "report": {...}}`; with the

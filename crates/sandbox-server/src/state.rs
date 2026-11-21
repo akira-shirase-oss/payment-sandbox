@@ -83,6 +83,7 @@ impl AppState {
                 .secret_key
                 .as_ref()
                 .map(crate::config::Secret::expose),
+            config.cursor_ttl,
         ));
         Self {
             cursors,
