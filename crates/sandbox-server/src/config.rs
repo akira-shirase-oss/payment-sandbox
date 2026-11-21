@@ -90,7 +90,8 @@ pub struct Config {
     /// The loopback ports webhooks may target (review N10, D-059).
     pub webhook_ports: WebhookPorts,
     /// Connection cap and transport deadlines of the listener (D-054): `PS_MAX_CONNECTIONS`,
-    /// `PS_READ_TIMEOUT_MS`, `PS_WRITE_TIMEOUT_MS`, `PS_MAX_REQUESTS_PER_CONNECTION`,
+    /// `PS_READ_TIMEOUT_MS`, `PS_IDLE_TIMEOUT_MS`, `PS_WRITE_TIMEOUT_MS`,
+    /// `PS_MAX_REQUESTS_PER_CONNECTION`,
     /// `PS_MAX_CONNECTION_AGE_MS`.
     pub transport: sandbox_http::Limits,
     /// The reconciler's fairness, concurrency, backoff and alert (D-048).

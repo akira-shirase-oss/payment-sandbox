@@ -11,9 +11,14 @@
 //!   most [`Limits::max_pending`] connections wait; otherwise it is refused with `503`
 //!   and `Retry-After` and closed — a request never waits in the kernel's listen backlog
 //!   until the client gives up (D-094);
-//! - **a read timeout** ([`Limits::read_timeout`]): a request head must arrive within it
-//!   (hyper restarts this timer whenever a keep-alive connection waits for its next request,
-//!   so it is also the idle timeout), and a request body may not pause longer than it;
+//! - **a read timeout** ([`Limits::read_timeout`]): a request head must complete arriving
+//!   within it (a trickling head dies at the bound, not at the stall between bytes), and
+//!   a request body may not pause longer than it;
+//! - **an idle timeout** ([`Limits::idle_timeout`]): a keep-alive connection with nothing
+//!   in flight and nothing arriving is *gracefully* closed after it — never mid-request,
+//!   and never early enough to race a pooled client's reuse: pooled clients close first
+//!   (`k6`/Go pools idle for 90 s; a server that reaps sooner turns every reuse into a
+//!   transport error, CI run 44737615627);
 //! - **a write deadline** ([`Limits::write_timeout`]): a connection whose response write has
 //!   made no progress for this long is closed;
 //! - **per-connection limits** ([`Limits::max_requests`], [`Limits::max_age`]): past
@@ -21,10 +26,6 @@
 //!   connection the server is about to drop;
 //! - **a bounded drain**: on shutdown, accepting stops, every connection is asked to close
 //!   after its current request, and stragglers are cut off after the grace period.
-//!
-//! A client's pooled idle connections must be shorter-lived than the server's read timeout,
-//! or a client may reuse one the server is closing (the sandbox's own clients keep theirs at
-//! most [`CLIENT_POOL_IDLE`]).
 
 use std::convert::Infallible;
 use std::future::Future;
@@ -48,7 +49,9 @@ use tower::ServiceExt as _;
 use tower_http::timeout::RequestBodyTimeoutLayer;
 
 /// Longest a sandbox client keeps an idle pooled connection: well under every server's
-/// read timeout, so it never sends on a connection the server is closing.
+/// idle timeout, so it never sends on a connection the server is closing. Outside
+/// clients pool longer (Go/k6: 90 s), which is why the server's bound is 120 s — the
+/// pooled client closes first.
 pub const CLIENT_POOL_IDLE: Duration = Duration::from_secs(4);
 
 /// The bounds of one listener.
@@ -60,9 +63,15 @@ pub struct Limits {
     pub accept_wait: Duration,
     /// Connections waiting for a place at once; the rest are refused at once.
     pub max_pending: usize,
-    /// Longest wait for a request head (also the idle keep-alive timeout) and longest pause
-    /// inside a request body.
+    /// Total time a request head may take to arrive and longest pause inside a request
+    /// body (a trickling head dies at the bound, not at the stall between bytes).
     pub read_timeout: Duration,
+    /// Longest a keep-alive connection may sit truly idle — no request in flight and no
+    /// bytes in either direction — before it is gracefully closed. Deliberately longer
+    /// than common client pool idle times (Go's is 90 s), so the client closes first: a
+    /// server-initiated close races a pooled client's reuse and surfaces as a transport
+    /// error mid-request (CI run 44737615627 measured it).
+    pub idle_timeout: Duration,
     /// Longest a response write may make no progress.
     pub write_timeout: Duration,
     /// Requests served on one connection before it is closed.
@@ -73,15 +82,17 @@ pub struct Limits {
 
 impl Limits {
     /// The defaults with `max_connections` connections: a 2 s bounded wait for a place
-    /// with as many waiting connections as the cap, 10 s read and write timeouts,
-    /// 10,000 requests and 10 minutes per connection. Chosen, not measured (D-054; the
-    /// wait's bound is D-094).
+    /// with as many waiting connections as the cap, 10 s read and write timeouts, a 120 s
+    /// idle bound (longer than common client pool TTLs so clients close first), 10,000
+    /// requests and 10 minutes per connection. Chosen, not measured (D-054; the wait's
+    /// bound is D-094).
     pub const fn with_connections(max_connections: usize) -> Self {
         Self {
             max_connections,
             accept_wait: Duration::from_secs(2),
             max_pending: max_connections,
             read_timeout: Duration::from_secs(10),
+            idle_timeout: Duration::from_secs(120),
             write_timeout: Duration::from_secs(10),
             max_requests: 10_000,
             max_age: Duration::from_secs(600),
@@ -89,7 +100,7 @@ impl Limits {
     }
 
     /// Reads `<prefix>MAX_CONNECTIONS`, `<prefix>ACCEPT_WAIT_MS`, `<prefix>MAX_PENDING`,
-    /// `<prefix>READ_TIMEOUT_MS`, `<prefix>WRITE_TIMEOUT_MS`,
+    /// `<prefix>READ_TIMEOUT_MS`, `<prefix>IDLE_TIMEOUT_MS`, `<prefix>WRITE_TIMEOUT_MS`,
     /// `<prefix>MAX_REQUESTS_PER_CONNECTION` and `<prefix>MAX_CONNECTION_AGE_MS` through
     /// `lookup`, over `defaults`. Every problem is reported.
     pub fn from_lookup(
@@ -130,6 +141,10 @@ impl Limits {
             read_timeout: Duration::from_millis(number(
                 "READ_TIMEOUT_MS",
                 millis(defaults.read_timeout),
+            )),
+            idle_timeout: Duration::from_millis(number(
+                "IDLE_TIMEOUT_MS",
+                millis(defaults.idle_timeout),
             )),
             write_timeout: Duration::from_millis(number(
                 "WRITE_TIMEOUT_MS",
@@ -401,19 +416,24 @@ pub(crate) async fn serve_connection<I>(
 {
     let born = Instant::now();
     let progress = Arc::new(WriteProgress::new(born));
+    let state = Arc::new(ConnState::new(born));
     let watched = Watched {
         inner: io,
         progress: progress.clone(),
+        state: state.clone(),
     };
     let served = Arc::new(AtomicU32::new(0));
     let expired = Arc::new(AtomicBool::new(false));
     let hyper_service = {
-        let (served, expired) = (served.clone(), expired.clone());
+        let (served, expired, state) = (served.clone(), expired.clone(), state.clone());
         hyper::service::service_fn(move |request: Request<Incoming>| {
             let service = service.clone();
             let count = served.fetch_add(1, Ordering::Relaxed).saturating_add(1);
             let last = count >= limits.max_requests || expired.load(Ordering::Relaxed);
+            let state = state.clone();
             async move {
+                // The request is in flight: nothing below may call this connection idle.
+                let _active = state.enter_request();
                 let mut response = service.oneshot(request).await?;
                 if last {
                     response
@@ -425,19 +445,21 @@ pub(crate) async fn serve_connection<I>(
         })
     };
     let mut builder = hyper::server::conn::http1::Builder::new();
-    builder
-        .timer(TokioTimer::new())
-        .header_read_timeout(limits.read_timeout)
-        .keep_alive(true);
+    builder.timer(TokioTimer::new()).keep_alive(true);
     let conn = builder.serve_connection(TokioIo::new(watched), hyper_service);
     tokio::pin!(conn);
     let age = tokio::time::sleep(limits.max_age);
     tokio::pin!(age);
-    let check = limits.write_timeout.min(Duration::from_millis(250)) / 2;
+    let check = limits
+        .write_timeout
+        .min(limits.read_timeout)
+        .min(Duration::from_millis(250))
+        / 2;
     let mut tick = tokio::time::interval(check.max(Duration::from_millis(10)));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut closing = false;
     let mut aged = false;
+    let mut idling = false;
     loop {
         tokio::select! {
             result = conn.as_mut() => {
@@ -448,8 +470,8 @@ pub(crate) async fn serve_connection<I>(
             }
             () = &mut age, if !aged => {
                 // Old: the next response says `Connection: close`. An idle one is closed
-                // by the read timeout (hyper's head timer), and a request in progress is
-                // bounded by the request and body deadlines.
+                // by the idle reaper below, and a request in progress is bounded by the
+                // request and body deadlines.
                 aged = true;
                 expired.store(true, Ordering::Relaxed);
             }
@@ -459,12 +481,134 @@ pub(crate) async fn serve_connection<I>(
                 conn.as_mut().graceful_shutdown();
             }
             _ = tick.tick() => {
-                if progress.stalled_for(Instant::now()) > limits.write_timeout {
+                let now = Instant::now();
+                if progress.stalled_for(now) > limits.write_timeout {
                     tracing::debug!("a response write made no progress within the write timeout; closing");
                     return;
                 }
+                if state.in_request() || closing {
+                    continue;
+                }
+                match state.head_waited(now) {
+                    // A head is arriving but has taken the whole read timeout: the
+                    // slow-head bound, enforced on total time so a byte every so often
+                    // cannot reset it (a slowloris head dies here, D-054).
+                    Some(waited) if waited > limits.read_timeout => {
+                        tracing::debug!("a request head still incomplete after the read timeout; closing");
+                        return;
+                    }
+                    // A head arriving inside its bound is not idle.
+                    Some(_) => {}
+                    // Nothing ever arrived and nothing was ever served: a silent socket's
+                    // head bound is its age, so it dies at the read timeout like a head.
+                    None if served.load(Ordering::Relaxed) == 0
+                        && state.idle_for(now) > limits.read_timeout =>
+                    {
+                        tracing::debug!("a connection that never sent a request; closing");
+                        return;
+                    }
+                    None => {
+                        // Genuinely idle: no request in flight, no head arriving — the
+                        // keep-alive reaper fires, gracefully, only at the idle timeout.
+                        if !idling && state.idle_for(now) > limits.idle_timeout {
+                            idling = true;
+                            tracing::debug!("idle keep-alive connection; closing gracefully");
+                            conn.as_mut().graceful_shutdown();
+                        }
+                    }
+                }
             }
         }
+    }
+}
+
+/// What a connection is doing, shared between the byte watcher, the request counter and
+/// the reaper tick — how "idle" stays honest: a request in flight or a head arriving
+/// keeps the connection out of the idle reaper.
+#[derive(Debug)]
+struct ConnState {
+    born: Instant,
+    /// Requests inside the service right now.
+    active: AtomicU32,
+    /// Milliseconds since `born` when the first byte of the current head arrived, while
+    /// nothing was in flight; 0 when no partial head is outstanding.
+    head_started_ms: AtomicU64,
+    /// Milliseconds since `born` of the last successful read or write.
+    last_activity_ms: AtomicU64,
+}
+
+impl ConnState {
+    fn new(born: Instant) -> Self {
+        Self {
+            born,
+            active: AtomicU32::new(0),
+            head_started_ms: AtomicU64::new(0),
+            last_activity_ms: AtomicU64::new(0),
+        }
+    }
+
+    fn now_ms(&self) -> u64 {
+        u64::try_from(self.born.elapsed().as_millis())
+            .unwrap_or(u64::MAX)
+            .max(1)
+    }
+
+    /// Bytes arrived while no request was in flight — the start of a head if none was
+    /// being collected yet.
+    fn read_activity(&self) {
+        let now = self.now_ms();
+        self.last_activity_ms.store(now, Ordering::Relaxed);
+        if self.active.load(Ordering::Relaxed) == 0 {
+            let _ =
+                self.head_started_ms
+                    .compare_exchange(0, now, Ordering::Relaxed, Ordering::Relaxed);
+        }
+    }
+
+    fn write_activity(&self) {
+        self.last_activity_ms
+            .store(self.now_ms(), Ordering::Relaxed);
+    }
+
+    /// A request has entered the service; its drop puts the connection back to idle
+    /// (and clears any head-arrival mark so the next head's clock starts fresh).
+    fn enter_request(self: &Arc<Self>) -> ActiveGuard {
+        self.active.fetch_add(1, Ordering::Relaxed);
+        ActiveGuard(self.clone())
+    }
+
+    fn in_request(&self) -> bool {
+        self.active.load(Ordering::Relaxed) > 0
+    }
+
+    /// How long the current partial head has been arriving, if one is.
+    fn head_waited(&self, now: Instant) -> Option<Duration> {
+        match self.head_started_ms.load(Ordering::Relaxed) {
+            0 => None,
+            started => {
+                let now_ms = u64::try_from(now.saturating_duration_since(self.born).as_millis())
+                    .unwrap_or(u64::MAX);
+                Some(Duration::from_millis(now_ms.saturating_sub(started)))
+            }
+        }
+    }
+
+    /// How long nothing has moved in either direction.
+    fn idle_for(&self, now: Instant) -> Duration {
+        let last = self.last_activity_ms.load(Ordering::Relaxed);
+        let now_ms =
+            u64::try_from(now.saturating_duration_since(self.born).as_millis()).unwrap_or(u64::MAX);
+        Duration::from_millis(now_ms.saturating_sub(last))
+    }
+}
+
+/// Decrementing the in-flight count happens even when the response future is dropped.
+struct ActiveGuard(Arc<ConnState>);
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        self.0.active.fetch_sub(1, Ordering::Relaxed);
+        self.0.head_started_ms.store(0, Ordering::Relaxed);
     }
 }
 
@@ -513,19 +657,32 @@ impl WriteProgress {
     }
 }
 
-/// A byte stream that reports whether its writes are making progress.
+/// A byte stream that reports whether its writes are making progress and what moved
+/// last in either direction (the idle reaper's clock).
 struct Watched<I> {
     inner: I,
     progress: Arc<WriteProgress>,
+    state: Arc<ConnState>,
 }
 
 impl<I> Watched<I> {
+    /// The write-stall clock only: a completing flush or a Ready write resets it.
+    /// `last_activity` is *not* updated here — an idle connection flushes constantly,
+    /// and counting that would keep it "busy" forever; only real bytes count.
     fn track<T>(&self, poll: Poll<io::Result<T>>) -> Poll<io::Result<T>> {
         match &poll {
             Poll::Pending => self.progress.pending(),
             Poll::Ready(_) => self.progress.progressed(),
         }
         poll
+    }
+
+    /// A `poll_write` that moved bytes — the only write activity that delays the idle reap.
+    fn track_write(&self, poll: Poll<io::Result<usize>>) -> Poll<io::Result<usize>> {
+        if matches!(poll, Poll::Ready(Ok(n)) if n > 0) {
+            self.state.write_activity();
+        }
+        self.track(poll)
     }
 }
 
@@ -535,7 +692,12 @@ impl<I: AsyncRead + Unpin> AsyncRead for Watched<I> {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.inner).poll_read(cx, buf)
+        let before = buf.filled().len();
+        let poll = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if matches!(poll, Poll::Ready(Ok(()))) && buf.filled().len() > before {
+            self.state.read_activity();
+        }
+        poll
     }
 }
 
@@ -546,7 +708,7 @@ impl<I: AsyncWrite + Unpin> AsyncWrite for Watched<I> {
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
         let poll = Pin::new(&mut self.inner).poll_write(cx, buf);
-        self.track(poll)
+        self.track_write(poll)
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -565,7 +727,7 @@ impl<I: AsyncWrite + Unpin> AsyncWrite for Watched<I> {
         bufs: &[io::IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
         let poll = Pin::new(&mut self.inner).poll_write_vectored(cx, bufs);
-        self.track(poll)
+        self.track_write(poll)
     }
 
     fn is_write_vectored(&self) -> bool {
@@ -582,6 +744,157 @@ mod tests {
 
     fn big() -> Router {
         Router::new().route("/big", get(|| async { "x".repeat(256 * 1024) }))
+    }
+
+    fn small() -> BoundedService {
+        tower::ServiceBuilder::new()
+            .layer(RequestBodyTimeoutLayer::new(Duration::from_secs(30)))
+            .service(Router::new().route("/ok", get(|| async { "ok" })))
+    }
+
+    /// Reads one full response (head + declared body) from a duplex client; returns the
+    /// head text, or `None` at a clean EOF before any bytes.
+    async fn read_response(client: &mut tokio::io::DuplexStream) -> Option<String> {
+        let mut buf = Vec::new();
+        let mut chunk = [0_u8; 4096];
+        loop {
+            let n = tokio::time::timeout(Duration::from_secs(5), client.read(&mut chunk))
+                .await
+                .expect("the response never arrived")
+                .expect("the read failed");
+            if n == 0 {
+                return (!buf.is_empty()).then(|| String::from_utf8_lossy(&buf).into_owned());
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(head_end) = buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4) {
+                let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
+                let want = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .map_or(head_end, |len| head_end + len);
+                if buf.len() >= want {
+                    return Some(head);
+                }
+            }
+        }
+    }
+
+    /// CI run 44737615627's failure, in a pipe: the read timeout used to double as the
+    /// idle keep-alive timeout, so a server closed a pooled connection while a client
+    /// still held it for reuse — every reuse read a dead socket. Now a connection idle
+    /// past the read timeout still serves, and only the (much longer) idle timeout reaps
+    /// it — gracefully, while truly idle.
+    #[tokio::test]
+    async fn an_idle_connection_is_reaped_at_the_idle_timeout_not_the_read_timeout() {
+        const REQ: &[u8] = b"GET /ok HTTP/1.1\r\nhost: t\r\n\r\n";
+        let (mut client, server) = tokio::io::duplex(4096);
+        let limits = Limits {
+            read_timeout: Duration::from_millis(150),
+            idle_timeout: Duration::from_millis(600),
+            ..Limits::with_connections(8)
+        };
+        let (_stop, stopping) = watch::channel(false);
+        let connection = tokio::spawn(serve_connection(server, small(), limits, stopping));
+        client.write_all(REQ).await.unwrap();
+        assert!(read_response(&mut client).await.unwrap().contains("200"));
+
+        // Idle past the read timeout but under the idle timeout: the next request on the
+        // same connection is still answered (before the fix this read a dead socket).
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        client.write_all(REQ).await.unwrap();
+        let head = read_response(&mut client)
+            .await
+            .expect("a reused connection past the read timeout must still answer");
+        assert!(head.contains("200"), "{head}");
+
+        // Idle past the idle timeout: the connection ends, at EOF.
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        let mut rest = Vec::new();
+        let read = tokio::time::timeout(Duration::from_secs(3), client.read_to_end(&mut rest))
+            .await
+            .expect("the idle connection was never reaped")
+            .unwrap();
+        assert_eq!(read, 0);
+        connection.await.unwrap();
+    }
+
+    /// The regression contract for pooled clients: every response arrives whole, the
+    /// connection ends after it is written — never mid-response, never silently.
+    #[tokio::test]
+    async fn a_client_reusing_across_the_request_cap_reads_every_answer() {
+        const REQ: &[u8] = b"GET /ok HTTP/1.1\r\nhost: t\r\n\r\n";
+        let (mut client, server) = tokio::io::duplex(4096);
+        let limits = Limits {
+            max_requests: 2,
+            ..Limits::with_connections(8)
+        };
+        let (_stop, stopping) = watch::channel(false);
+        tokio::spawn(serve_connection(server, small(), limits, stopping));
+        client.write_all(REQ).await.unwrap();
+        assert!(read_response(&mut client).await.unwrap().contains("200"));
+        client.write_all(REQ).await.unwrap();
+        let last = read_response(&mut client)
+            .await
+            .expect("the cap response must still arrive whole");
+        assert!(last.contains("200"), "{last}");
+        assert!(last.contains("connection: close"), "{last}");
+        // After it: a clean end, not a reset mid-answer.
+        let mut rest = Vec::new();
+        let read = tokio::time::timeout(Duration::from_secs(3), client.read_to_end(&mut rest))
+            .await
+            .expect("the capped connection never closed")
+            .unwrap();
+        assert_eq!(read, 0);
+    }
+
+    /// A head that stalls mid-arrival dies at the read timeout — the bound is the head's
+    /// total time, so a byte every so often cannot hold the connection open.
+    #[tokio::test]
+    async fn a_trickling_head_is_cut_at_the_read_timeout() {
+        let (mut client, server) = tokio::io::duplex(4096);
+        let limits = Limits {
+            read_timeout: Duration::from_millis(300),
+            ..Limits::with_connections(8)
+        };
+        let (_stop, stopping) = watch::channel(false);
+        let connection = tokio::spawn(serve_connection(server, small(), limits, stopping));
+        client
+            .write_all(b"GET /ok HTTP/1.1\r\nhost: t\r\n")
+            .await
+            .unwrap();
+        // Trickle one byte every 150 ms: four bytes is ~600 ms of head time.
+        for _ in 0..4 {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            if client.write_all(b"x").await.is_err() {
+                break;
+            }
+        }
+        let mut rest = Vec::new();
+        tokio::time::timeout(Duration::from_secs(3), client.read_to_end(&mut rest))
+            .await
+            .expect("the trickling head was never cut")
+            .unwrap();
+        connection.await.unwrap();
+    }
+
+    /// A socket that connects and never sends is still bounded — by the read timeout,
+    /// not the (much longer) idle one.
+    #[tokio::test]
+    async fn a_connected_socket_that_never_sends_is_cut_at_the_read_timeout() {
+        let (mut client, server) = tokio::io::duplex(4096);
+        let limits = Limits {
+            read_timeout: Duration::from_millis(250),
+            ..Limits::with_connections(8)
+        };
+        let (_stop, stopping) = watch::channel(false);
+        let connection = tokio::spawn(serve_connection(server, small(), limits, stopping));
+        let mut rest = Vec::new();
+        tokio::time::timeout(Duration::from_secs(3), client.read_to_end(&mut rest))
+            .await
+            .expect("a silent socket was never cut")
+            .unwrap();
+        connection.await.unwrap();
     }
 
     /// A client that sends a request and never reads the answer cannot hold the connection
@@ -613,7 +926,11 @@ mod tests {
 
     #[test]
     fn limits_are_read_and_validated() {
-        let vars = [("X_MAX_CONNECTIONS", "8"), ("X_READ_TIMEOUT_MS", "500")];
+        let vars = [
+            ("X_MAX_CONNECTIONS", "8"),
+            ("X_READ_TIMEOUT_MS", "500"),
+            ("X_IDLE_TIMEOUT_MS", "45000"),
+        ];
         let lookup = |k: &str| {
             vars.iter()
                 .find(|(n, _)| *n == k)
@@ -622,6 +939,7 @@ mod tests {
         let limits = Limits::from_lookup("X_", lookup, Limits::with_connections(64)).unwrap();
         assert_eq!(limits.max_connections, 8);
         assert_eq!(limits.read_timeout, Duration::from_millis(500));
+        assert_eq!(limits.idle_timeout, Duration::from_secs(45));
         assert_eq!(limits.max_requests, 10_000);
         let bad = [
             ("X_WRITE_TIMEOUT_MS", "0"),

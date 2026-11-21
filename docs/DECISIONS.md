@@ -1726,6 +1726,33 @@ closes one of its findings, with the test that failed before the fix.
   independent AppStates/routers/pools on one database, caches the key in B, revokes
   through A's API, and requires B's next request to answer `401`.
 
+- **D-103 — The idle close and the head bound are different limits.** CI run
+  `44737615627` (m2-lifecycle) lost 26% of checks to `readLoopPeekFailLocked`: the
+  server closed keep-alive connections at the 10 s `read_timeout` — D-054
+  deliberately reused hyper's head timer as the idle timeout — while k6/Go pools
+  reuse a connection for 90 s of idleness. Every reuse past 10 s raced a close the
+  server had already committed to: a transport error mid-request, on a POST
+  (non-replayable), that no threshold should ever have to absorb. `read_timeout`
+  conflated two different bounds: *how long a head may take to arrive* (slowloris,
+  wants ~10 s) and *how long a keep-alive connection may sit unused* (a pooled
+  client's private state, wants to be longer than the longest client pool TTL or
+  the server always closes first and always races reuse). They are now separate:
+  `read_timeout` (10 s) bounds head arrival **in total** — a trickling head dies at
+  the bound, not at the stall between bytes — and pauses inside a request body; the
+  new `idle_timeout` (120 s, `PS_IDLE_TIMEOUT_MS`) reaps only a connection with
+  nothing in flight and nothing arriving, via `graceful_shutdown` — never
+  mid-request, and longer than common pool TTLs so the client closes first.
+  `max_requests`/`max_age` still close by advertising `Connection: close` on the
+  last response before the cap. Detection lives in a `ConnState` shared between
+  the byte watcher, the request counter and the reaper tick; only real bytes count
+  as activity (an idle connection still flushes — counting that kept it "busy"
+  forever and reaped nothing, caught by the unit test). Red-first:
+  `an_idle_connection_is_reaped_at_the_idle_timeout_not_the_read_timeout` reuses a
+  connection past the read timeout and requires the request to answer (pre-fix:
+  dead socket); `a_client_reusing_across_the_request_cap_reads_every_answer`
+  requires every response whole plus `Connection: close` on the capped one;
+  trickling-head and never-sent-head cases prove the head bound still fires.
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

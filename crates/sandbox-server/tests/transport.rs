@@ -109,8 +109,14 @@ fn request(stream: &mut TcpStream) -> String {
 #[tokio::test]
 async fn half_sent_and_idle_connections_are_closed() {
     let db = TestDb::new().await;
-    let server = start(&db, &[("PS_READ_TIMEOUT_MS", "500")]);
-    // Headers never finished.
+    let server = start(
+        &db,
+        &[
+            ("PS_READ_TIMEOUT_MS", "500"),
+            ("PS_IDLE_TIMEOUT_MS", "1500"),
+        ],
+    );
+    // Headers never finished — the head bound is the read timeout.
     let mut partial = TcpStream::connect(&server.addr).unwrap();
     partial
         .write_all(b"GET /healthz HTTP/1.1\r\nHost: t\r\n")
@@ -119,14 +125,21 @@ async fn half_sent_and_idle_connections_are_closed() {
         closed_within(&mut partial, Duration::from_secs(4)),
         "a connection with half its headers stayed open"
     );
-    // A complete request, then silence: an idle keep-alive connection is closed too.
+    // A complete request, then silence: idling past the read timeout is lawful — that
+    // confusion is what closed pooled clients' sockets mid-reuse (D-103). Only the
+    // idle timeout reaps a keep-alive connection, and a reuse in between is served.
     let mut idle = TcpStream::connect(&server.addr).unwrap();
     assert!(request(&mut idle).starts_with("http/1.1 200"));
+    std::thread::sleep(Duration::from_millis(900));
+    assert!(
+        request(&mut idle).starts_with("http/1.1 200"),
+        "a reuse past the read timeout found a dead socket"
+    );
     assert!(
         closed_within(&mut idle, Duration::from_secs(4)),
         "an idle keep-alive connection stayed open"
     );
-    // A connection that never sends a byte.
+    // A connection that never sends a byte dies at the read bound.
     let mut silent = TcpStream::connect(&server.addr).unwrap();
     assert!(closed_within(&mut silent, Duration::from_secs(4)));
     drop(server);
