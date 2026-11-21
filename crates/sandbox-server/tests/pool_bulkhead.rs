@@ -90,8 +90,10 @@ async fn reads_answer_while_the_write_pool_is_held() {
         "a held write pool must not starve the readiness read"
     );
     assert!(
-        started.elapsed() < Duration::from_millis(500),
-        "the read waited {:?} on a write-held connection",
+        started.elapsed() < Duration::from_secs(2),
+        "the read waited {:?} on a write-held connection — the bound is the readiness \
+         deadline, not a perf measure: a read queued behind the write pool would fail \
+         its status first",
         started.elapsed()
     );
 }

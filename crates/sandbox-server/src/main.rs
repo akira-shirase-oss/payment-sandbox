@@ -102,9 +102,77 @@ fn pools(config: &Config) -> anyhow::Result<(sqlx::PgPool, sqlx::PgPool)> {
     Ok((write, read))
 }
 
+/// A site's listener cap (S2-4): the sites serve static files — their share of the
+/// descriptor budget is deliberately smaller than an API edge's.
+const SITE_MAX_CONNECTIONS: usize = 128;
+
+/// Sockets the process needs beyond its listeners: the pools, the auth listener, the
+/// simulator and webhook clients, files, logging — plus slack for runtimes' internals.
+const RESERVED_FDS: usize = 320;
+
+/// The whole descriptor budget, pure so the arithmetic is testable: `edges` API-shaped
+/// listeners at `edge` sockets each (cap + pending — a pending connection holds a real
+/// socket), `sites` static listeners at the site cap, plus the pools and the reserve.
+fn descriptor_need(edges: usize, edge: usize, sites: usize, pools: usize) -> u64 {
+    let listeners = edges
+        .saturating_mul(edge)
+        .saturating_add(sites.saturating_mul(SITE_MAX_CONNECTIONS * 2));
+    listeners.saturating_add(pools).saturating_add(RESERVED_FDS) as u64
+}
+
+/// Refuses to boot when Σ(cap+pending) over every listener plus the pools and the
+/// reserve cannot fit the process's descriptor limit (S2-4): the API edge, the read
+/// edge and each site hold up to cap+pending sockets, and the systemd unit's
+/// LimitNOFILE=4096 is reachable at the defaults once sites are on — EMFILE would break
+/// database connects, the listener's reconnect and webhook deliveries mid-run. When
+/// only the soft limit is low (a dev shell's default), it is raised to the need up to
+/// the hard bound; beyond the hard bound, startup fails with the budget spelled out.
+fn descriptor_budget(config: &Config) -> anyhow::Result<()> {
+    let transport = config.transport;
+    let edge = transport.max_connections + transport.max_pending;
+    let sites = usize::from(config.checkout.is_some()) + usize::from(config.dashboard.is_some());
+    let pools = usize::try_from(config.pool.max_connections).unwrap_or(usize::MAX)
+        + usize::try_from(config.read_edge.db_connections).unwrap_or(usize::MAX)
+        + 16;
+    let listeners = edge * (1 + usize::from(config.read_edge.listen.is_some()))
+        + sites * SITE_MAX_CONNECTIONS * 2;
+    let need = descriptor_need(
+        1 + usize::from(config.read_edge.listen.is_some()),
+        edge,
+        sites,
+        pools,
+    );
+    let rlim = rustix::process::getrlimit(rustix::process::Resource::Nofile);
+    if need <= rlim.current.unwrap_or(u64::MAX) {
+        return Ok(());
+    }
+    if need <= rlim.maximum.unwrap_or(u64::MAX) {
+        rustix::process::setrlimit(
+            rustix::process::Resource::Nofile,
+            rustix::process::Rlimit {
+                current: Some(need),
+                maximum: rlim.maximum,
+            },
+        )
+        .map_err(|e| anyhow::anyhow!("setrlimit(RLIMIT_NOFILE={need}): {e}"))?;
+        tracing::warn!(
+            need,
+            "raised the soft descriptor limit to the configured budget"
+        );
+        return Ok(());
+    }
+    anyhow::bail!(
+        "the descriptor budget ({need}) exceeds RLIMIT_NOFILE ({}): {listeners} listener \
+         sockets + {pools} pool and client sockets + {RESERVED_FDS} reserved; lower \
+         PS_MAX_CONNECTIONS/PS_MAX_PENDING or raise the service's LimitNOFILE",
+        rlim.maximum.unwrap_or(u64::MAX),
+    );
+}
+
 async fn serve() -> anyhow::Result<()> {
     let config = Config::from_env().context("loading configuration")?;
     telemetry::init(config.log_format, &config.log_filter).context("initialising telemetry")?;
+    descriptor_budget(&config)?;
     tracing::warn!(
         notice = sandbox_domain::SANDBOX_NOTICE,
         "starting payment sandbox server"
@@ -129,8 +197,7 @@ async fn serve() -> anyhow::Result<()> {
     // loaded before anything is served, so a missing build or a taken port fails startup.
     let checkout = bind_site(config.checkout.as_ref(), "checkout").await?;
     let dashboard = bind_site(config.dashboard.as_ref(), "dashboard").await?;
-    let grace = config.shutdown_grace;
-    let transport = config.transport;
+    let (grace, transport) = (config.shutdown_grace, config.transport);
     // The read edge (D-099): the same API on its own listener, whose connections get
     // their own serving places and a short bounded wait — write connections can never
     // queue ahead of them. `PS_READ_LISTEN` turns it on.
@@ -309,6 +376,8 @@ async fn serve_all(
             ("read", served)
         });
     }
+    // S2-4: a site's cap is a share of the descriptor budget, not the API edge's.
+    let site_limits = sandbox_http::Limits::with_connections(SITE_MAX_CONNECTIONS);
     for (name, site_listener, router) in sites {
         let addr = site_listener
             .local_addr()
@@ -317,7 +386,7 @@ async fn serve_all(
         let rx = stopping.clone();
         site_tasks.spawn(async move {
             let served =
-                shutdown::serve(site_listener, router, transport, grace, stopped(rx)).await;
+                shutdown::serve(site_listener, router, site_limits, grace, stopped(rx)).await;
             (name, served)
         });
     }
@@ -373,5 +442,28 @@ async fn migrate(db: &sqlx::PgPool) -> anyhow::Result<()> {
         }
         tokio::time::sleep(delay).await;
         delay = (delay * 2).min(Duration::from_secs(2));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The defaults must fit the unit's LimitNOFILE=4096: API + read edge at the default
+    /// 512+512 each, both sites at theirs, ~40 pool sockets — and the arithmetic itself
+    /// saturates instead of wrapping when a config goes far past sane.
+    #[test]
+    fn the_default_descriptor_budget_fits_the_unit_limit() {
+        let defaults = descriptor_need(2, 512 + 512, 2, 32 + 8 + 16);
+        assert!(
+            defaults < 4096 - 512,
+            "the default budget {defaults} must leave room under 4096"
+        );
+        // A wildly over-configured budget is computable — the check can refuse it.
+        let absurd = descriptor_need(2, 4_096 + 4_096, 2, 64);
+        assert!(
+            absurd > 4096,
+            "an over-cap budget must exceed the unit limit"
+        );
     }
 }

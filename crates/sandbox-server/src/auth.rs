@@ -87,10 +87,16 @@ impl FromRequestParts<AppState> for Auth {
         let identity = if let Some(identity) = state.key_cache.get(&hash) {
             identity
         } else {
+            // The generation is read BEFORE the resolve: an invalidation that lands
+            // while the SELECT runs must invalidate the `put` too, or the just-revoked
+            // identity is cached again for up to the TTL (S1-1).
+            let generation = state.key_cache.generation();
             let resolved = sandbox_db::keys::resolve(pool, &hash)
                 .await?
                 .ok_or(ApiError::Unauthorized)?;
-            state.key_cache.put(hash, resolved.clone());
+            state
+                .key_cache
+                .put_if_unchanged(hash, resolved.clone(), generation);
             resolved
         };
         Ok(Self(identity))
@@ -116,6 +122,10 @@ pub fn is_bootstrap(parts: &Parts, state: &AppState) -> bool {
 #[derive(Debug)]
 pub struct KeyCache {
     map: Mutex<HashMap<KeyHash, CacheEntry>>,
+    /// Bumped by every invalidation while the map lock is held: a resolve that began
+    /// before one must never be cached after it (S1-1), or a `put` could resurrect a
+    /// revoked key for up to the TTL.
+    generation: AtomicU64,
     hits: AtomicU64,
     misses: AtomicU64,
 }
@@ -148,12 +158,13 @@ impl KeyCache {
         entry
     }
 
-    /// Remembers a resolved identity, evicting the oldest entry when full.
-    pub fn put(&self, hash: KeyHash, identity: KeyIdentity) {
-        let mut map = self
-            .map
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    /// The invalidation counter — read before `resolve`, passed to `put_if_unchanged`.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Relaxed)
+    }
+
+    /// Inserts under the held lock, evicting the oldest entry when full.
+    fn insert_locked(map: &mut HashMap<KeyHash, CacheEntry>, hash: KeyHash, identity: KeyIdentity) {
         if map.len() >= Self::CAP
             && let Some(oldest) = map
                 .iter()
@@ -171,29 +182,61 @@ impl KeyCache {
         );
     }
 
+    /// Remembers a resolved identity. Tests seed the cache directly; request code must
+    /// use [`Self::put_if_unchanged`].
+    #[cfg(test)]
+    pub fn put(&self, hash: KeyHash, identity: KeyIdentity) {
+        let mut map = self
+            .map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Self::insert_locked(&mut map, hash, identity);
+    }
+
+    /// Caches `identity` only if no invalidation has landed since `generation` was read
+    /// — the compare happens under the same lock every invalidator bumps it under, so a
+    /// resolve that raced a revoke or a reset can never resurrect the old entry.
+    pub fn put_if_unchanged(&self, hash: KeyHash, identity: KeyIdentity, generation: u64) {
+        let mut map = self
+            .map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.generation.load(Ordering::Relaxed) != generation {
+            self.misses.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        Self::insert_locked(&mut map, hash, identity);
+    }
+
     /// Drops every entry of a key — call after a successful revoke.
     pub fn invalidate_key(&self, key_id: Uuid) {
-        self.map
+        let mut map = self
+            .map
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|_, e| e.identity.key_id != key_id);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.generation.fetch_add(1, Ordering::Relaxed);
+        map.retain(|_, e| e.identity.key_id != key_id);
     }
 
     /// Drops every entry of a project — call after a dataset reset opened a new epoch.
     pub fn invalidate_project(&self, project_id: Uuid) {
-        self.map
+        let mut map = self
+            .map
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|_, e| e.identity.scope.project_id != project_id);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.generation.fetch_add(1, Ordering::Relaxed);
+        map.retain(|_, e| e.identity.scope.project_id != project_id);
     }
 
     /// Drops everything — called when the `auth_epoch` listener reconnects after a gap,
     /// since notifications it missed cannot be replayed (D-102's addendum).
     pub fn clear(&self) {
-        self.map
+        let mut map = self
+            .map
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.generation.fetch_add(1, Ordering::Relaxed);
+        map.clear();
     }
 
     /// `(hits, misses)` — observability for the cache that serves the hot read path.
@@ -209,6 +252,7 @@ impl Default for KeyCache {
     fn default() -> Self {
         Self {
             map: Mutex::new(HashMap::new()),
+            generation: AtomicU64::new(0),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
         }
@@ -263,6 +307,29 @@ mod tests {
         assert!(cache.get(&KeyHash([2; 32])).is_some());
         cache.invalidate_project(project);
         assert!(cache.get(&KeyHash([2; 32])).is_none());
+    }
+
+    /// The S1-1 race: a resolve that started before an invalidation commits must never
+    /// be cached after it — before the generation check, the stale `put` resurrected a
+    /// revoked identity for up to the TTL.
+    #[test]
+    fn a_resolution_older_than_an_invalidation_is_never_cached() {
+        let cache = KeyCache::default();
+        let hash = KeyHash([3; 32]);
+        let (project, key) = (Uuid::now_v7(), Uuid::now_v7());
+        // A request misses, reads the generation, then its SELECT runs long...
+        let seen_at_miss = cache.generation();
+        // ...the revoke commits and invalidates while the SELECT was in flight...
+        cache.invalidate_key(key);
+        // ...and its answer arrives now. It must not be cached.
+        cache.put_if_unchanged(hash, identity(project, key), seen_at_miss);
+        assert!(
+            cache.get(&hash).is_none(),
+            "a resolve older than a revocation must never be served from the cache"
+        );
+        // A resolve that began after the invalidation still caches.
+        cache.put_if_unchanged(hash, identity(project, key), cache.generation());
+        assert!(cache.get(&hash).is_some());
     }
 
     /// The map never exceeds its bound: at capacity the oldest entry goes, never a grow.

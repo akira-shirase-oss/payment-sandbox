@@ -38,6 +38,8 @@ proptest = "1.12.0"
 redb = "4.5.0"
 # HTTP client to the simulated network: plain HTTP on loopback, no TLS, no proxies.
 reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
+# The boot-time descriptor budget (S2-4): RLIMIT_NOFILE through a safe API.
+rustix = { version = "1.1.6", default-features = false, features = ["process"] }
 # TLS for sandbox-cli (D-074) and its HTTPS test: rustls with its default provider (no
 # OpenSSL), the test's server side and its private test CA.
 rustls = { version = "0.23.40", default-features = false, features = ["std", "tls12"] }

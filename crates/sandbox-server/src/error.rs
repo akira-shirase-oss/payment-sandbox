@@ -421,6 +421,10 @@ impl From<DbError> for ApiError {
         match error {
             DbError::NotFound => Self::NotFound("resource"),
             DbError::StaleCursor => Self::StaleCursor,
+            DbError::EpochMoved => Self::InvalidState(
+                "a dataset reset opened a new epoch; retry with the same Idempotency-Key"
+                    .to_owned(),
+            ),
             DbError::Unavailable(_) => Self::Unavailable(error.into()),
             DbError::Timeout(_) | DbError::Retryable(_) => Self::DatabaseTimeout(error.into()),
             other => Self::Internal(other.into()),

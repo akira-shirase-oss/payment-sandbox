@@ -1753,6 +1753,52 @@ closes one of its findings, with the test that failed before the fix.
   requires every response whole plus `Connection: close` on the capped one;
   trickling-head and never-sent-head cases prove the head bound still fires.
 
+- **D-104 — The re-review remediations (S1-1, S2-1..S2-4).** The independent review of
+  the unmerged branch found five blocking defects; each fix is named here with its
+  proof.
+  **S1-1 (cache resurrection + archived-epoch writes):** `KeyCache` gains a generation
+  counter bumped under the map lock by every `invalidate_key`/`invalidate_project`/
+  `clear`; a miss reads it before `resolve` and `put_if_unchanged` refuses the insert
+  when an invalidation landed mid-flight — a resolve can never resurrect a revoked key
+  for the TTL. And because a lagging identity's epoch is only a *hint* until verified,
+  `begin_authorize`/`begin_child` take `SELECT … FOR KEY SHARE` on the project's epoch
+  inside the write transaction (`ensure_epoch`): reset's `FOR UPDATE` conflicts with
+  it, so a write either precedes the epoch move or fails `EpochMoved` → 409 — it never
+  lands in the archived epoch. In-flight operations still resolve in their own epoch
+  (D-022): the guard is on beginnings only. Proofs:
+  `a_resolution_older_than_an_invalidation_is_never_cached` (unit),
+  `a_write_scoped_to_an_archived_epoch_is_refused` (journal.rs).
+  **S2-1 (dropped revocations on reconnect):** sqlx's `recv()` reconnects silently and
+  drops the gap's notifications, `split_at(1)` panicked on empty/multibyte payloads,
+  and the restart-after-panic never flushed. The loop now drives `try_recv()` —
+  `Ok(None)` or `Err` is a gap: flush and re-attach — clears after `listen()` lands
+  (covering the whole un-listened window), clears once at startup, and parses with
+  `strip_prefix`, falling back to `clear()` on anything malformed (any role may
+  NOTIFY). Proofs: `a_revocation_committed_in_a_listener_gap_still_flushes` kills the
+  LISTEN backend (`pg_terminate_backend`), revokes in the gap, and requires 401 after
+  a NEW backend attaches — the attach is waited on via `pg_stat_activity`, no guessed
+  sleep; `a_malformed_notification_flushes_the_cache_without_panicking` covers the
+  payload forms.
+  **S2-2 (refusal RST):** the over-pending refusal wrote a raw 503 and dropped the
+  socket — Linux answers close-with-unread-data with RST, and k6/Go counted ~1,620
+  `status:0` transport errors (run `44835402763`) where the contract says every answer
+  is a named status. The refusal is now a lingering close: response bytes,
+  `shutdown(write)` (FIN after the bytes), then a ≤1 s drain of what the client was
+  still sending so the final drop is a FIN. Proof: the rewritten
+  `a_connection_past_the_pending_bound_is_refused_at_once` also asserts the whole
+  response arrives and `read_to_end` completes — a RST would surface as a read error,
+  not bytes.
+  **S2-3 (header memory):** hyper's ~408 KiB per-connection head buffer became
+  `max_buf_size(32 * 1024)` (~16 MB at the cap instead of ~209 MB); the header-count
+  bound stays httparse's 100. Proof: `a_head_past_the_buffer_bound_is_refused` — 16 KiB
+  → 200, 64 KiB → 431.
+  **S2-4 (descriptor budget):** a startup check sums `cap + pending` over every
+  listener (API, read edge, each site) plus pools, the listener, clients and a 320-fd
+  reserve, against `RLIMIT_NOFILE`: a low soft limit is raised to the need up to the
+  hard bound; beyond it, boot refuses with the budget spelled out. The sites' caps
+  dropped to 128 connections (`SITE_MAX_CONNECTIONS`) — static files get a share of
+  the budget, not the API's 512+512. Worst case now fits `LimitNOFILE=4096` with room.
+
 ## Open questions (still open)
 
 - **Billing scenario order and definitions** — the default order is

@@ -156,6 +156,28 @@ pub struct NewAuthorize<'a> {
     pub description: Option<&'a str>,
 }
 
+/// The project's current epoch under a key-share lock: reset's `FOR UPDATE` conflicts
+/// with it, so this transaction either precedes the epoch move or sees it — never
+/// writes beside it. A cached identity's epoch can lag a cross-process reset by the
+/// notification latency (S1-1); without the check, `scope.epoch` bound writes into the
+/// archived epoch for up to the key cache's TTL. Concurrent writers hold only the
+/// shared lock — they do not serialize on each other, only on the rare reset.
+async fn ensure_epoch(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    scope: ProjectScope,
+) -> Result<(), DbError> {
+    let current: Option<i32> =
+        sqlx::query_scalar("SELECT dataset_epoch FROM projects WHERE id = $1 FOR KEY SHARE")
+            .bind(scope.project_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    match current {
+        Some(epoch) if epoch == scope.epoch => Ok(()),
+        Some(_) => Err(DbError::EpochMoved),
+        None => Err(DbError::NotFound),
+    }
+}
+
 /// Records a new payment and its authorize operation (`pending`), or finds the existing
 /// one for the same identity.
 pub async fn begin_authorize(
@@ -164,6 +186,7 @@ pub async fn begin_authorize(
     new: &NewAuthorize<'_>,
 ) -> Result<Begin, BeginError> {
     let mut tx = pool.begin().await?;
+    ensure_epoch(&mut tx, scope).await?;
     let inserted = sqlx::query(
         "INSERT INTO payments (project_id, id, dataset_epoch, authorize_operation_id, currency,
                                amount_minor, token, description, status)
@@ -244,6 +267,7 @@ pub async fn begin_child(
             "authorize is not a child operation".to_owned(),
         )))?;
     let mut tx = pool.begin().await?;
+    ensure_epoch(&mut tx, scope).await?;
     // One round trip: lock the payment and learn whether this identity already exists.
     let row = sqlx::query(concat!(
         "SELECT ",

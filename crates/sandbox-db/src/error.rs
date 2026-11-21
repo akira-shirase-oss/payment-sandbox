@@ -15,6 +15,11 @@ pub enum DbError {
     /// snapshot belong to another history.
     #[error("the cursor is from before a restore of the database")]
     StaleCursor,
+    /// The epoch a write was scoped to is no longer the project's (S1-1): a cached
+    /// identity can outlive a dataset reset by the notification latency, and the write
+    /// must not land in the archived epoch.
+    #[error("the project's dataset epoch moved")]
+    EpochMoved,
     /// A unique or check constraint refused the write.
     #[error("constraint refused the write: {0}")]
     Constraint(String),

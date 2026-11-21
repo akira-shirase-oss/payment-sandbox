@@ -206,8 +206,15 @@ async fn auth_bypass_attempts_are_all_refused() {
     )
     .await;
     assert_eq!(denied.status, 403);
-    // A revoked key dies on its very next request.
+    // A revoked key dies on its very next request — and it must be in the cache when
+    // revoked, or the test proves nothing about invalidation: a key never resolved would
+    // fail the SELECT the same way with the whole cache machinery deleted.
     let (key_id, doomed) = t.app.key(&admin, &["read"]).await;
+    assert_eq!(
+        raw(&t, &get("/v1/balances", Some(&doomed))).await.status,
+        200,
+        "seed the key cache before the revoke"
+    );
     assert_eq!(
         raw(
             &t,
@@ -280,26 +287,34 @@ async fn settled(t: &Target, key: &str, res: Response, what: &str) -> Response {
     }
 }
 
+/// Posts an approve-token authorize and waits for it to settle — the seed step the
+/// tenant tests need. Returns the payment's id.
+async fn authorize(t: &Target, admin: &str, idem: &str, amount: i64) -> String {
+    let created = raw(
+        t,
+        &post(
+            "/v1/payments",
+            Some(admin),
+            Some(idem),
+            &json!({"amount": amount, "currency": "USD", "token": "tok_sim_approve"}),
+        ),
+    )
+    .await;
+    settled(t, admin, created, "seed authorize").await.json()["payment"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
 // 2. CROSS-TENANT: project B can never read, move or enumerate project A's objects —
 // and gets the same 404 an absent object would give, so existence doesn't leak.
 #[tokio::test]
 async fn cross_tenant_access_is_invisible() {
-    let (t, sim) = Target::with_sim(&[]).await;
+    let (t, sim) = Target::with_sim(&[("PS_SECRET_KEY", SECRET_KEY)]).await;
     let (_a, admin_a) = t.app.project("atk-a").await;
     let (_b, admin_b) = t.app.project("atk-b").await;
     // A owns a payment.
-    let created = raw(
-        &t,
-        &post(
-            "/v1/payments",
-            Some(&admin_a),
-            Some("atk-tenant-1"),
-            &json!({"amount": 500, "currency": "USD", "token": "tok_sim_approve"}),
-        ),
-    )
-    .await;
-    let created = settled(&t, &admin_a, created, "tenant seed authorize").await;
-    let pid = created.json()["payment"]["id"].as_str().unwrap().to_owned();
+    let pid = authorize(&t, &admin_a, "atk-tenant-1", 500).await;
     // B cannot see it, move it, or replay over it.
     for path in [
         format!("/v1/payments/{pid}"),
@@ -332,18 +347,64 @@ async fn cross_tenant_access_is_invisible() {
     let list = raw(&t, &get("/v1/payments", Some(&admin_b))).await;
     assert_eq!(list.status, 200);
     assert!(!list.body.windows(pid.len()).any(|w| w == pid.as_bytes()));
-    // B cannot revoke A's keys (the id below is A's payment id — a uuid either way) and
-    // cannot read A's reconciliation state into B's own view.
+    // B cannot revoke A's keys: a real key of A's, guessed by id, answers the same 404
+    // an absent one would.
+    let (a_key_id, _a_key) = t.app.key(&admin_a, &["read"]).await;
+    assert_eq!(
+        raw(
+            &t,
+            &post(
+                &format!("/v1/keys/{a_key_id}/revoke"),
+                Some(&admin_b),
+                None,
+                &json!({})
+            )
+        )
+        .await
+        .status,
+        404
+    );
+    // A's webhook endpoints are invisible to B's listing.
+    let endpoint = raw(
+        &t,
+        &post(
+            "/v1/webhook_endpoints",
+            Some(&admin_a),
+            None,
+            &json!({"url": "http://localhost:56091/hook"}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        endpoint.status,
+        201,
+        "{}",
+        String::from_utf8_lossy(&endpoint.body)
+    );
+    let b_endpoints = raw(&t, &get("/v1/webhook_endpoints", Some(&admin_b))).await;
+    assert_eq!(
+        b_endpoints.json()["endpoints"].as_array().unwrap().len(),
+        0,
+        "B saw A's webhook endpoints"
+    );
+    // B owns one payment of its own, so B's reconciliation actually ran work — and it
+    // still reports nothing of A's: the check is only meaningful when it counted B's.
+    authorize(&t, &admin_b, "atk-tenant-b1", 50).await;
     let recon = raw(&t, &get("/v1/reconciliation", Some(&admin_b))).await;
     assert_eq!(recon.status, 200);
+    let checked = recon.json()["report"]["payments_checked"]
+        .as_i64()
+        .unwrap_or(-1);
+    assert!(
+        checked >= 1,
+        "B's reconciliation counted nothing: {checked}"
+    );
     assert!(!recon.body.windows(pid.len()).any(|w| w == pid.as_bytes()));
     // Stored state: A's payment is intact and still A's — B's attempts changed nothing.
-    assert_eq!(
-        raw(&t, &get(&format!("/v1/payments/{pid}"), Some(&admin_a)))
-            .await
-            .status,
-        200
-    );
+    let reread = raw(&t, &get(&format!("/v1/payments/{pid}"), Some(&admin_a))).await;
+    assert_eq!(reread.status, 200);
+    assert_eq!(reread.json()["payment"]["id"].as_str().unwrap(), pid);
+    assert_eq!(reread.json()["payment"]["amount"], 500);
     sim.remove().await;
     t.app.cleanup().await;
 }
@@ -367,14 +428,27 @@ async fn spoofed_and_malformed_headers_gain_nothing() {
     );
     let status = raw(&t, folded.as_bytes()).await.status;
     assert!(status == 400 || status == 401, "{status}");
-    // A header block past hyper's ~400 KB read-buffer bound is refused or the connection
-    // is cut (status 0); a normal request still answers after it.
+    // Inside the 32 KiB head bound a header block still answers — the bound protects
+    // memory, not size for its own sake.
+    let inside = format!(
+        "GET /healthz HTTP/1.1\r\nhost: x\r\nx-pad: {}\r\nconnection: close\r\n\r\n",
+        "a".repeat(16 * 1024)
+    );
+    assert_eq!(raw(&t, inside.as_bytes()).await.status, 200);
+    // Past it the head is refused by name (431); past the kernel's delivery window the
+    // refusal may arrive as a cut instead (status 0) — never as an answer.
+    let over = format!(
+        "GET /healthz HTTP/1.1\r\nhost: x\r\nx-pad: {}\r\nconnection: close\r\n\r\n",
+        "a".repeat(64 * 1024)
+    );
+    let status = raw(&t, over.as_bytes()).await.status;
+    assert!(status == 431 || status == 0, "{status}");
     let huge = format!(
         "GET /healthz HTTP/1.1\r\nhost: x\r\nx-pad: {}\r\nconnection: close\r\n\r\n",
         "a".repeat(600_000)
     );
     let status = raw(&t, huge.as_bytes()).await.status;
-    assert!(status == 0 || (400..=431).contains(&status), "{status}");
+    assert!(status == 0 || status == 431, "{status}");
     assert_eq!(raw(&t, &get("/healthz", None)).await.status, 200);
     // Forwarding headers are not a credential: still a bare 401 without a bearer.
     let xff = b"GET /v1/balances HTTP/1.1\r\nhost: x\r\nx-forwarded-for: 127.0.0.1\r\nx-real-ip: 10.0.0.1\r\nconnection: close\r\n\r\n";
@@ -391,7 +465,9 @@ async fn spoofed_and_malformed_headers_gain_nothing() {
 async fn over_admission_load_is_shed_lawfully() {
     let (t, sim) = Target::with_sim(&[("PS_MAX_IN_FLIGHT", "4"), ("PS_READ_IN_FLIGHT", "2")]).await;
     let (_p, admin) = t.app.project("atk-rl").await;
-    // Writes hold real work (the network call); 24 concurrent POSTs over 4 permits sheds.
+    // Every authorize holds its admission slot for 800 ms of simulated network latency,
+    // so more than 4 of 24 concurrent POSTs shed at machine speed, not by luck.
+    sim.fault(json!({"kind": "authorize", "target": null, "action": "delay", "delay_ms": 800, "count": 24}));
     let mut joins = Vec::new();
     for n in 0..24 {
         let req = post(
@@ -408,6 +484,14 @@ async fn over_admission_load_is_shed_lawfully() {
     for j in joins {
         let res = j.await.unwrap();
         if res.status == 503 {
+            // The refusal must be the admission shed itself — a pool-deadline or a
+            // payment-busy 503 would pass a bare status check while proving nothing.
+            assert_eq!(
+                res.json()["error"]["code"].as_str(),
+                Some("overloaded"),
+                "a 503 that is not the named admission shed: {}",
+                String::from_utf8_lossy(&res.body)
+            );
             assert!(
                 res.header("retry-after").is_some(),
                 "a 503 without Retry-After"
@@ -426,8 +510,8 @@ async fn over_admission_load_is_shed_lawfully() {
         "{statuses:?}"
     );
     assert!(
-        refused_retry_after > 0,
-        "4 permits carried all 24; nothing was shed"
+        refused_retry_after > 4,
+        "at most 4 permits for 24 concurrent requests, yet only {refused_retry_after} shed"
     );
     // Stored state: exactly the admitted requests persisted — nothing half-wrote.
     let created = statuses.iter().filter(|s| **s == 201).count();
@@ -447,6 +531,8 @@ async fn non_loopback_webhook_targets_are_refused() {
     // Endpoint creation needs the server's secret box — no sim (no delivery happens).
     let t = Target::new(&[("PS_SECRET_KEY", SECRET_KEY)]).await;
     let (_p, admin) = t.app.project("atk-ssrf").await;
+    // Every evasion form is refused the same way — the named invalid-body 422, never a
+    // status that could hide a different failure.
     for url in [
         "http://169.254.169.254:80/latest/meta-data",
         "http://8.8.8.8:53/",
@@ -459,6 +545,12 @@ async fn non_loopback_webhook_targets_are_refused() {
         "https://localhost:443/", // no TLS endpoint exists to attack through
         "http://localhost:56091/x#frag", // fragment
         "http://localhost:56091/x\\y", // backslash
+        "http://0.0.0.0:80/",    // the unspecified address
+        "http://0:80/",          // its shortest form
+        "http://[fe80::1]:80/",  // IPv6 link-local
+        "http://[2001:db8::1]:443/", // IPv6 global unicast
+        "http://[64:ff9b::7f00:1]:80/", // NAT64 wrapping a v4 — not the mapped form
+        "http://[::ffff:8.8.8.8]:80/", // v4-mapped v6, non-loopback
     ] {
         let res = raw(
             &t,
@@ -470,25 +562,27 @@ async fn non_loopback_webhook_targets_are_refused() {
             ),
         )
         .await;
-        assert!((400..=422).contains(&res.status), "{url} -> {}", res.status);
+        assert_eq!(res.status, 422, "{url} -> {}", res.status);
     }
-    // The control: a lawful loopback target is accepted.
-    let ok = raw(
-        &t,
-        &post(
-            "/v1/webhook_endpoints",
-            Some(&admin),
-            None,
-            &json!({"url": "http://localhost:56091/hook"}),
-        ),
-    )
-    .await;
-    assert_eq!(ok.status, 201, "{}", ok.json());
-    // Stored state: only the lawful control endpoint persisted; every refused URL
+    // The controls: lawful loopback targets are accepted, on both address families.
+    for url in ["http://localhost:56091/hook", "http://[::1]:56091/hook"] {
+        let ok = raw(
+            &t,
+            &post(
+                "/v1/webhook_endpoints",
+                Some(&admin),
+                None,
+                &json!({"url": url}),
+            ),
+        )
+        .await;
+        assert_eq!(ok.status, 201, "{url}: {}", ok.json());
+    }
+    // Stored state: only the lawful control endpoints persisted; every refused URL
     // left nothing behind for a delivery worker to find later.
     let endpoints = raw(&t, &get("/v1/webhook_endpoints", Some(&admin))).await;
     assert_eq!(endpoints.status, 200);
-    assert_eq!(endpoints.json()["endpoints"].as_array().unwrap().len(), 1);
+    assert_eq!(endpoints.json()["endpoints"].as_array().unwrap().len(), 2);
     t.app.cleanup().await;
 }
 
@@ -511,41 +605,57 @@ async fn oversized_and_slow_bodies_are_cut_off() {
     );
     let status = raw(&t, big.as_bytes()).await.status;
     assert!(status == 400 || status == 413 || status == 422, "{status}");
-    // A dribbling body hits the request deadline: the server answers (503, the timeout
-    // status) or closes, inside the deadline plus slack.
+    // A body that trickles real bytes forever never completes: the body deadline cuts it
+    // off by name, inside the deadline plus slack. (Sending nothing at all would test a
+    // stalled read, not a dribble — a silent close would pass a status check that never
+    // saw one.)
     let started = Instant::now();
     let mut stream = tokio::net::TcpStream::connect(t.addr).await.unwrap();
+    // 40 declared, at most 20 ever sent — the dribble can never complete; what kills it
+    // is the stall after the last byte, not a finished body failing to parse.
     let head = format!(
-        "POST /v1/payments HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {admin}\r\nidempotency-key: atk-slow\r\ncontent-type: application/json\r\ncontent-length: 20\r\nconnection: close\r\n\r\n"
+        "POST /v1/payments HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {admin}\r\nidempotency-key: atk-slow\r\ncontent-type: application/json\r\ncontent-length: 40\r\nconnection: close\r\n\r\n"
     );
     stream.write_all(head.as_bytes()).await.unwrap();
     let mut buf = Vec::new();
     let mut chunk = [0_u8; 4096];
+    let mut tick = tokio::time::interval(Duration::from_millis(400));
+    let mut wrote = 0_usize;
     loop {
-        match tokio::time::timeout(Duration::from_secs(8), stream.read(&mut chunk)).await {
-            Ok(Ok(0) | Err(_)) | Err(_) => break,
-            Ok(Ok(n)) => {
-                buf.extend_from_slice(&chunk[..n]);
-                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                    break;
+        tokio::select! {
+            _ = tick.tick() => {
+                if wrote < 16 {
+                    let _ = stream.write_all(b"{\"a\":").await;
+                    wrote += 5;
                 }
             }
+            read = tokio::time::timeout(Duration::from_secs(8), stream.read(&mut chunk)) => {
+                match read {
+                    Ok(Ok(0) | Err(_)) | Err(_) => break,
+                    Ok(Ok(n)) => {
+                        buf.extend_from_slice(&chunk[..n]);
+                        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if started.elapsed() >= Duration::from_secs(8) {
+            break;
         }
     }
     assert!(
         started.elapsed() < Duration::from_secs(8),
-        "the slow body held a connection past its deadline"
+        "the dribbled body held a connection past its deadline"
     );
-    if !buf.is_empty() {
-        let res = parse(&buf);
-        // Any named refusal inside the bound is lawful: 408/413 for the timed-out body,
-        // 400 for the malformed exchange, 503 if the timeout layer itself answers.
-        assert!(
-            res.status == 503 || res.status == 400 || res.status == 408 || res.status == 413,
-            "{}",
-            res.status
-        );
-    }
+    assert!(
+        !buf.is_empty(),
+        "the dribbled body was dropped with no answer"
+    );
+    let res = parse(&buf);
+    // The named refusal for a body out of time: the server answered, not merely closed.
+    assert_eq!(res.status, 413, "{}", res.status);
     // And it is still serving.
     assert_eq!(raw(&t, &get("/healthz", None)).await.status, 200);
     // Stored state: neither the oversized nor the dribbled body persisted a payment.
@@ -614,47 +724,66 @@ async fn replays_never_double_post() {
 // description, the idempotency key, even a project slug.
 #[tokio::test]
 async fn raw_card_data_never_enters() {
-    let t = Target::new(&[]).await;
+    let (t, sim) = Target::with_sim(&[]).await;
     let (_p, admin) = t.app.project("atk-card").await;
     let pan = "4111111111111111";
-    let res = raw(
-        &t,
-        &post(
+    // Every PAN surface is refused the same way — by the named guard, not by any
+    // client-error status: a 400 from an unrelated parse failure would pass the old
+    // range assert while proving nothing about the card guard.
+    for (path, key, idem, body) in [
+        (
             "/v1/payments",
-            Some(&admin),
+            Some(admin.as_str()),
             Some("atk-card-1"),
-            &json!({"amount": 10, "currency": "USD", "token": "tok_sim_approve", "description": pan}),
+            json!({"amount": 10, "currency": "USD", "token": "tok_sim_approve", "description": pan}),
         ),
-    )
-    .await;
-    assert!((400..=422).contains(&res.status), "{}", res.status);
-    // A PAN-shaped idempotency key is refused on parse, not stored.
-    let res = raw(
-        &t,
-        &post(
+        (
             "/v1/payments",
-            Some(&admin),
+            Some(admin.as_str()),
             Some(pan),
-            &json!({"amount": 10, "currency": "USD", "token": "tok_sim_approve"}),
+            json!({"amount": 10, "currency": "USD", "token": "tok_sim_approve"}),
         ),
-    )
-    .await;
-    assert!((400..=422).contains(&res.status), "{}", res.status);
-    // Even a PAN-shaped project slug.
-    let res = raw(
-        &t,
-        &post(
+        (
             "/v1/projects",
             Some(BOOTSTRAP),
             None,
-            &json!({"slug": pan, "name": "x"}),
+            json!({"slug": pan, "name": "x"}),
+        ),
+    ] {
+        let res = raw(&t, &post(path, key, idem, &body)).await;
+        assert_eq!(res.status, 422, "{body}");
+        assert_eq!(
+            res.json()["error"]["code"].as_str(),
+            Some("raw_card_data_rejected"),
+            "{body} was not refused by the card guard: {}",
+            String::from_utf8_lossy(&res.body)
+        );
+    }
+    // The positive control: the same payment without the PAN succeeds — the refusals
+    // above were the guard's, not a broken route.
+    let ok = raw(
+        &t,
+        &post(
+            "/v1/payments",
+            Some(&admin),
+            Some("atk-card-ok"),
+            &json!({"amount": 10, "currency": "USD", "token": "tok_sim_approve", "description": "a lawful description"}),
         ),
     )
     .await;
-    assert!((400..=422).contains(&res.status), "{}", res.status);
-    // Stored state: no PAN-shaped record of any kind reached the journal-facing store.
+    settled(&t, &admin, ok, "card control authorize").await;
+    // Stored state: exactly the control payment exists, and the PAN string is in no
+    // stored record a reader could enumerate.
     let payments = raw(&t, &get("/v1/payments?limit=500", Some(&admin))).await;
-    assert_eq!(payments.json()["payments"].as_array().unwrap().len(), 0);
+    assert_eq!(payments.json()["payments"].as_array().unwrap().len(), 1);
+    assert!(
+        !payments
+            .body
+            .windows(pan.len())
+            .any(|w| w == pan.as_bytes()),
+        "a PAN-shaped string persisted"
+    );
+    sim.remove().await;
     t.app.cleanup().await;
 }
 
@@ -748,6 +877,15 @@ async fn forged_explain_cursors_are_refused_cleanly() {
     )
     .await;
     assert_eq!(res.status, 400);
+    // And replayed under another project it is the same refusal: the seal binds the
+    // project, so a cursor A holds is not a read oracle for B.
+    let (_pb, admin_b) = t.app.project("atk-cursor-b").await;
+    let res = raw(
+        &t,
+        &get(&format!("{explain}?cursor={issued}"), Some(&admin_b)),
+    )
+    .await;
+    assert_eq!(res.status, 400, "A's cursor served under B's key");
     // Stored state: the endpoint still works for an honestly-issued (cursor-free) read.
     let clean = raw(&t, &get(explain, Some(&admin))).await;
     assert_eq!(clean.status, 200);

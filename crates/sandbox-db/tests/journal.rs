@@ -528,3 +528,66 @@ fn random_postings_always_balance_and_match_their_model() {
         .unwrap();
     runtime.block_on(db.cleanup());
 }
+
+/// S1-1's second half: a cached identity's epoch can lag a reset by the notification
+/// latency (the key cache's 30 s TTL before the listener lands). A write begun under
+/// the archived epoch is refused by the transaction itself — the scope's epoch is
+/// checked against `projects.dataset_epoch` under a key-share lock, never trusted
+/// from whatever handed the scope out.
+#[tokio::test]
+async fn a_write_scoped_to_an_archived_epoch_is_refused() {
+    use sandbox_db::payments;
+    use sandbox_domain::Amount;
+
+    let db = TestDb::new().await;
+    let scope = project(&db.pool, "epoch-guard").await;
+    let new = |key: &'static str| payments::NewAuthorize {
+        operation_id: Uuid::now_v7(),
+        payment_id: Uuid::now_v7(),
+        idempotency_key: key,
+        fingerprint: [u8::try_from(key.len()).unwrap(); 32],
+        amount: Amount::new(100).unwrap(),
+        currency: Currency::Usd,
+        token: "tok_sim_approve",
+        description: None,
+    };
+    payments::begin_authorize(&db.pool, scope, &new("epoch-ok"))
+        .await
+        .expect("a write in the current epoch must begin");
+
+    let reset = projects::reset(
+        &db.pool,
+        scope.project_id,
+        scope.epoch,
+        "epoch-guard",
+        "test",
+        Uuid::now_v7(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(reset, projects::ResetOutcome::Reset { .. }),
+        "{reset:?}"
+    );
+
+    // The stale scope — the epoch a lagging cache still hands out — is refused, and
+    // the refusal is the named one, not a constraint or a not-found.
+    let err = payments::begin_authorize(&db.pool, scope, &new("epoch-stale"))
+        .await
+        .expect_err("a stale epoch must never write");
+    assert!(
+        matches!(err, payments::BeginError::Db(DbError::EpochMoved)),
+        "{err:?}"
+    );
+    // And nothing of it persisted: the archived epoch holds only the first payment.
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM payments WHERE project_id = $1 AND dataset_epoch = $2",
+    )
+    .bind(scope.project_id)
+    .bind(scope.epoch)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 1);
+    db.cleanup().await;
+}

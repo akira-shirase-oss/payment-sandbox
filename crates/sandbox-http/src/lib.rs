@@ -40,7 +40,7 @@ use axum::Router;
 use axum::http::{HeaderValue, Request, header};
 use hyper::body::Incoming;
 use hyper_util::rt::{TokioIo, TokioTimer};
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _, ReadBuf};
+use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 use tokio::task::JoinSet;
@@ -374,7 +374,13 @@ async fn wait_for_place(
     }
 }
 
-/// One bounded, honest refusal: `503`, `Retry-After` and `Connection: close`.
+/// One bounded, honest refusal: `503`, `Retry-After` and `Connection: close` — then a
+/// lingering close. Writing the bytes and dropping the socket raced a request already
+/// in flight: Linux answers a close-with-unread-data with RST, and a pooled client
+/// (k6, Go) reported EOF/reset as a transport error — status 0, breaking the
+/// "never status:0" contract (S2-2, run 44835402763). `shutdown(write)` sends FIN after
+/// the response so the client reads it whole, and the bounded drain consumes what the
+/// client was still sending so the final drop is a FIN, not a RST.
 async fn refuse(mut stream: TcpStream, limits: Limits, stats: &Arc<ServeStats>) {
     if stats.refused() {
         tracing::warn!(
@@ -384,7 +390,16 @@ async fn refuse(mut stream: TcpStream, limits: Limits, stats: &Arc<ServeStats>) 
         );
     }
     let _ = tokio::time::timeout(limits.write_timeout, stream.write_all(OVER_CAP_RESPONSE)).await;
+    let _ = stream.shutdown().await;
+    let _ = tokio::time::timeout(REFUSAL_DRAIN, async {
+        let mut sink = [0_u8; 8_192];
+        while stream.read(&mut sink).await.is_ok_and(|n| n > 0) {}
+    })
+    .await;
 }
+
+/// Longest the refusal's lingering close spends draining a client's in-flight bytes.
+const REFUSAL_DRAIN: Duration = Duration::from_secs(1);
 
 /// What a refused connection reads.
 const OVER_CAP_RESPONSE: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\nretry-after: 1\r\nsandbox-simulated: true\r\n\r\n";
@@ -445,7 +460,11 @@ pub(crate) async fn serve_connection<I>(
         })
     };
     let mut builder = hyper::server::conn::http1::Builder::new();
-    builder.timer(TokioTimer::new()).keep_alive(true);
+    builder
+        .timer(TokioTimer::new())
+        .keep_alive(true)
+        // ~408 KiB of head buffer per connection was ~209 MB at the cap (S2-3).
+        .max_buf_size(32 * 1024);
     let conn = builder.serve_connection(TokioIo::new(watched), hyper_service);
     tokio::pin!(conn);
     let age = tokio::time::sleep(limits.max_age);
@@ -738,7 +757,6 @@ impl<I: AsyncWrite + Unpin> AsyncWrite for Watched<I> {
 #[cfg(test)]
 mod tests {
     use axum::routing::get;
-    use tokio::io::AsyncReadExt as _;
 
     use super::*;
 
@@ -969,7 +987,6 @@ mod tests {
         let limits = Limits {
             max_connections: 1,
             accept_wait: Duration::from_millis(150),
-            max_pending: 1,
             ..Limits::with_connections(1)
         };
         let stats = Arc::new(ServeStats::default());
@@ -1021,20 +1038,139 @@ mod tests {
         assert!(text.starts_with("HTTP/1.1 503"), "{text}");
         assert!(text.contains("retry-after"), "{text}");
 
-        // A third connection, over the pending bound, is refused at once.
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.refused, 1, "{snapshot:?}");
+        assert_eq!(snapshot.served, 1, "{snapshot:?}");
+        drop(holder);
+        drop(serving);
+    }
+
+    /// Over the pending bound a connection is refused on arrival — while a pending one
+    /// wins a freed place. `accept_wait` is far beyond the test, so the fast refusal is
+    /// the pending bound's doing, not the wait's: without `max_pending` the third
+    /// connection would wait exactly like the second and this test would hang.
+    #[tokio::test]
+    async fn a_connection_past_the_pending_bound_is_refused_at_once() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let limits = Limits {
+            max_connections: 1,
+            accept_wait: Duration::from_secs(30),
+            max_pending: 1,
+            ..Limits::with_connections(1)
+        };
+        let stats = Arc::new(ServeStats::default());
+        let router = Router::new().route("/", get(|| async { "ok" }));
+        let (_stop, stopping) = watch::channel(false);
+        let serving = {
+            let stats = stats.clone();
+            tokio::spawn(async move {
+                serve(
+                    listener,
+                    router,
+                    limits,
+                    Duration::from_millis(200),
+                    async move {
+                        let mut rx = stopping;
+                        let _ = rx.wait_for(|s| *s).await;
+                    },
+                    stats,
+                )
+                .await
+            })
+        };
+        let holder = TcpStream::connect(addr).await.unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while stats.snapshot().active == 0 && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(stats.snapshot().active, 1);
+
+        // The pending slot: `second` waits for a place that frees only when `holder`
+        // goes — prove it is pending, not refused: it stays unanswered past the bound
+        // the instant refusal takes.
+        let mut second = TcpStream::connect(addr).await.unwrap();
+        let mut second_buf = [0_u8; 64];
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), second.read(&mut second_buf))
+                .await
+                .is_err(),
+            "the pending connection was answered instead of waiting for a place"
+        );
+
+        // Over the pending bound: refused on arrival, the whole response, a FIN.
         let mut third = TcpStream::connect(addr).await.unwrap();
+        let started = std::time::Instant::now();
         let mut early = Vec::new();
         let answer_at = tokio::time::timeout(Duration::from_secs(3), third.read_to_end(&mut early))
             .await
             .expect("the over-pending connection was never refused")
             .expect("reading the refusal failed");
         assert!(answer_at > 0);
-        assert!(String::from_utf8_lossy(&early).starts_with("HTTP/1.1 503"));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the over-pending connection waited {:?} — the pending bound must refuse it at once",
+            started.elapsed()
+        );
+        let text = String::from_utf8_lossy(&early);
+        assert!(text.starts_with("HTTP/1.1 503"), "{text}");
+        assert!(text.contains("retry-after"), "{text}");
+
+        // A pending connection is admitted when a place frees.
+        drop(holder);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while stats.snapshot().served < 2 && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            stats.snapshot().served,
+            2,
+            "the pending connection never won a place"
+        );
 
         let snapshot = stats.snapshot();
-        assert_eq!(snapshot.refused, 2, "{snapshot:?}");
-        assert_eq!(snapshot.served, 1, "{snapshot:?}");
-        drop(holder);
+        assert_eq!(snapshot.refused, 1, "{snapshot:?}");
+        drop(second);
         drop(serving);
+    }
+
+    /// S2-3: the head buffer is 32 KiB, not hyper's ~408 KiB default — 512 connections
+    /// at the cap would have pinned ~209 MB per listener. A 16 KiB head still answers;
+    /// a 64 KiB head is refused by name (431) without the request ever running.
+    #[tokio::test]
+    async fn a_head_past_the_buffer_bound_is_refused() {
+        let limits = Limits::with_connections(8);
+        {
+            let (mut client, server) = tokio::io::duplex(64 * 1024);
+            let (_stop, stopping) = watch::channel(false);
+            let connection = tokio::spawn(serve_connection(server, small(), limits, stopping));
+            let head = format!(
+                "GET /ok HTTP/1.1\r\nhost: t\r\nx-pad: {}\r\nconnection: close\r\n\r\n",
+                "a".repeat(16 * 1024)
+            );
+            client.write_all(head.as_bytes()).await.unwrap();
+            let answer = read_response(&mut client)
+                .await
+                .expect("a 16 KiB head must answer");
+            assert!(answer.contains("200"), "{answer}");
+            connection.await.unwrap();
+        }
+        {
+            let (mut client, server) = tokio::io::duplex(64 * 1024);
+            let (_stop, stopping) = watch::channel(false);
+            let connection = tokio::spawn(serve_connection(server, small(), limits, stopping));
+            let head = format!(
+                "GET /ok HTTP/1.1\r\nhost: t\r\nx-pad: {}\r\nconnection: close\r\n\r\n",
+                "a".repeat(64 * 1024)
+            );
+            // The server may refuse before the whole head is written: a short write is
+            // itself the refusal's first sign, never a panic.
+            let _ = client.write_all(head.as_bytes()).await;
+            let answer = read_response(&mut client)
+                .await
+                .expect("a 64 KiB head must be refused, not answered");
+            assert!(answer.contains("431"), "{answer}");
+            connection.await.unwrap();
+        }
     }
 }

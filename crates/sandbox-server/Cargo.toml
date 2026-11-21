@@ -29,6 +29,7 @@ getrandom.workspace = true
 hex.workspace = true
 hmac.workspace = true
 reqwest.workspace = true
+rustix.workspace = true
 sandbox-db.workspace = true
 sandbox-domain.workspace = true
 serde.workspace = true
