@@ -1,0 +1,15 @@
+# Mutant: the PAN scanner deleted — nothing is ever card-shaped
+# Expected red: attacks::raw_card_data_never_enters fails without the protection.
+diff --git a/crates/sandbox-domain/src/card_guard.rs b/crates/sandbox-domain/src/card_guard.rs
+index 9c57cf0..99747ef 100644
+--- a/crates/sandbox-domain/src/card_guard.rs
++++ b/crates/sandbox-domain/src/card_guard.rs
+@@ -107,6 +107,8 @@ fn digit_of(c: char) -> Option<u8> {
+ /// digit window of a run is checked with Luhn, so a number embedded in a longer run is
+ /// found too.
+ pub fn contains_pan_like(text: &str) -> bool {
++    let _ = text;
++    return false;
+     let chars: Vec<char> = text.chars().collect();
+     let mut digits: Vec<u8> = Vec::new();
+     let mut gap = 0_usize;

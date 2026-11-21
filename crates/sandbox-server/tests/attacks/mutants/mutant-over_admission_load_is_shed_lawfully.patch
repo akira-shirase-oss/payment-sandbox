@@ -1,0 +1,15 @@
+# Mutant: exhausted write permits run the request anyway instead of shedding
+# Expected red: attacks::over_admission_load_is_shed_lawfully fails without the protection.
+diff --git a/crates/sandbox-server/src/middleware.rs b/crates/sandbox-server/src/middleware.rs
+index 04a76e6..68f9355 100644
+--- a/crates/sandbox-server/src/middleware.rs
++++ b/crates/sandbox-server/src/middleware.rs
+@@ -282,7 +282,7 @@ pub async fn shed_load(
+     } else {
+         match gate.write.clone().try_acquire_owned() {
+             Ok(permit) => permit,
+-            Err(_) => return ApiError::Overloaded.into_response(),
++            Err(_) => return next.run(request).await,
+         }
+     };
+     let response = next.run(request).await;

@@ -1,0 +1,15 @@
+# Mutant: the replay marker dropped — a replayed answer is reported as new
+# Expected red: attacks::replays_never_double_post fails without the protection.
+diff --git a/crates/sandbox-server/src/lifecycle.rs b/crates/sandbox-server/src/lifecycle.rs
+index a2de3b2..5204bf0 100644
+--- a/crates/sandbox-server/src/lifecycle.rs
++++ b/crates/sandbox-server/src/lifecycle.rs
+@@ -148,7 +148,7 @@ async fn finish(state: &AppState, scope: ProjectScope, begun: Begin) -> Result<O
+         Begin::Existing(operation, payment) if operation.state.is_terminal() => Ok(Outcome {
+             operation,
+             payment,
+-            replayed: true,
++            replayed: false,
+         }),
+         Begin::Existing(operation, payment) => {
+             drive(state, scope, &operation, &payment, true).await

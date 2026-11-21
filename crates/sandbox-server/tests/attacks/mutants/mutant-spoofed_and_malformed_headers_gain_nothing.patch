@@ -1,0 +1,17 @@
+# Mutant: last Authorization header wins — a refused first value is upgraded by a trailing valid one
+# Expected red: attacks::spoofed_and_malformed_headers_gain_nothing fails without the protection.
+diff --git a/crates/sandbox-server/src/auth.rs b/crates/sandbox-server/src/auth.rs
+index afe61ce..875d68d 100644
+--- a/crates/sandbox-server/src/auth.rs
++++ b/crates/sandbox-server/src/auth.rs
+@@ -56,7 +56,9 @@ impl Auth {
+ pub fn bearer(parts: &Parts) -> Option<&str> {
+     parts
+         .headers
+-        .get(header::AUTHORIZATION)
++        .get_all(header::AUTHORIZATION)
++        .iter()
++        .next_back()
+         .and_then(|v| v.to_str().ok())
+         .and_then(|v| v.strip_prefix("Bearer "))
+ }

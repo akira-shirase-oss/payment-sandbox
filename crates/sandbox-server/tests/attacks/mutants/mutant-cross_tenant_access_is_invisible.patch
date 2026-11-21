@@ -1,0 +1,15 @@
+# Mutant: tenant predicate neutered — get_payment reads across projects
+# Expected red: attacks::cross_tenant_access_is_invisible fails without the protection.
+diff --git a/crates/sandbox-db/src/payments.rs b/crates/sandbox-db/src/payments.rs
+index 7fc95c8..517cd0e 100644
+--- a/crates/sandbox-db/src/payments.rs
++++ b/crates/sandbox-db/src/payments.rs
+@@ -537,7 +537,7 @@ pub async fn get_payment<'e>(
+     let row = sqlx::query(concat!(
+         "SELECT ",
+         payment_columns!(),
+-        " FROM payments WHERE project_id = $1 AND dataset_epoch = $2 AND id = $3"
++        " FROM payments WHERE (project_id = $1 OR TRUE) AND dataset_epoch = $2 AND id = $3"
+     ))
+     .bind(scope.project_id)
+     .bind(scope.epoch)

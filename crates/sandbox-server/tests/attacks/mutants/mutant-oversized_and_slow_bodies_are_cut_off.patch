@@ -1,0 +1,15 @@
+# Mutant: body deadline stretched to an hour — a dribbling body never times out.
+# Expected red: attacks::oversized_and_slow_bodies_are_cut_off fails without the protection.
+diff --git a/crates/sandbox-http/src/lib.rs b/crates/sandbox-http/src/lib.rs
+index 39da996..c53e1db 100644
+--- a/crates/sandbox-http/src/lib.rs
++++ b/crates/sandbox-http/src/lib.rs
+@@ -278,7 +293,7 @@ pub async fn serve(
+     stats: Arc<ServeStats>,
+ ) -> io::Result<ShutdownOutcome> {
+     let service = tower::ServiceBuilder::new()
+-        .layer(RequestBodyTimeoutLayer::new(limits.read_timeout))
++        .layer(RequestBodyTimeoutLayer::new(Duration::from_secs(3600)))
+         .service(router);
+     let permits = Arc::new(Semaphore::new(limits.max_connections.max(1)));
+     let pending = Arc::new(Semaphore::new(limits.max_pending.max(1)));

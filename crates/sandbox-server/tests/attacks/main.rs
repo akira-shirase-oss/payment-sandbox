@@ -98,7 +98,9 @@ async fn raw(target: &Target, request: &[u8]) -> Response {
 /// The wire exchange itself, so spawned tasks can share it without a `Target`.
 async fn raw_at(addr: std::net::SocketAddr, raw: &[u8]) -> Response {
     let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-    stream.write_all(raw).await.unwrap();
+    // The server may cut an over-bounded head while the request is still being written:
+    // the close is the answer, so a refused write does not panic — read what came back.
+    let _ = stream.write_all(raw).await;
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut buf = Vec::new();
     let mut chunk = [0_u8; 16_384];
@@ -239,6 +241,9 @@ async fn auth_bypass_attempts_are_all_refused() {
         .status,
         401
     );
+    // Stored state: nothing the bypass attempts touched was persisted.
+    let payments = raw(&t, &get("/v1/payments?limit=500", Some(&admin))).await;
+    assert_eq!(payments.json()["payments"].as_array().unwrap().len(), 0);
     t.app.cleanup().await;
 }
 
@@ -332,6 +337,13 @@ async fn cross_tenant_access_is_invisible() {
     let recon = raw(&t, &get("/v1/reconciliation", Some(&admin_b))).await;
     assert_eq!(recon.status, 200);
     assert!(!recon.body.windows(pid.len()).any(|w| w == pid.as_bytes()));
+    // Stored state: A's payment is intact and still A's — B's attempts changed nothing.
+    assert_eq!(
+        raw(&t, &get(&format!("/v1/payments/{pid}"), Some(&admin_a)))
+            .await
+            .status,
+        200
+    );
     sim.remove().await;
     t.app.cleanup().await;
 }
@@ -367,6 +379,9 @@ async fn spoofed_and_malformed_headers_gain_nothing() {
     // Forwarding headers are not a credential: still a bare 401 without a bearer.
     let xff = b"GET /v1/balances HTTP/1.1\r\nhost: x\r\nx-forwarded-for: 127.0.0.1\r\nx-real-ip: 10.0.0.1\r\nconnection: close\r\n\r\n";
     assert_eq!(raw(&t, xff).await.status, 401);
+    // Stored state: no smuggled request created anything.
+    let payments = raw(&t, &get("/v1/payments?limit=500", Some(&admin))).await;
+    assert_eq!(payments.json()["payments"].as_array().unwrap().len(), 0);
     t.app.cleanup().await;
 }
 
@@ -413,6 +428,13 @@ async fn over_admission_load_is_shed_lawfully() {
     assert!(
         refused_retry_after > 0,
         "4 permits carried all 24; nothing was shed"
+    );
+    // Stored state: exactly the admitted requests persisted — nothing half-wrote.
+    let created = statuses.iter().filter(|s| **s == 201).count();
+    let payments = raw(&t, &get("/v1/payments?limit=500", Some(&admin))).await;
+    assert_eq!(
+        payments.json()["payments"].as_array().unwrap().len(),
+        created
     );
     sim.remove().await;
     t.app.cleanup().await;
@@ -462,6 +484,11 @@ async fn non_loopback_webhook_targets_are_refused() {
     )
     .await;
     assert_eq!(ok.status, 201, "{}", ok.json());
+    // Stored state: only the lawful control endpoint persisted; every refused URL
+    // left nothing behind for a delivery worker to find later.
+    let endpoints = raw(&t, &get("/v1/webhook_endpoints", Some(&admin))).await;
+    assert_eq!(endpoints.status, 200);
+    assert_eq!(endpoints.json()["endpoints"].as_array().unwrap().len(), 1);
     t.app.cleanup().await;
 }
 
@@ -521,6 +548,9 @@ async fn oversized_and_slow_bodies_are_cut_off() {
     }
     // And it is still serving.
     assert_eq!(raw(&t, &get("/healthz", None)).await.status, 200);
+    // Stored state: neither the oversized nor the dribbled body persisted a payment.
+    let payments = raw(&t, &get("/v1/payments?limit=500", Some(&admin))).await;
+    assert_eq!(payments.json()["payments"].as_array().unwrap().len(), 0);
     t.app.cleanup().await;
 }
 
@@ -572,6 +602,10 @@ async fn replays_never_double_post() {
     .await;
     assert_eq!(journal.status, 200);
     assert_eq!(journal.json()["entries"].as_array().unwrap().len(), 1);
+    // Stored state: the list still shows exactly one payment — the conflicting
+    // retry created no second object.
+    let payments = raw(&t, &get("/v1/payments?limit=500", Some(&admin))).await;
+    assert_eq!(payments.json()["payments"].as_array().unwrap().len(), 1);
     sim.remove().await;
     t.app.cleanup().await;
 }
@@ -618,6 +652,9 @@ async fn raw_card_data_never_enters() {
     )
     .await;
     assert!((400..=422).contains(&res.status), "{}", res.status);
+    // Stored state: no PAN-shaped record of any kind reached the journal-facing store.
+    let payments = raw(&t, &get("/v1/payments?limit=500", Some(&admin))).await;
+    assert_eq!(payments.json()["payments"].as_array().unwrap().len(), 0);
     t.app.cleanup().await;
 }
 
@@ -625,8 +662,43 @@ async fn raw_card_data_never_enters() {
 // 400, never a 500 that reaches the database layer (D-056, review N3).
 #[tokio::test]
 async fn forged_explain_cursors_are_refused_cleanly() {
-    let t = Target::new(&[]).await;
+    let (t, sim) = Target::with_sim(&[]).await;
     let (_p, admin) = t.app.project("atk-cursor").await;
+    // Two captured payments so `explain?limit=1` answers with a real sealed cursor in
+    // `next` — the well-formed forgeries below are built on it.
+    for idem in ["atk-cur-1", "atk-cur-2"] {
+        let created = raw(
+            &t,
+            &post(
+                "/v1/payments",
+                Some(&admin),
+                Some(idem),
+                &json!({"amount": 100, "currency": "USD", "token": "tok_sim_approve"}),
+            ),
+        )
+        .await;
+        let created = settled(&t, &admin, created, "cursor seed authorize").await;
+        let pid = created.json()["payment"]["id"].as_str().unwrap().to_owned();
+        let captured = raw(
+            &t,
+            &post(
+                &format!("/v1/payments/{pid}/captures"),
+                Some(&admin),
+                Some(&format!("{idem}-cap")),
+                &json!({"amount": 100}),
+            ),
+        )
+        .await;
+        settled(&t, &admin, captured, "cursor seed capture").await;
+    }
+    let explain = "/v1/balances/USD/merchant_pending/explain";
+    let page = raw(&t, &get(&format!("{explain}?limit=1"), Some(&admin))).await;
+    assert_eq!(page.status, 200, "{}", String::from_utf8_lossy(&page.body));
+    let issued = page.json()["explanation"]["next"]["cursor"]
+        .as_str()
+        .expect("two captured payments must leave a second page")
+        .to_owned();
+    // Malformed blobs die at shape, decode or field grammar — before the tag is read.
     for forged in [
         "apapapapapapapapapapapapapapapapap".to_owned(),
         "AAAAAAAABBBBBBBB".to_owned(),
@@ -635,13 +707,50 @@ async fn forged_explain_cursors_are_refused_cleanly() {
     ] {
         let res = raw(
             &t,
-            &get(
-                &format!("/v1/balances/USD/merchant_pending/explain?cursor={forged}"),
-                Some(&admin),
-            ),
+            &get(&format!("{explain}?cursor={forged}"), Some(&admin)),
         )
         .await;
         assert_eq!(res.status, 400, "{forged}: {}", res.status);
     }
+    // The case the tag itself must catch — both still decode and parse; only the tag is
+    // wrong. (a) Flip one letter inside the issued cursor's tag tail.
+    let mut flipped: Vec<char> = issued.chars().collect();
+    let last = flipped.len() - 1;
+    flipped[last] = if flipped[last] == 'a' { 'b' } else { 'a' };
+    // (b) The attacker's edit the seal exists to stop: the payload's running total
+    // rewritten, re-encoded under the original tag.
+    let bytes = sandbox_domain::letters::decode(&issued).unwrap();
+    let (payload, tag) = bytes.split_at(bytes.len() - 16);
+    let text = std::str::from_utf8(payload).unwrap().to_owned();
+    let edited = format!("{}|999999999", text.rsplit_once('|').unwrap().0);
+    let mut resealed = sandbox_domain::letters::encode(edited.as_bytes());
+    resealed.push_str(&sandbox_domain::letters::encode(tag));
+    for forged in [flipped.into_iter().collect::<String>(), resealed] {
+        let res = raw(
+            &t,
+            &get(&format!("{explain}?cursor={forged}"), Some(&admin)),
+        )
+        .await;
+        assert_eq!(
+            res.status, 400,
+            "a well-formed forgery served: {}",
+            res.status
+        );
+    }
+    // A cursor issued for this account explains nothing else: replay it against
+    // payer_held and the context binding refuses it before the tag is even compared.
+    let res = raw(
+        &t,
+        &get(
+            &format!("/v1/balances/USD/payer_held/explain?cursor={issued}"),
+            Some(&admin),
+        ),
+    )
+    .await;
+    assert_eq!(res.status, 400);
+    // Stored state: the endpoint still works for an honestly-issued (cursor-free) read.
+    let clean = raw(&t, &get(explain, Some(&admin))).await;
+    assert_eq!(clean.status, 200);
+    sim.remove().await;
     t.app.cleanup().await;
 }

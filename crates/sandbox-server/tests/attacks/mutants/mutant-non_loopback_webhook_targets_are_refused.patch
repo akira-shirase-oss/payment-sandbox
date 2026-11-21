@@ -1,0 +1,15 @@
+# Mutant: every hostname counts as loopback — the egress hostname rule is gone
+# Expected red: attacks::non_loopback_webhook_targets_are_refused fails without the protection.
+diff --git a/crates/sandbox-domain/src/webhook.rs b/crates/sandbox-domain/src/webhook.rs
+index d89a13e..f08cb4c 100644
+--- a/crates/sandbox-domain/src/webhook.rs
++++ b/crates/sandbox-domain/src/webhook.rs
+@@ -207,7 +207,7 @@ pub fn parse_target(url: &str) -> Result<Target, EgressError> {
+     if port == 0 || host.is_empty() {
+         return Err(EgressError::Malformed);
+     }
+-    let loopback_name = host.eq_ignore_ascii_case("localhost");
++    let loopback_name = true;
+     let literal = host
+         .strip_prefix('[')
+         .and_then(|h| h.strip_suffix(']'))

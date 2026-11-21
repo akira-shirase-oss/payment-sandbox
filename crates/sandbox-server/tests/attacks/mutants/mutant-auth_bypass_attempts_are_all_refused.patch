@@ -1,0 +1,15 @@
+# Mutant: scope enforcement deleted — Auth::require passes for any credential
+# Expected red: attacks::auth_bypass_attempts_are_all_refused fails without the protection.
+diff --git a/crates/sandbox-server/src/auth.rs b/crates/sandbox-server/src/auth.rs
+index afe61ce..b6e25a4 100644
+--- a/crates/sandbox-server/src/auth.rs
++++ b/crates/sandbox-server/src/auth.rs
+@@ -44,7 +44,7 @@ impl Auth {
+ 
+     /// Refuses unless the key holds `required` (or a scope implying it).
+     pub fn require(&self, required: Scope) -> Result<(), ApiError> {
+-        if keys::permits(&self.0.scopes, required) {
++        if true {
+             Ok(())
+         } else {
+             Err(ApiError::Forbidden(required.code()))
