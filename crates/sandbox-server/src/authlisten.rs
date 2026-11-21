@@ -27,17 +27,32 @@ const RECONNECT: Duration = Duration::from_millis(500);
 /// The task's heartbeat when nothing notifies.
 const BEAT: Duration = Duration::from_secs(15);
 
-/// Applies one notification: `k<pid>:<kid>` drops a key, `p<pid>` drops a project's
+/// The listener's connect URL with its own `application_name`: on a shared cluster a
+/// query-text match cannot tell this backend from another process's listener (or from
+/// the `pg_stat_activity` poller itself), so the name carries a per-state unique id
+/// (N2). `application_name` is a startup packet field, not a credential.
+fn listen_url(base: &str, name: &str) -> String {
+    let sep = if base.contains('?') { '&' } else { '?' };
+    format!("{base}{sep}application_name={name}")
+}
+
+/// Applies one notification: `s<nonce>` is the liveness self-ping (a no-op — its mere
+/// arrival is the proof); `k<pid>:<kid>` drops a key, `p<pid>` drops a project's
 /// epoch-tagged identities. Any role may NOTIFY this channel, so an empty or
 /// unparseable payload flushes the cache — safer to over-invalidate than to hold a
 /// stale key (`strip_prefix`: `split_at(1)` panicked on an empty or multibyte payload,
-/// and the restart that followed it never flushed — S2-1).
+/// and the restart that followed it never flushed — S2-1), but throttled, since a
+/// role spamming garbage should not get a full-cache rebuild per message (N6).
 fn apply(cache: &KeyCache, payload: &str) {
-    if let Some(rest) = payload.strip_prefix('k') {
-        if let Some((_, id)) = rest.split_once(':')
-            && let Ok(key_id) = Uuid::parse_str(id)
+    if let Some(rest) = payload.strip_prefix('s') {
+        if Uuid::parse_str(rest).is_ok() {
+            return;
+        }
+    } else if let Some(rest) = payload.strip_prefix('k') {
+        if let Some((project, id)) = rest.split_once(':')
+            && let (Ok(project_id), Ok(key_id)) = (Uuid::parse_str(project), Uuid::parse_str(id))
         {
-            cache.invalidate_key(key_id);
+            cache.invalidate_key(project_id, key_id);
             return;
         }
     } else if let Some(rest) = payload.strip_prefix('p')
@@ -93,22 +108,52 @@ pub async fn run_with(state: AppState, mut stop: watch::Receiver<bool>, beat: Du
         // un-listened window could carry a revocation that landed there.
         state.key_cache.clear();
         state.tasks.beat(TASK);
+        // Whether a whole beat passed with nothing received — including this loop's
+        // own ping, which a live socket delivers well inside one.
+        let mut silent = false;
         loop {
             tokio::select! {
                 _ = stop.changed() => return,
                 received = listener.try_recv() => {
+                    // Every branch beats (N5): under a notification flood the timer
+                    // starves, the heartbeat must not.
+                    state.tasks.beat(TASK);
                     if let Ok(Some(note)) = received {
+                        silent = false;
                         apply(&state.key_cache, note.payload());
                     } else {
-                        // Connection lost (Ok(None)) or a driver error: the gap's
-                        // notifications are gone — flush and re-attach.
+                        // Ok(None) or a driver error: the gap's notifications are
+                        // gone — flush and re-attach.
                         state.key_cache.clear();
                         break;
                     }
                 },
-                () = tokio::time::sleep(BEAT) => state.tasks.beat(TASK),
+                () = tokio::time::sleep(beat) => {
+                    state.tasks.beat(TASK);
+                    if silent {
+                        // A beat with the ping unanswered: the socket is half-dead
+                        // (N3) — the TTL, not readiness green, must not hide this.
+                        state.key_cache.clear();
+                        break;
+                    }
+                    silent = true;
+                    self_ping(&state, beat).await;
+                },
             }
         }
+    }
+}
+
+/// One `pg_notify` through the write pool — bounded, so a wedged pool cannot hold the
+/// listener's liveness loop. Failure only means the ping never lands; the silence
+/// check on the next beat decides what the connection is.
+async fn self_ping(state: &AppState, beat: Duration) {
+    let sent = sqlx::query("SELECT pg_notify($1, $2)")
+        .bind(CHANNEL)
+        .bind(format!("s{}", Uuid::now_v7()));
+    let bound = beat.min(Duration::from_secs(5));
+    if let Err(error) = tokio::time::timeout(bound, sent.execute(&state.write_db)).await {
+        tracing::debug!(%error, "the listener self-ping could not be sent");
     }
 }
 

@@ -257,20 +257,12 @@ async fn a_revoked_key_fails_on_its_very_next_request() {
 // it through the API, and B's `auth_epoch` listener must drop it — B refuses the key on
 // its next request, not after the 30 s TTL. Without the listener this stays `200` for
 // the TTL: the red.
-/// Test-local: a second "process" — its own pools, key cache, router and `auth_epoch`
-/// listener — on `a`'s database. Returns the router, a handle to poll its read pool,
-/// the stop switch and the listener task.
-fn second_instance(
-    a: &TestApp,
-) -> (
-    axum::Router,
-    sqlx::PgPool,
-    tokio::sync::watch::Sender<bool>,
-    tokio::task::JoinHandle<()>,
-) {
+/// Test-local: a second "process" on `a`'s database — pools, cache, router and the
+/// listener's unique `application_name` — without the listener task, so tests choose
+/// `run` (production beat) or `run_with` (short beat).
+fn b_state(a: &TestApp) -> (sandbox_server::AppState, axum::Router, sqlx::PgPool) {
     use sandbox_server::{AppState, Config, app};
     use std::collections::HashMap;
-    use tokio::sync::watch;
 
     let vars: HashMap<String, String> = HashMap::from([
         ("PS_DATABASE_URL".to_owned(), a.db.url()),
@@ -291,10 +283,26 @@ fn second_instance(
         sandbox_db::connect_lazy(config.database_url.expose(), &config.read_pool()).unwrap();
     let b_state = AppState::new(config, b_pool, b_read.clone());
     let b_router = app(&b_state);
+    (b_state, b_router, b_read)
+}
+
+fn second_instance(
+    a: &TestApp,
+) -> (
+    axum::Router,
+    sqlx::PgPool,
+    String,
+    tokio::sync::watch::Sender<bool>,
+    tokio::task::JoinHandle<()>,
+) {
+    use tokio::sync::watch;
+
+    let (b_state, b_router, b_read) = b_state(a);
+    let listen_name = b_state.listen_name.clone();
     // B's listener, what `serve` spawns for a real process.
     let (stop_tx, stop_rx) = watch::channel(false);
     let listener = tokio::spawn(sandbox_server::authlisten::run(b_state, stop_rx));
-    (b_router, b_read, stop_tx, listener)
+    (b_router, b_read, listen_name, stop_tx, listener)
 }
 
 async fn get_b(router: &axum::Router, path: &str, key: &str) -> StatusCode {
@@ -317,16 +325,26 @@ async fn get_b(router: &axum::Router, path: &str, key: &str) -> StatusCode {
     response.status()
 }
 
-/// The real signal for "the listener is attached": its `LISTEN auth_epoch` backend in
-/// `pg_stat_activity` — the same role connects it, so the query text is visible. Waits
-/// for a backend OTHER than `other_than` (None the first time, the killed pid after a
-/// gap) so a reattach is proven, not merely observed once.
-async fn wait_attached(pool: &sqlx::PgPool, other_than: Option<i32>) -> i32 {
+/// The real signal for "the listener is attached": the backend carrying this
+/// instance's unique `application_name` in `pg_stat_activity` — never a query-text
+/// match, which on a shared cluster could pick this poller, a parallel test's
+/// listener or another worktree's server (N2). Waits for a backend OTHER than
+/// `other_than` (None the first time, the killed pid after a gap) so a reattach is
+/// proven, not merely observed once. `pg_terminate_backend` on the returned pid can
+/// only hit THIS test's listener.
+async fn wait_attached(pool: &sqlx::PgPool, name: &str, other_than: Option<i32>) -> i32 {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         let pid: Option<i32> = sqlx::query_scalar(
-            "SELECT pid FROM pg_stat_activity WHERE query LIKE '%auth_epoch%' AND ($1::int IS NULL OR pid <> $1) LIMIT 1",
+            "SELECT pid FROM pg_stat_activity \
+             WHERE datname = current_database() \
+               AND backend_type = 'client backend' \
+               AND application_name = $1 \
+               AND pid <> pg_backend_pid() \
+               AND ($2::int IS NULL OR pid <> $2) \
+             LIMIT 1",
         )
+        .bind(name)
         .bind(other_than)
         .fetch_optional(pool)
         .await
@@ -360,7 +378,7 @@ async fn until_b(router: &axum::Router, key: &str, want: StatusCode) -> StatusCo
 #[tokio::test]
 async fn a_revocation_in_another_process_reaches_this_cache_on_its_next_request() {
     let a = TestApp::new(&[]).await;
-    let (b_router, b_read, stop_tx, listener) = second_instance(&a);
+    let (b_router, b_read, listen_name, stop_tx, listener) = second_instance(&a);
 
     let (_, admin) = a.project("crossa").await;
     let (reader_id, reader) = a.key(&admin, &["read"]).await;
@@ -376,7 +394,7 @@ async fn a_revocation_in_another_process_reaches_this_cache_on_its_next_request(
     );
     // The listener must be attached before A's revoke commits, or its notification is
     // legitimately missed (the TTL's own backstop case, not what this test measures).
-    wait_attached(&b_read, None).await;
+    wait_attached(&b_read, &listen_name, None).await;
 
     let (status, _) = a
         .post(
@@ -408,7 +426,7 @@ async fn a_revocation_in_another_process_reaches_this_cache_on_its_next_request(
 #[tokio::test]
 async fn a_revocation_committed_in_a_listener_gap_still_flushes() {
     let a = TestApp::new(&[]).await;
-    let (b_router, b_read, stop_tx, listener) = second_instance(&a);
+    let (b_router, b_read, listen_name, stop_tx, listener) = second_instance(&a);
 
     let (_, admin) = a.project("gap").await;
     let (reader_id, reader) = a.key(&admin, &["read"]).await;
@@ -417,7 +435,7 @@ async fn a_revocation_committed_in_a_listener_gap_still_flushes() {
         get_b(&b_router, "/v1/project", &reader).await,
         StatusCode::OK
     );
-    let dead = wait_attached(&b_read, None).await;
+    let dead = wait_attached(&b_read, &listen_name, None).await;
 
     // Kill the listener's backend, then revoke through A while B cannot be listening.
     sqlx::query("SELECT pg_terminate_backend($1)")
@@ -437,7 +455,7 @@ async fn a_revocation_committed_in_a_listener_gap_still_flushes() {
 
     // The reattach is the proof's pivot: only after a NEW backend is listening has the
     // loop run its post-listen flush — before the fix the stale entry survived this.
-    wait_attached(&b_read, Some(dead)).await;
+    wait_attached(&b_read, &listen_name, Some(dead)).await;
     let last = until_b(&b_router, &reader, StatusCode::UNAUTHORIZED).await;
     let _ = stop_tx.send(true);
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), listener).await;
@@ -446,6 +464,69 @@ async fn a_revocation_committed_in_a_listener_gap_still_flushes() {
         StatusCode::UNAUTHORIZED,
         "a key revoked while the listener was down must not outlive the reconnect"
     );
+    a.cleanup().await;
+}
+
+/// N5 + N3: a tenant notifying faster than the heartbeat interval cannot starve
+/// readiness — the old loop only beat on the timer branch, which a steady stream of
+/// notifications starves — and the self-ping must keep a LIVE socket from being
+/// rebuilt (the ping arrives, so the silence check never trips).
+#[tokio::test]
+async fn a_flood_of_notifications_never_starves_the_heartbeat() {
+    use std::time::Duration;
+
+    let a = TestApp::new(&[]).await;
+    let (b_state, _router, b_read) = b_state(&a);
+    let tasks = b_state.tasks.clone();
+    // NOTIFY goes through the write pool — the read pool's default transaction is
+    // read only.
+    let b_write = b_state.write_db.clone();
+    tasks.register(sandbox_server::authlisten::TASK, Duration::from_secs(30));
+    let listen_name = b_state.listen_name.clone();
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let listener = tokio::spawn(sandbox_server::authlisten::run_with(
+        b_state,
+        stop_rx,
+        Duration::from_millis(200),
+    ));
+    let pid = wait_attached(&b_read, &listen_name, None).await;
+
+    // ~0.9 s of a well-formed notification every 10 ms — several beats' worth, each
+    // keeping `try_recv` ready so the timer branch never wins the select.
+    let spam = {
+        tokio::spawn(async move {
+            for _ in 0..90 {
+                let _ = sqlx::query("SELECT pg_notify('auth_epoch', $1)")
+                    .bind(format!("p{}", uuid::Uuid::now_v7()))
+                    .execute(&b_write)
+                    .await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    let since = tasks
+        .statuses()
+        .into_iter()
+        .find(|s| s.name == sandbox_server::authlisten::TASK)
+        .map_or(u64::MAX, |s| s.since_beat_ms);
+    assert!(
+        since < 400,
+        "the heartbeat starved under notification load ({since} ms since the last beat)"
+    );
+    spam.await.unwrap();
+
+    // The same backend is still attached: the self-ping arrived, so the silence
+    // check never rebuilt a healthy connection (N3's detector, proven not to
+    // false-positive on a live socket).
+    let still = wait_attached(&b_read, &listen_name, None).await;
+    assert_eq!(
+        still, pid,
+        "a live listener was rebuilt — the self-ping never landed"
+    );
+
+    let _ = stop_tx.send(true);
+    let _ = tokio::time::timeout(Duration::from_secs(2), listener).await;
     a.cleanup().await;
 }
 

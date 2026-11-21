@@ -42,6 +42,10 @@ pub struct AppState {
     /// Bounded key-identity cache (D-102): in-process revokes and resets invalidate
     /// exactly; a 30-second TTL is the out-of-band backstop.
     pub key_cache: Arc<crate::auth::KeyCache>,
+    /// The `application_name` the `auth_epoch` listener connects under — unique per
+    /// state, so tests and operators can name exactly this process's listener backend
+    /// in `pg_stat_activity` instead of a cluster-wide query-text guess (N2).
+    pub listen_name: String,
 }
 
 impl AppState {
@@ -98,6 +102,7 @@ impl AppState {
             payment_locks: Arc::new(PaymentLocks::default()),
             pool_stats: Arc::new(crate::poolstat::PoolStats::default()),
             key_cache: Arc::new(crate::auth::KeyCache::default()),
+            listen_name: format!("ps-listen-{}", uuid::Uuid::now_v7().simple()),
         }
     }
 
