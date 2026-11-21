@@ -4,6 +4,7 @@ import http from 'k6/http';
 import { check, fail, sleep } from 'k6';
 import { Counter } from 'k6/metrics';
 import { classify, outcomeOf } from './settle.js';
+import { drainReconcile } from './drain.js';
 
 export const BASE = __ENV.BASE_URL || 'http://127.0.0.1:56090';
 
@@ -99,14 +100,18 @@ const drain = Number(__ENV.RECONCILE_DRAIN_MS || 60000);
 
 export function reconcile(keys) {
   for (const key of keys) {
-    let body = null;
-    const deadline = Date.now() + drain;
-    for (;;) {
-      const res = call('GET', '/v1/reconciliation', key, undefined, null, { phase: 'reconcile' });
-      body = res.status === 200 ? res.json() : null;
-      if (body === null || body.report.open_operations === 0 || Date.now() >= deadline) break;
-      sleep(2);
-    }
+    const body = drainReconcile(
+      () => {
+        const res = call('GET', '/v1/reconciliation', key, undefined, null, { phase: 'reconcile' });
+        let parsed = null;
+        if (res.status === 200) {
+          try { parsed = res.json(); } catch (e) { parsed = null; }
+        }
+        return { status: res.status, body: parsed };
+      },
+      drain,
+      sleep,
+    );
     check(body, {
       'reconciliation clean': (b) => b !== null && b.clean === true,
       'no operation left open': (b) => b !== null && b.report.open_operations === 0,
