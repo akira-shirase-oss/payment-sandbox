@@ -114,10 +114,15 @@ const RESERVED_FDS: usize = 320;
 /// listeners at `edge` sockets each (cap + pending — a pending connection holds a real
 /// socket), `sites` static listeners at the site cap, plus the pools and the reserve.
 fn descriptor_need(edges: usize, edge: usize, sites: usize, pools: usize) -> u64 {
+    use sandbox_http::REFUSAL_PERMITS;
     let listeners = edges
         .saturating_mul(edge)
         .saturating_add(sites.saturating_mul(SITE_MAX_CONNECTIONS * 2));
-    listeners.saturating_add(pools).saturating_add(RESERVED_FDS) as u64
+    // Refused sockets linger in their bounded drain — counted per listener too (N4).
+    listeners
+        .saturating_add(edges.saturating_add(sites).saturating_mul(REFUSAL_PERMITS))
+        .saturating_add(pools)
+        .saturating_add(RESERVED_FDS) as u64
 }
 
 /// Refuses to boot when Σ(cap+pending) over every listener plus the pools and the
@@ -455,6 +460,7 @@ mod tests {
     #[test]
     fn the_default_descriptor_budget_fits_the_unit_limit() {
         let defaults = descriptor_need(2, 512 + 512, 2, 32 + 8 + 16);
+        // Refusal drains: 4 listeners * 64 lingering sockets are part of the need.
         assert!(
             defaults < 4096 - 512,
             "the default budget {defaults} must leave room under 4096"

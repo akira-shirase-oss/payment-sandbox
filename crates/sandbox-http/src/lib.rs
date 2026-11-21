@@ -295,8 +295,13 @@ pub async fn serve(
     let service = tower::ServiceBuilder::new()
         .layer(RequestBodyTimeoutLayer::new(limits.read_timeout))
         .service(router);
-    let permits = Arc::new(Semaphore::new(limits.max_connections.max(1)));
-    let pending = Arc::new(Semaphore::new(limits.max_pending.max(1)));
+    let gates = Gates {
+        permits: Arc::new(Semaphore::new(limits.max_connections.max(1))),
+        pending: Arc::new(Semaphore::new(limits.max_pending.max(1))),
+        // A refused connection's lingering close still holds a socket for up to a few
+        // seconds — bounded too, or a refused flood is its own EMFILE vector (N4).
+        refusal: Arc::new(Semaphore::new(REFUSAL_PERMITS)),
+    };
     let (stop, stopping) = watch::channel(false);
     let mut connections = JoinSet::new();
     tokio::pin!(shutdown);
@@ -325,8 +330,7 @@ pub async fn serve(
             service.clone(),
             limits,
             stopping.clone(),
-            permits.clone(),
-            pending.clone(),
+            gates.clone(),
             stats.clone(),
         ));
     }
@@ -348,21 +352,36 @@ type BoundedService = tower_http::timeout::RequestBodyTimeout<Router>;
 
 /// A connection's path to a serving place: at most `max_pending` connections may wait for
 /// one, each at most `accept_wait`; then the refusal is a bounded, honest `503` (D-094).
+/// The three counting bounds a connection passes: a serving place, a waiting place,
+/// and a refusal-drain place.
+#[derive(Clone)]
+struct Gates {
+    permits: Arc<Semaphore>,
+    pending: Arc<Semaphore>,
+    refusal: Arc<Semaphore>,
+}
+
 async fn wait_for_place(
     stream: TcpStream,
     service: BoundedService,
     limits: Limits,
     stopping: watch::Receiver<bool>,
-    permits: Arc<Semaphore>,
-    pending: Arc<Semaphore>,
+    gates: Gates,
     stats: Arc<ServeStats>,
 ) {
-    let Ok(waiting) = pending.try_acquire_owned() else {
-        refuse(stream, limits, &stats).await;
+    let Ok(waiting) = gates.pending.try_acquire_owned() else {
+        refuse(
+            stream,
+            limits,
+            &stats,
+            gates.refusal.try_acquire_owned().ok(),
+        )
+        .await;
         return;
     };
     let started = Instant::now();
-    if let Ok(Ok(permit)) = tokio::time::timeout(limits.accept_wait, permits.acquire_owned()).await
+    if let Ok(Ok(permit)) =
+        tokio::time::timeout(limits.accept_wait, gates.permits.acquire_owned()).await
     {
         stats.waited(started.elapsed());
         // The waiting place is freed; the serving place is the permit's.
@@ -370,7 +389,13 @@ async fn wait_for_place(
         connection(stream, service, limits, stopping, permit, stats).await;
     } else {
         stats.waited(started.elapsed());
-        refuse(stream, limits, &stats).await;
+        refuse(
+            stream,
+            limits,
+            &stats,
+            gates.refusal.try_acquire_owned().ok(),
+        )
+        .await;
     }
 }
 
@@ -378,10 +403,19 @@ async fn wait_for_place(
 /// lingering close. Writing the bytes and dropping the socket raced a request already
 /// in flight: Linux answers a close-with-unread-data with RST, and a pooled client
 /// (k6, Go) reported EOF/reset as a transport error — status 0, breaking the
-/// "never status:0" contract (S2-2, run 44835402763). `shutdown(write)` sends FIN after
-/// the response so the client reads it whole, and the bounded drain consumes what the
-/// client was still sending so the final drop is a FIN, not a RST.
-async fn refuse(mut stream: TcpStream, limits: Limits, stats: &Arc<ServeStats>) {
+/// "never status:0" contract (S2-2, run 44835402763). So the head is read first
+/// (bounded): answering without having read what the client sent still leaves those
+/// bytes unaccounted for at close. `shutdown(write)` then sends FIN after the
+/// response, and the bounded drain consumes what the client was still sending so the
+/// final drop is a FIN, not a RST. The whole path holds a `refusal` permit — at most
+/// [`REFUSAL_PERMITS`] drains run at once (N4: an unbounded drain per refused connect
+/// is an EMFILE vector of its own); past the bound the socket just closes.
+async fn refuse(
+    mut stream: TcpStream,
+    limits: Limits,
+    stats: &Arc<ServeStats>,
+    permit: Option<OwnedSemaphorePermit>,
+) {
     if stats.refused() {
         tracing::warn!(
             cap = limits.max_connections,
@@ -389,6 +423,10 @@ async fn refuse(mut stream: TcpStream, limits: Limits, stats: &Arc<ServeStats>) 
             "the connection cap is full; refusing the excess"
         );
     }
+    let Some(_permit) = permit else {
+        return;
+    };
+    let _ = tokio::time::timeout(REFUSAL_HEAD, read_head(&mut stream)).await;
     let _ = tokio::time::timeout(limits.write_timeout, stream.write_all(OVER_CAP_RESPONSE)).await;
     let _ = stream.shutdown().await;
     let _ = tokio::time::timeout(REFUSAL_DRAIN, async {
@@ -398,8 +436,29 @@ async fn refuse(mut stream: TcpStream, limits: Limits, stats: &Arc<ServeStats>) 
     .await;
 }
 
-/// Longest the refusal's lingering close spends draining a client's in-flight bytes.
+/// Reads until the request head ends (`\r\n\r\n`) or a byte bound — whatever the client
+/// had already sent when it was refused, so the answer does not race unread data (S2-2).
+async fn read_head(stream: &mut TcpStream) {
+    let mut window = [0_u8; 8_192];
+    let mut filled = 0_usize;
+    while filled < window.len()
+        && let Ok(n @ 1..) = stream.read(&mut window[filled..]).await
+    {
+        filled += n;
+        if window[..filled].windows(4).any(|w| w == b"\r\n\r\n") {
+            return;
+        }
+    }
+}
+
+/// Longest the refusal spends reading the head it answers, and draining the rest.
+const REFUSAL_HEAD: Duration = Duration::from_secs(1);
 const REFUSAL_DRAIN: Duration = Duration::from_secs(1);
+
+/// Refused connections mid-drain at once (N4): each holds a socket up to
+/// `REFUSAL_HEAD` + `REFUSAL_DRAIN`; the semaphore bounds that to a countable share of
+/// the descriptor budget — past it the excess socket closes at once.
+pub const REFUSAL_PERMITS: usize = 64;
 
 /// What a refused connection reads.
 const OVER_CAP_RESPONSE: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\nretry-after: 1\r\nsandbox-simulated: true\r\n\r\n";
@@ -1174,6 +1233,67 @@ mod tests {
         assert_eq!(snapshot.refused, 1, "{snapshot:?}");
         drop(second);
         drop(serving);
+    }
+
+    /// S2-2 + N4: a refused connection whose request bytes are already in flight still
+    /// reads the whole answer and a clean end — Linux would RST a close that raced
+    /// unread data (status 0 to pooled clients, run 44835402763). Over the drain bound,
+    /// the socket just closes: the refusal semaphore is the honest trade-off.
+    #[tokio::test]
+    async fn a_refused_connection_that_sent_bytes_reads_the_whole_answer() {
+        let stats = Arc::new(ServeStats::default());
+        let limits = Limits::with_connections(1);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Permitted: head read first, then 503 + FIN — the in-flight bytes cannot
+        // turn the close into a reset.
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let (accepted, _) = listener.accept().await.unwrap();
+        client
+            .write_all(b"POST /pay HTTP/1.1\r\nhost: t\r\ncontent-length: 64\r\n\r\npartial-body")
+            .await
+            .unwrap();
+        let permit = Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap();
+        refuse(accepted, limits, &stats, Some(permit)).await;
+        let mut answer = Vec::new();
+        client
+            .read_to_end(&mut answer)
+            .await
+            .expect("the refused connection reset instead of answering — bytes were in flight");
+        let text = String::from_utf8_lossy(&answer);
+        assert!(text.starts_with("HTTP/1.1 503"), "{text}");
+        assert!(text.contains("retry-after"), "{text}");
+
+        // No permit left (past REFUSAL_PERMITS): the socket closes at once — bounded
+        // descriptors outrank answering a refused connection (N4).
+        let mut client2 = TcpStream::connect(addr).await.unwrap();
+        let (accepted2, _) = listener.accept().await.unwrap();
+        client2
+            .write_all(b"GET / HTTP/1.1\r\nhost: t\r\n\r\n")
+            .await
+            .unwrap();
+        let started = std::time::Instant::now();
+        refuse(accepted2, limits, &stats, None).await;
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "the over-bound refusal lingered {:?}",
+            started.elapsed()
+        );
+        // No drain means the client's own unread bytes may RST the close — the
+        // kernel's choice, not ours: over the bound, fast close beats descriptors.
+        let mut empty = Vec::new();
+        match client2.read_to_end(&mut empty).await {
+            Ok(_) => assert!(
+                empty.is_empty(),
+                "an over-bound refusal must close without an answer"
+            ),
+            Err(error) => assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionReset,
+                "an over-bound refusal must close, cleanly or by reset: {error}"
+            ),
+        }
     }
 
     /// S2-3: the head buffer is 32 KiB, not hyper's ~408 KiB default — 512 connections
