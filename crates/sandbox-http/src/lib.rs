@@ -463,6 +463,11 @@ pub(crate) async fn serve_connection<I>(
     builder
         .timer(TokioTimer::new())
         .keep_alive(true)
+        // With a timer set, hyper applies its DEFAULT 30 s header timeout to every
+        // keep-alive idle wait and ends the connection without answering (N1: the
+        // status-0 regressions, run 44867951047). Disabled — the reaper below bounds a
+        // slow head on total time and a genuinely idle keep-alive at `idle_timeout`.
+        .header_read_timeout(None)
         // ~408 KiB of head buffer per connection was ~209 MB at the cap (S2-3).
         .max_buf_size(32 * 1024);
     let conn = builder.serve_connection(TokioIo::new(watched), hyper_service);
@@ -835,6 +840,43 @@ mod tests {
             .unwrap();
         assert_eq!(read, 0);
         connection.await.unwrap();
+    }
+
+    /// N1: with a timer set, hyper's DEFAULT 30 s header timeout re-armed on every
+    /// keep-alive idle wait and closed pooled connections mid-idle — run 44867951047's
+    /// ~16-19 status-0s a second. Paused time drives the connection past 30 s: the
+    /// reuse at 35 s must still answer; only the real idle timeout may reap it.
+    #[tokio::test(start_paused = true)]
+    async fn an_idle_keep_alive_survives_past_the_default_header_timeout() {
+        const REQ: &[u8] = b"GET /ok HTTP/1.1\r\nhost: t\r\n\r\n";
+        let (mut client, server) = tokio::io::duplex(4096);
+        let limits = Limits {
+            idle_timeout: Duration::from_secs(90),
+            ..Limits::with_connections(8)
+        };
+        let (_stop, stopping) = watch::channel(false);
+        let connection = tokio::spawn(serve_connection(server, small(), limits, stopping));
+        client.write_all(REQ).await.unwrap();
+        assert!(read_response(&mut client).await.unwrap().contains("200"));
+
+        // Past hyper's old default: 35 s idle, then reuse.
+        tokio::time::advance(Duration::from_secs(35)).await;
+        tokio::task::yield_now().await;
+        client.write_all(REQ).await.unwrap();
+        let head = read_response(&mut client)
+            .await
+            .expect("a connection idle 35 s was killed — the default header timeout is back");
+        assert!(head.contains("200"), "{head}");
+
+        // Still alive at 45 s idle; the idle timeout is the only reaper.
+        tokio::time::advance(Duration::from_secs(10)).await;
+        tokio::task::yield_now().await;
+        client.write_all(REQ).await.unwrap();
+        let head = read_response(&mut client)
+            .await
+            .expect("a connection idle 45 s was killed before the idle timeout");
+        assert!(head.contains("200"), "{head}");
+        connection.abort();
     }
 
     /// The regression contract for pooled clients: every response arrives whole, the
