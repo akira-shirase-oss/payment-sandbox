@@ -1,0 +1,14 @@
+## proof-target: -p sandbox-http --lib
+## proof-filter: tests::a_refusal_waits_for_the_head_before_answering
+diff --git a/crates/sandbox-http/src/lib.rs b/crates/sandbox-http/src/lib.rs
+index 0000000..0000000 100644
+--- a/crates/sandbox-http/src/lib.rs
++++ b/crates/sandbox-http/src/lib.rs
+@@ -426,7 +426,6 @@
+     let Some(_permit) = permit else {
+         return;
+     };
+-    let _ = tokio::time::timeout(REFUSAL_HEAD, read_head(&mut stream)).await;
+     let _ = tokio::time::timeout(limits.write_timeout, stream.write_all(OVER_CAP_RESPONSE)).await;
+     let _ = stream.shutdown().await;
+     let _ = tokio::time::timeout(REFUSAL_DRAIN, async {

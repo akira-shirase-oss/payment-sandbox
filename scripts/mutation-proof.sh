@@ -16,6 +16,16 @@ for patch in "$mutants_dir"/mutant-*.patch; do
     # Several mutants may share one test: mutant-<test>__<tag>.patch strips the tag.
     test="${name#mutant-}"
     test="${test%%__*}"
+    # Most mutants die to an attack test; a patch may name another cargo target
+    # with a leading `## proof-target: <cargo test args>` line (e.g. a lib test in
+    # the crate it wounds — sandbox-http's refusal path has no attack-test reach).
+    target="-p sandbox-server --test attacks"
+    header="$(sed -n 's|^## proof-target: ||p' "$patch" | head -1)"
+    [ -n "$header" ] && target="$header"
+    # `--exact` matches the full test path; a mutant whose kill test is nested in
+    # a module names it with `## proof-filter: <qualified path>`.
+    filter="$(sed -n 's|^## proof-filter: ||p' "$patch" | head -1)"
+    [ -n "$filter" ] || filter="$test"
     echo "== $name"
     if ! git apply --check "$patch"; then
         echo "STALE: $name no longer applies cleanly"
@@ -28,7 +38,8 @@ for patch in "$mutants_dir"/mutant-*.patch; do
     # shellcheck disable=SC2086 # paths come from the patch's own +++ headers
     before="$(git hash-object $touched | tr '\n' ' ')"
     git apply "$patch"
-    cargo test -p sandbox-server --test attacks "$test" -- --exact --nocapture >"$out" 2>&1
+    # shellcheck disable=SC2086 # the target is the patch's own words
+    cargo test $target "$filter" -- --exact --nocapture >"$out" 2>&1
     if [ $? -eq 0 ]; then
         echo "SURVIVED: $test passed with the protection removed (see $out)"
         failures=$((failures + 1))

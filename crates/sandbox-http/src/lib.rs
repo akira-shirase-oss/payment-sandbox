@@ -1296,6 +1296,52 @@ mod tests {
         }
     }
 
+    /// S2-2's head-first proof (round 3 C): the refusal may not write a byte before
+    /// the client sends its head — answering first is exactly the write-race the fix
+    /// closed, and nothing else in the suite could fail if the head read went away.
+    /// The quiet window stays well inside `REFUSAL_HEAD`'s one second.
+    #[tokio::test]
+    async fn a_refusal_waits_for_the_head_before_answering() {
+        let stats = Arc::new(ServeStats::default());
+        let limits = Limits::with_connections(1);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let (accepted, _) = listener.accept().await.unwrap();
+        let permit = Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap();
+        let refused = tokio::spawn({
+            let stats = stats.clone();
+            async move { refuse(accepted, limits, &stats, Some(permit)).await }
+        });
+
+        // Nothing sent: nothing may come back. If the answer were written at
+        // accept, bytes would arrive in this window — the mutant's tell.
+        let mut early = [0_u8; 64];
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), client.read(&mut early))
+                .await
+                .is_err(),
+            "the refusal answered before the client's head arrived"
+        );
+
+        client
+            .write_all(b"GET / HTTP/1.1\r\nhost: t\r\n\r\n")
+            .await
+            .unwrap();
+        refused.await.unwrap();
+        let mut answer = Vec::new();
+        client
+            .read_to_end(&mut answer)
+            .await
+            .expect("the refused connection reset instead of answering");
+        assert!(
+            String::from_utf8_lossy(&answer).starts_with("HTTP/1.1 503"),
+            "answer: {}",
+            String::from_utf8_lossy(&answer)
+        );
+    }
+
     /// S2-3: the head buffer is 32 KiB, not hyper's ~408 KiB default — 512 connections
     /// at the cap would have pinned ~209 MB per listener. A 16 KiB head still answers;
     /// a 64 KiB head is refused by name (431) without the request ever running.
