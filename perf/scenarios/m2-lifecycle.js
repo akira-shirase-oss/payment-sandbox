@@ -39,7 +39,11 @@ export const options = {
       timeUnit: '1s',
       stages: stages(),
       preAllocatedVUs: 100,
-      maxVUs: 2000,
+      // Under the listener's connection cap on purpose: VUs past it queue at accept_wait
+      // and shed (the refusal path is m8-overload's measure, not this run's). A stall
+      // then surfaces as latency and dropped_iterations, not connection-shed 503s —
+      // run 44878702640 reached vus_max 1037 and failed on sheds, not service.
+      maxVUs: 400,
     },
   },
   thresholds: {

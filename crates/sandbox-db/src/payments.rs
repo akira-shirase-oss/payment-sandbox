@@ -187,12 +187,27 @@ pub async fn begin_authorize(
 ) -> Result<Begin, BeginError> {
     let mut tx = pool.begin().await?;
     ensure_epoch(&mut tx, scope).await?;
-    let inserted = sqlx::query(
-        "INSERT INTO payments (project_id, id, dataset_epoch, authorize_operation_id, currency,
-                               amount_minor, token, description, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'authorizing')
-         ON CONFLICT (project_id, id) DO NOTHING",
-    )
+    // One round trip, like begin_child's: the payment insert and its operation insert
+    // together — a conflict leaves `p` empty, which is the replay path. The inserted
+    // row is already locked by its own transaction; a second SELECT only re-read what
+    // the first wrote.
+    let row = sqlx::query(concat!(
+        "WITH p AS (
+             INSERT INTO payments (project_id, id, dataset_epoch, authorize_operation_id,
+                                   currency, amount_minor, token, description, status)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'authorizing')
+             ON CONFLICT (project_id, id) DO NOTHING
+             RETURNING ",
+        payment_columns!(),
+        "), o AS (
+             INSERT INTO operations (project_id, id, dataset_epoch, payment_id, kind,
+                                     idempotency_key, fingerprint, amount_minor, state)
+             SELECT $1, $4, $3, $2, 'authorize', $9, $10, $6, 'pending' FROM p
+         )
+         SELECT ",
+        payment_columns!(),
+        " FROM p",
+    ))
     .bind(scope.project_id)
     .bind(new.payment_id)
     .bind(scope.epoch)
@@ -201,10 +216,11 @@ pub async fn begin_authorize(
     .bind(new.amount.minor())
     .bind(new.token)
     .bind(new.description)
-    .execute(&mut *tx)
-    .await?
-    .rows_affected();
-    if inserted == 0 {
+    .bind(new.idempotency_key)
+    .bind(new.fingerprint.as_slice())
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(row) = row else {
         drop(tx);
         let operation = get_operation(pool, scope, new.operation_id)
             .await?
@@ -216,21 +232,22 @@ pub async fn begin_authorize(
             .await?
             .ok_or(BeginError::Db(DbError::NotFound))?;
         return Ok(Begin::Existing(operation, payment));
-    }
-    let operation = insert_operation(
-        &mut tx,
-        scope,
-        new.operation_id,
-        new.payment_id,
-        OperationKind::Authorize,
-        new.idempotency_key,
-        &new.fingerprint,
-        new.amount.minor(),
-    )
-    .await?;
-    let payment = lock_payment(&mut tx, scope, new.payment_id)
-        .await?
-        .ok_or(BeginError::PaymentNotFound)?;
+    };
+    let payment = payment_from(&row)?;
+    let operation = Operation {
+        id: new.operation_id,
+        payment_id: new.payment_id,
+        kind: OperationKind::Authorize,
+        idempotency_key: new.idempotency_key.to_owned(),
+        fingerprint: new.fingerprint.to_vec(),
+        amount_minor: new.amount.minor(),
+        state: OperationState::Pending,
+        decline_code: None,
+        network_ref: None,
+        attempts: 0,
+        created_at: payment.updated_at,
+        resolved_at: None,
+    };
     tx.commit().await?;
     Ok(Begin::Started(operation, payment))
 }
@@ -387,41 +404,17 @@ pub async fn apply(
     result: &NetworkResult,
 ) -> Result<Applied, DbError> {
     let mut tx = pool.begin().await?;
-    let payment = lock_payment(&mut tx, scope, payment_id)
-        .await?
-        .ok_or(DbError::NotFound)?;
-    let operation = lock_operation(&mut tx, scope, operation_id)
-        .await?
-        .ok_or(DbError::NotFound)?;
-    if operation.payment_id != payment_id {
-        return Err(DbError::NotFound);
-    }
+    let (payment, operation) = lock_for_apply(&mut tx, scope, payment_id, operation_id).await?;
     let Ok(next_state) = operation.state.apply(result.outcome) else {
         return Ok(Applied::AlreadyResolved(operation, payment));
     };
     let amount = Amount::new(operation.amount_minor)
         .map_err(|_| DbError::Constraint("stored operation amount".to_owned()))?;
 
-    let succeeded = next_state == OperationState::Succeeded;
     let resolved = next_state.is_terminal();
     let (sums, decline_code) = next_sums(&payment, &operation, next_state, amount, result)?;
-    if succeeded {
-        let recipe = operation.kind.recipe();
-        let entry = recipe
-            .post(payment.currency, amount)
-            .map_err(|e| DbError::Constraint(format!("posting recipe: {e}")))?;
-        journal::post(
-            &mut tx,
-            scope,
-            entry_id(operation.id, recipe),
-            &entry,
-            EntryRefs {
-                operation_id: Some(operation.id),
-                payment_id: Some(payment.id),
-                reverses: None,
-            },
-        )
-        .await?;
+    if next_state == OperationState::Succeeded {
+        post_apply_entry(&mut tx, scope, &operation, payment.currency, amount).await?;
     }
     let authorization_state = if operation.kind == OperationKind::Authorize {
         next_state
@@ -429,7 +422,15 @@ pub async fn apply(
         OperationState::Succeeded
     };
     let status = PaymentStatus::derive(authorization_state, &sums);
-    // One round trip: resolve the operation and update the payment together.
+    // One round trip: resolve the operation, update the payment, and commit the
+    // resolution's event with its deliveries together — the event's sequence is the
+    // payment's just-incremented value either way (the outbox, D-006). The event CTEs
+    // are inert when not resolved ($15), like the emit_event call they replaced.
+    let event_id = Uuid::new_v5(
+        &sandbox_domain::identity::NAMESPACE,
+        format!("event/v1/{}", operation.id).as_bytes(),
+    );
+    let event_kind = format!("{}.{}", operation.kind.code(), next_state.code());
     let row = sqlx::query(concat!(
         "WITH op AS (
              UPDATE operations
@@ -439,16 +440,32 @@ pub async fn apply(
                     attempts = attempts + 1,
                     resolved_at = CASE WHEN $15 THEN now() ELSE NULL END
               WHERE project_id = $1 AND id = $3
-         )
-         UPDATE payments
-            SET authorized_minor = $4, captured_minor = $5, capture_reserved_minor = $6,
-                voided_minor = $7, void_reserved_minor = $8, refunded_minor = $9,
-                refund_reserved_minor = $10, status = $11, decline_code = $16, updated_at = now(),
-                event_sequence = event_sequence + CASE WHEN $15 THEN 1 ELSE 0 END
-          WHERE project_id = $1 AND id = $2
-          RETURNING ",
+             RETURNING id
+         ), pay AS (
+             UPDATE payments
+                SET authorized_minor = $4, captured_minor = $5, capture_reserved_minor = $6,
+                    voided_minor = $7, void_reserved_minor = $8, refunded_minor = $9,
+                    refund_reserved_minor = $10, status = $11, decline_code = $16,
+                    updated_at = now(),
+                    event_sequence = event_sequence + CASE WHEN $15 THEN 1 ELSE 0 END
+              WHERE project_id = $1 AND id = $2
+             RETURNING ",
         payment_columns!(),
-        ""
+        ", project_id, dataset_epoch), ev AS (
+             INSERT INTO events (project_id, id, dataset_epoch, payment_id, operation_id,
+                                 kind, sequence)
+             SELECT pay.project_id, $17, pay.dataset_epoch, $2, op.id, $18, pay.event_sequence
+               FROM pay, op WHERE $15
+             RETURNING project_id, id
+         ), del AS (
+             INSERT INTO deliveries (project_id, event_id, endpoint_id)
+             SELECT e.project_id, e.id, w.id
+               FROM ev e JOIN webhook_endpoints w
+                 ON w.project_id = e.project_id AND w.disabled_at IS NULL
+         )
+         SELECT ",
+        payment_columns!(),
+        " FROM pay",
     ))
     .bind(scope.project_id)
     .bind(payment.id)
@@ -466,12 +483,11 @@ pub async fn apply(
     .bind(result.network_ref.as_deref())
     .bind(resolved)
     .bind(decline_code.as_deref())
+    .bind(event_id)
+    .bind(event_kind)
     .fetch_one(&mut *tx)
     .await?;
     let payment = payment_from(&row)?;
-    if resolved {
-        emit_event(&mut tx, scope, &payment, &operation, next_state).await?;
-    }
     tx.commit().await?;
     let operation = Operation {
         state: next_state,
@@ -484,39 +500,68 @@ pub async fn apply(
     Ok(Applied::Applied(operation, payment))
 }
 
-/// Commits the resolution's event and one delivery per active endpoint, in the caller's
-/// transaction (the outbox, D-006). The event id is derived from the operation, so a
-/// re-applied resolution (after a restore) re-creates the same event id and consumers
-/// deduplicate it.
-async fn emit_event(
-    tx: &mut PgConnection,
+/// `apply`'s lock read, one round trip: the payment's FOR UPDATE lock is what
+/// serializes every writer of this payment's operations (`begin_child` and
+/// `apply` both take it first), so the operation row needs no lock of its own —
+/// the join just reads it.
+async fn lock_for_apply(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     scope: ProjectScope,
-    payment: &Payment,
-    operation: &Operation,
-    state: OperationState,
-) -> Result<(), DbError> {
-    let event_id = Uuid::new_v5(
-        &sandbox_domain::identity::NAMESPACE,
-        format!("event/v1/{}", operation.id).as_bytes(),
-    );
-    sqlx::query(
-        "WITH e AS (
-             INSERT INTO events (project_id, id, dataset_epoch, payment_id, operation_id, kind, sequence)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
-             RETURNING project_id, id
-         )
-         INSERT INTO deliveries (project_id, event_id, endpoint_id)
-         SELECT e.project_id, e.id, w.id
-           FROM e JOIN webhook_endpoints w ON w.project_id = e.project_id AND w.disabled_at IS NULL",
-    )
+    payment_id: Uuid,
+    operation_id: Uuid,
+) -> Result<(Payment, Operation), DbError> {
+    let row = sqlx::query(concat!(
+        "SELECT p.*",
+        ", o.id AS op_id, o.payment_id AS op_payment_id, o.kind AS op_kind,
+            o.idempotency_key AS op_key, o.fingerprint AS op_fingerprint,
+            o.amount_minor AS op_amount, o.state AS op_state,
+            o.decline_code AS op_decline, o.network_ref AS op_ref,
+            o.attempts AS op_attempts, o.created_at AS op_created,
+            o.resolved_at AS op_resolved
+           FROM payments p LEFT JOIN operations o
+             ON o.project_id = p.project_id AND o.id = $4
+          WHERE p.project_id = $1 AND p.dataset_epoch = $2 AND p.id = $3
+          FOR UPDATE OF p",
+    ))
     .bind(scope.project_id)
-    .bind(event_id)
     .bind(scope.epoch)
-    .bind(payment.id)
-    .bind(operation.id)
-    .bind(format!("{}.{}", operation.kind.code(), state.code()))
-    .bind(payment.event_sequence)
-    .execute(&mut *tx)
+    .bind(payment_id)
+    .bind(operation_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let row = row.ok_or(DbError::NotFound)?;
+    let payment = payment_from(&row)?;
+    let operation = operation_prefixed(&row)?.ok_or(DbError::NotFound)?;
+    if operation.payment_id != payment_id {
+        return Err(DbError::NotFound);
+    }
+    Ok((payment, operation))
+}
+
+/// The resolution's balanced journal entry — reached only when the outcome
+/// succeeded (a decline or void-miss posts nothing).
+async fn post_apply_entry(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    scope: ProjectScope,
+    operation: &Operation,
+    currency: Currency,
+    amount: Amount,
+) -> Result<(), DbError> {
+    let recipe = operation.kind.recipe();
+    let entry = recipe
+        .post(currency, amount)
+        .map_err(|e| DbError::Constraint(format!("posting recipe: {e}")))?;
+    journal::post(
+        tx,
+        scope,
+        entry_id(operation.id, recipe),
+        &entry,
+        EntryRefs {
+            operation_id: Some(operation.id),
+            payment_id: Some(operation.payment_id),
+            reverses: None,
+        },
+    )
     .await?;
     Ok(())
 }
@@ -688,77 +733,6 @@ pub async fn recent_payments(
     rows.iter().map(payment_from).collect()
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one row's columns, bound in one place"
-)]
-async fn insert_operation(
-    tx: &mut PgConnection,
-    scope: ProjectScope,
-    id: Uuid,
-    payment_id: Uuid,
-    kind: OperationKind,
-    key: &str,
-    fingerprint: &[u8; 32],
-    amount_minor: i64,
-) -> Result<Operation, BeginError> {
-    let row = sqlx::query(concat!(
-        "INSERT INTO operations (project_id, id, dataset_epoch, payment_id, kind, idempotency_key,
-                                 fingerprint, amount_minor, state)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending')
-         RETURNING ",
-        operation_columns!(),
-        ""
-    ))
-    .bind(scope.project_id)
-    .bind(id)
-    .bind(scope.epoch)
-    .bind(payment_id)
-    .bind(kind.code())
-    .bind(key)
-    .bind(fingerprint.as_slice())
-    .bind(amount_minor)
-    .fetch_one(&mut *tx)
-    .await?;
-    Ok(operation_from(&row)?)
-}
-
-async fn lock_payment(
-    tx: &mut PgConnection,
-    scope: ProjectScope,
-    id: Uuid,
-) -> Result<Option<Payment>, DbError> {
-    let row = sqlx::query(concat!(
-        "SELECT ",
-        payment_columns!(),
-        " FROM payments
-          WHERE project_id = $1 AND dataset_epoch = $2 AND id = $3 FOR UPDATE"
-    ))
-    .bind(scope.project_id)
-    .bind(scope.epoch)
-    .bind(id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    row.as_ref().map(payment_from).transpose()
-}
-
-async fn lock_operation(
-    tx: &mut PgConnection,
-    scope: ProjectScope,
-    id: Uuid,
-) -> Result<Option<Operation>, DbError> {
-    let row = sqlx::query(concat!(
-        "SELECT ",
-        operation_columns!(),
-        " FROM operations WHERE project_id = $1 AND id = $2 FOR UPDATE"
-    ))
-    .bind(scope.project_id)
-    .bind(id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    row.as_ref().map(operation_from).transpose()
-}
-
 async fn fetch_operation(
     conn: &mut PgConnection,
     scope: ProjectScope,
@@ -802,6 +776,32 @@ fn payment_from(row: &PgRow) -> Result<Payment, DbError> {
         updated_at: row.try_get("updated_at")?,
         event_sequence: row.try_get("event_sequence")?,
     })
+}
+
+/// The `op_*`-aliased operation half of `apply`'s lock join; `None` when the join's
+/// left side is empty (no such operation under the locked payment's project).
+fn operation_prefixed(row: &PgRow) -> Result<Option<Operation>, DbError> {
+    if row.try_get::<Option<Uuid>, _>("op_id")?.is_none() {
+        return Ok(None);
+    }
+    let kind: String = row.try_get("op_kind")?;
+    let state: String = row.try_get("op_state")?;
+    Ok(Some(Operation {
+        id: row.try_get("op_id")?,
+        payment_id: row.try_get("op_payment_id")?,
+        kind: OperationKind::from_code(&kind)
+            .ok_or_else(|| DbError::Constraint(format!("kind {kind}")))?,
+        idempotency_key: row.try_get("op_key")?,
+        fingerprint: row.try_get("op_fingerprint")?,
+        amount_minor: row.try_get("op_amount")?,
+        state: OperationState::from_code(&state)
+            .ok_or_else(|| DbError::Constraint(format!("state {state}")))?,
+        decline_code: row.try_get("op_decline")?,
+        network_ref: row.try_get("op_ref")?,
+        attempts: row.try_get("op_attempts")?,
+        created_at: row.try_get("op_created")?,
+        resolved_at: row.try_get("op_resolved")?,
+    }))
 }
 
 fn operation_from(row: &PgRow) -> Result<Operation, DbError> {
