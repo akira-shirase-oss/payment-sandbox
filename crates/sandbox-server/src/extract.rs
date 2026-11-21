@@ -97,7 +97,19 @@ where
         }
         let bytes = Bytes::from_request(request, state)
             .await
-            .map_err(|_| ApiError::PayloadTooLarge)?;
+            .map_err(|rejection| {
+                if std::iter::successors(std::error::Error::source(&rejection), |e| e.source()).any(
+                    |e| {
+                        e.is::<tower_http::timeout::TimeoutError>()
+                            || e.is::<tokio::time::error::Elapsed>()
+                    },
+                ) {
+                    // The body deadline fired mid-read: its own refusal, not "too large".
+                    ApiError::BodyTimeout
+                } else {
+                    ApiError::PayloadTooLarge
+                }
+            })?;
         parse_guarded(&bytes).map(SandboxJson)
     }
 }

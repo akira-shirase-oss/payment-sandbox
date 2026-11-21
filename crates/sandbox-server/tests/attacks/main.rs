@@ -654,8 +654,15 @@ async fn oversized_and_slow_bodies_are_cut_off() {
         "the dribbled body was dropped with no answer"
     );
     let res = parse(&buf);
-    // The named refusal for a body out of time: the server answered, not merely closed.
-    assert_eq!(res.status, 413, "{}", res.status);
+    // The named refusal for a body out of time: 408 `body_timeout`, its own answer —
+    // not 413, which names a body that was too big (nothing here was).
+    assert_eq!(res.status, 408, "{}", res.status);
+    assert_eq!(
+        res.json()["error"]["code"].as_str(),
+        Some("body_timeout"),
+        "{:?}",
+        String::from_utf8_lossy(&res.body)
+    );
     // And it is still serving.
     assert_eq!(raw(&t, &get("/healthz", None)).await.status, 200);
     // Stored state: neither the oversized nor the dribbled body persisted a payment.

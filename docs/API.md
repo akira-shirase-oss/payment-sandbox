@@ -167,11 +167,11 @@ id, and re-read the payment. An endpoint that keeps failing opens its circuit fo
 ## Error codes
 
 `bad_request`, `malformed_json`, `invalid_body`, `unsupported_media_type`,
-`payload_too_large`, `idempotency_key_required`, `invalid_idempotency_key`,
+`payload_too_large`, `body_timeout`, `idempotency_key_required`, `invalid_idempotency_key`,
 `idempotency_key_conflict`, `raw_card_data_rejected`, `invalid_payment_token`,
 `unauthorized`, `bootstrap_token_required`, `forbidden`, `route_not_found`,
 `method_not_allowed`, `not_found`, `insufficient_capacity`, `invalid_state`, `stale_cursor`,
-`invalid_cursor`, `conflict`, `overloaded`, `rate_limited`, `payment_busy`,
+`invalid_cursor`, `cursor_expired`, `conflict`, `overloaded`, `rate_limited`, `payment_busy`,
 `deadline_exceeded`, `unavailable`, `cross_origin_refused`, `checkout_attempt_open`,
 `checkout_attempts_exhausted`, `checkout_expired`, `checkout_closed`,
 `operator_credential_required`, `misdirected_request`, `confirmation_mismatch`,

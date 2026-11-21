@@ -72,6 +72,8 @@ pub enum ErrorCode {
     PaymentBusy,
     /// The request deadline elapsed.
     DeadlineExceeded,
+    /// The request body did not finish inside its read deadline.
+    BodyTimeout,
     /// A dependency (the database) is unavailable.
     Unavailable,
     /// A state-changing request that did not come from the page's own origin (D-062).
@@ -227,6 +229,10 @@ pub enum ApiError {
         "this payment is busy with other requests; retry shortly with the same Idempotency-Key"
     )]
     PaymentBusy,
+    /// The body did not finish inside its read deadline; this is not the body being too
+    /// large, which is `PayloadTooLarge`.
+    #[error("the request body did not finish in time; send it again whole")]
+    BodyTimeout,
     /// Dependency down.
     #[error("the database is unavailable; retry shortly")]
     Unavailable(#[source] anyhow::Error),
@@ -309,6 +315,7 @@ impl ApiError {
             | Self::ConfirmationMismatch => StatusCode::UNPROCESSABLE_ENTITY,
             Self::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::BodyTimeout => StatusCode::REQUEST_TIMEOUT,
             Self::IdempotencyKeyConflict
             | Self::InsufficientCapacity(_)
             | Self::InvalidState(_)
@@ -343,6 +350,7 @@ impl ApiError {
             Self::BadRequest(_) => ErrorCode::BadRequest,
             Self::UnsupportedMediaType => ErrorCode::UnsupportedMediaType,
             Self::PayloadTooLarge => ErrorCode::PayloadTooLarge,
+            Self::BodyTimeout => ErrorCode::BodyTimeout,
             Self::IdempotencyKeyRequired => ErrorCode::IdempotencyKeyRequired,
             Self::InvalidIdempotencyKey(_) => ErrorCode::InvalidIdempotencyKey,
             Self::IdempotencyKeyConflict => ErrorCode::IdempotencyKeyConflict,
